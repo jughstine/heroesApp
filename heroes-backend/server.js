@@ -1,66 +1,53 @@
 const express = require('express');
-const mysql = require('mysql2');
 const cors = require('cors');
-const AWS = require('aws-sdk');
 require('dotenv').config();
 
+const { testConnection } = require('./config/database');
+const heroesRoutes = require('./routes/heroes');
+const uploadRoutes = require('./routes/upload');
+const usersRoutes = require('./routes/users');
+const formsRoutes = require('./routes/forms'); 
+
 const app = express();
-app.use(cors());
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors({
+  origin: '*', // allow all for development
+  credentials: true
+}));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// MySQL Connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
-  ssl: { rejectUnauthorized: false } // required for DigitalOcean DB
+// Routes
+app.use('/api/heroes', heroesRoutes);
+app.use('/api/user', heroesRoutes);  // Add this line
+app.use('/api/upload', uploadRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/forms', formsRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, message: 'Server is running!' });
 });
 
-db.connect(err => {
-  if (err) {
-    console.error('❌ DB connection failed:', err);
-    process.exit(1);
-  }
-  console.log('✅ Connected to MySQL');
-});
-
-// Setup DigitalOcean Spaces client (S3 compatible)
-const spacesEndpoint = new AWS.Endpoint(process.env.SPACES_ENDPOINT.replace('https://', ''));
-const s3 = new AWS.S3({
-  endpoint: spacesEndpoint,
-  accessKeyId: process.env.SPACES_KEY,
-  secretAccessKey: process.env.SPACES_SECRET,
-});
-
-// Simple test route
-app.get('/', (req, res) => {
-  res.send('Heroes backend is running!');
-});
-
-// Example route: fetch some data from DB
-app.get('/pensioners', (req, res) => {
-  db.query('SELECT * FROM heroes_tbl LIMIT 10', (err, results) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database query error' });
-    }
-    res.json(results);
-  });
-});
-
-// Example route: list objects in Spaces bucket
-app.get('/spaces-files', async (req, res) => {
+// Test database connection
+app.get('/api/test-db', async (req, res) => {
   try {
-    const data = await s3.listObjectsV2({ Bucket: process.env.SPACES_BUCKET }).promise();
-    res.json(data.Contents);
+    await testConnection();
+    res.json({ success: true, message: 'Database connection successful' });
   } catch (error) {
-    res.status(500).json({ error: 'Error fetching spaces files' });
+    res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ success: false, error: 'Something went wrong!' });
 });
 
 // Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  testConnection();
 });

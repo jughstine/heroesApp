@@ -1,3 +1,5 @@
+//forms.js
+
 const express = require('express');
 const router = express.Router();
 const { pool: db } = require('../config/database');
@@ -19,27 +21,24 @@ router.post('/submit', async (req, res) => {
 
   try {
     await connection.beginTransaction();
+    const { 
+      user_id, 
+      longitude, 
+      latitude, 
+      requirements, 
+      video_metadata, 
+      location_metadata, 
+      abroad_status 
+    } = req.body;
 
-    console.log('📥 Form submission received');
-    console.log('📍 Request body:', JSON.stringify(req.body, null, 2));
-
-    const { user_id, form_type_id, longitude, latitude, requirements, video_metadata, location_metadata } = req.body;
-
-    // Enhanced logging for location data
-    console.log('🌍 Location data analysis:');
-    console.log('  longitude:', longitude, '(type:', typeof longitude, ')');
-    console.log('  latitude:', latitude, '(type:', typeof latitude, ')');
-    console.log('  longitude === null:', longitude === null);
-    console.log('  latitude === null:', latitude === null);
-    console.log('  longitude === undefined:', longitude === undefined);
-    console.log('  latitude === undefined:', latitude === undefined);
+    // Set form_type_id to 5 as requested
+    const form_type_id = 5;
 
     // Validate required fields
-    if (!user_id || !form_type_id || !requirements || !Array.isArray(requirements)) {
-      console.log('❌ Missing required fields');
+    if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: user_id, form_type_id, and requirements array'
+        error: 'Missing required fields: user_id and requirements array'
       });
     }
 
@@ -50,7 +49,6 @@ router.post('/submit', async (req, res) => {
     if (longitude !== null && longitude !== undefined && longitude !== '') {
       finalLongitude = Number(longitude);
       if (isNaN(finalLongitude)) {
-        console.log('❌ Invalid longitude value:', longitude);
         return res.status(400).json({
           success: false,
           error: 'Invalid longitude value'
@@ -61,7 +59,6 @@ router.post('/submit', async (req, res) => {
     if (latitude !== null && latitude !== undefined && latitude !== '') {
       finalLatitude = Number(latitude);
       if (isNaN(finalLatitude)) {
-        console.log('❌ Invalid latitude value:', latitude);
         return res.status(400).json({
           success: false,
           error: 'Invalid latitude value'
@@ -71,11 +68,8 @@ router.post('/submit', async (req, res) => {
 
     // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
-      console.log('🔍 Validating coordinates...');
       
-      // Validate longitude and latitude ranges
       if (finalLongitude < -180 || finalLongitude > 180) {
-        console.log('❌ Longitude out of range:', finalLongitude);
         return res.status(400).json({
           success: false,
           error: 'Invalid longitude value. Must be between -180 and 180'
@@ -83,44 +77,33 @@ router.post('/submit', async (req, res) => {
       }
 
       if (finalLatitude < -90 || finalLatitude > 90) {
-        console.log('❌ Latitude out of range:', finalLatitude);
         return res.status(400).json({
           success: false,
           error: 'Invalid latitude value. Must be between -90 and 90'
         });
       }
-      
-      console.log('✅ Coordinates validated successfully');
-      console.log('  Final longitude:', finalLongitude);
-      console.log('  Final latitude:', finalLatitude);
-    } else {
-      console.log('⚠️ No location data to validate');
     }
 
-    console.log('💾 Inserting form submission...');
+    // Determine location status based on abroad_status
+    const locationStatus = abroad_status ? 'abr' : 'loc';
+
     
-    // Insert form submission with location data
+    // Insert form submission with location data and location status
     const [submissionResult] = await connection.execute(
-      `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, status, submitted_at) 
-       VALUES (?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, 'p'] // 'p' for pending
+      `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p'] // 'p' for pending
     );
 
     const formSubmissionId = submissionResult.insertId;
-    console.log('✅ Form submission inserted with ID:', formSubmissionId);
 
     // Verify the insertion by querying the record
     const [insertedRecord] = await connection.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, status, submitted_at FROM form_submission WHERE id = ?',
+      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
       [formSubmissionId]
     );
     
-    console.log('🔍 Inserted record verification:');
-    console.log(insertedRecord[0]);
-
-    console.log('📝 Processing requirements...');
-    
-    // Insert form requirements
+    // Insert form requirements with proper applies_to_location mapping
     for (const requirement of requirements) {
       const { requirement_type, value, file_url, file_key, file_type } = requirement;
 
@@ -128,38 +111,44 @@ router.post('/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
+      // Determine applies_to_location based on requirement type and abroad status
+      let appliesToLocation = 'both'; // default value
+      
+      // Abroad-specific documents
+      if (['passport', 'oath_of_allegiance', 'cert_of_naturalization'].includes(requirement_type)) {
+        appliesToLocation = 'abr';
+      } 
+      // Local documents and general requirements
+      else if (['unified_id', 'photo_2x2', 'video_submission', 'home_address', 'crs5_reference'].includes(requirement_type)) {
+        appliesToLocation = abroad_status ? 'abr' : 'loc';
+      }
+
       await connection.execute(
-        `INSERT INTO form_requirements (form_id, requirement_type, value, file_url, file_key, file_type) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [formSubmissionId, requirement_type, value || null, file_url || null, file_key || null, file_type || null]
+        `INSERT INTO form_requirements (form_id, requirement_type, value, file_url, file_key, file_type, applies_to_location) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          formSubmissionId, 
+          requirement_type, 
+          value || null, 
+          file_url || null, 
+          file_key || null, 
+          file_type || null,
+          appliesToLocation
+        ]
       );
-    }
 
-    console.log('✅ Requirements inserted successfully');
-
-    // Log video metadata if provided (for debugging/analytics)
-    if (video_metadata) {
-      console.log('🎥 Video metadata for form', formSubmissionId, ':', video_metadata);
-    }
-
-    // Log location metadata if provided (for debugging/analytics)
-    if (location_metadata) {
-      console.log('📍 Location metadata for form', formSubmissionId, ':', {
-        accuracy: location_metadata.accuracy,
-        timestamp: new Date(location_metadata.timestamp),
-        longitude: finalLongitude,
-        latitude: finalLatitude
-      });
     }
 
     await connection.commit();
-    console.log('✅ Transaction committed successfully');
 
     const responseData = {
       success: true,
       message: 'Form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_type_id: form_type_id,
+        location_status: locationStatus,
+        abroad_status: abroad_status,
         location: {
           longitude: finalLongitude,
           latitude: finalLatitude,
@@ -170,7 +159,6 @@ router.post('/submit', async (req, res) => {
       }
     };
 
-    console.log('📤 Sending response:', responseData);
     res.json(responseData);
 
   } catch (error) {
@@ -190,7 +178,7 @@ router.get('/user/:user_id', async (req, res) => {
 
     const [rows] = await db.execute(`
       SELECT fs.*, ft.name as form_type_name,
-             fs.longitude, fs.latitude
+             fs.longitude, fs.latitude, fs.location as location_status
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       WHERE fs.user_id = ?
@@ -212,7 +200,7 @@ router.get('/:form_id', async (req, res) => {
     // Get form submission details with location
     const [submissionRows] = await db.execute(`
       SELECT fs.*, ft.name as form_type_name, u.email as user_email,
-             fs.longitude, fs.latitude
+             fs.longitude, fs.latitude, fs.location as location_status
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
@@ -223,9 +211,9 @@ router.get('/:form_id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
 
-    // Get form requirements
+    // Get form requirements with applies_to_location
     const [requirementRows] = await db.execute(
-      'SELECT * FROM form_requirements WHERE form_id = ?',
+      'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [form_id]
     );
 
@@ -234,7 +222,8 @@ router.get('/:form_id', async (req, res) => {
       requirements: requirementRows,
       location: {
         longitude: submissionRows[0].longitude,
-        latitude: submissionRows[0].latitude
+        latitude: submissionRows[0].latitude,
+        status: submissionRows[0].location_status
       }
     };
 
@@ -245,10 +234,46 @@ router.get('/:form_id', async (req, res) => {
   }
 });
 
+// GET forms by location status (local vs abroad)
+router.get('/location/:location_status', async (req, res) => {
+  try {
+    const { location_status } = req.params;
+
+    // Validate location status
+    if (!['loc', 'abr'].includes(location_status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid location_status. Must be "loc" (local) or "abr" (abroad)'
+      });
+    }
+
+    const [rows] = await db.execute(`
+      SELECT fs.*, ft.name as form_type_name,
+             fs.longitude, fs.latitude, fs.location as location_status
+      FROM form_submission fs
+      JOIN form_type ft ON fs.form_type_id = ft.id
+      WHERE fs.location = ?
+      ORDER BY fs.submitted_at DESC
+    `, [location_status]);
+
+    res.json({
+      success: true,
+      data: {
+        location_status: location_status,
+        count: rows.length,
+        submissions: rows
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching forms by location status:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET forms by location proximity (bonus feature)
 router.get('/location/nearby', async (req, res) => {
   try {
-    const { longitude, latitude, radius = 10 } = req.query; // radius in kilometers
+    const { longitude, latitude, radius = 10 } = req.query;
 
     if (!longitude || !latitude) {
       return res.status(400).json({
@@ -257,7 +282,6 @@ router.get('/location/nearby', async (req, res) => {
       });
     }
 
-    // Convert to numbers
     const lng = parseFloat(longitude);
     const lat = parseFloat(latitude);
     const radiusKm = parseFloat(radius);
@@ -270,10 +294,9 @@ router.get('/location/nearby', async (req, res) => {
     }
 
     // Using Haversine formula to calculate distance
-    // Note: This is a simplified query. For production, consider using spatial database features
     const [rows] = await db.execute(`
       SELECT fs.*, ft.name as form_type_name,
-             fs.longitude, fs.latitude,
+             fs.longitude, fs.latitude, fs.location as location_status,
              (
                6371 * acos(
                  cos(radians(?)) * cos(radians(fs.latitude)) *
@@ -335,28 +358,38 @@ router.put('/:form_id/status', async (req, res) => {
   }
 });
 
-// GET location statistics (bonus feature for analytics)
+// GET location statistics with abroad/local breakdown
 router.get('/analytics/location-stats', async (req, res) => {
   try {
-    // Get submission counts by general location areas
-    // This is a simplified example - you might want to implement proper geohashing or administrative boundaries
-    const [stats] = await db.execute(`
+    // Get submission counts by location status
+    const [locationStats] = await db.execute(`
       SELECT 
+        location as location_status,
         COUNT(*) as total_submissions,
+        COUNT(CASE WHEN status = 'a' THEN 1 END) as approved_count,
+        COUNT(CASE WHEN status = 'p' THEN 1 END) as pending_count,
+        COUNT(CASE WHEN status = 'd' THEN 1 END) as denied_count,
         AVG(longitude) as avg_longitude,
         AVG(latitude) as avg_latitude,
         MIN(submitted_at) as earliest_submission,
-        MAX(submitted_at) as latest_submission,
-        status,
-        COUNT(CASE WHEN status = 'a' THEN 1 END) as approved_count,
-        COUNT(CASE WHEN status = 'p' THEN 1 END) as pending_count,
-        COUNT(CASE WHEN status = 'd' THEN 1 END) as denied_count
+        MAX(submitted_at) as latest_submission
       FROM form_submission 
-      WHERE longitude IS NOT NULL AND latitude IS NOT NULL
-      GROUP BY status
+      GROUP BY location
     `);
 
-    // Get bounding box of all submissions
+    // Get requirement statistics by applies_to_location
+    const [requirementStats] = await db.execute(`
+      SELECT 
+        fr.applies_to_location,
+        fr.requirement_type,
+        COUNT(*) as count
+      FROM form_requirements fr
+      JOIN form_submission fs ON fr.form_id = fs.id
+      GROUP BY fr.applies_to_location, fr.requirement_type
+      ORDER BY fr.applies_to_location, fr.requirement_type
+    `);
+
+    // Get bounding box of all submissions with coordinates
     const [boundingBox] = await db.execute(`
       SELECT 
         MIN(longitude) as min_lng,
@@ -370,7 +403,8 @@ router.get('/analytics/location-stats', async (req, res) => {
     res.json({
       success: true,
       data: {
-        statistics: stats,
+        location_statistics: locationStats,
+        requirement_statistics: requirementStats,
         bounding_box: boundingBox[0] || null
       }
     });

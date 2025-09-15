@@ -20,9 +20,7 @@ router.get('/profile', async (req, res) => {
   const startTime = Date.now();
   let conn;
 
-  try {
-    console.log("=== USER PROFILE REQUEST ===");
-    
+  try {    
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
@@ -58,7 +56,6 @@ router.get('/profile', async (req, res) => {
     `);
 
     if (profiles.length === 0) {
-      console.log("No user profile found");
       return res.status(404).json({
         success: false,
         error: "User profile not found",
@@ -70,7 +67,6 @@ router.get('/profile', async (req, res) => {
     const profile = profiles[0];
     
     const processingTime = Date.now() - startTime;
-    console.log(`Profile retrieved successfully (${processingTime}ms)`);
 
     // Updated response to include DOB and TYPE
     const profileResponse = {
@@ -93,7 +89,7 @@ router.get('/profile', async (req, res) => {
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error("=== PROFILE ERROR ===");
+    ("=== PROFILE ERROR ===");
     console.error("Error details:", error);
 
     res.status(500).json({
@@ -107,7 +103,6 @@ router.get('/profile', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -122,8 +117,6 @@ router.get('/profile/:userId', async (req, res) => {
 
   try {
     const userId = req.params.userId;
-    console.log(`=== USER PROFILE REQUEST FOR ID: ${userId} ===`);
-    
     // Validate userId is a number
     if (isNaN(userId) || userId <= 0) {
       return res.status(400).json({
@@ -157,6 +150,7 @@ router.get('/profile/:userId', async (req, res) => {
         h.AFPSN,
         h.TYPE,
         h.CTRLNR,
+        h.MOBILENR,
         p.type as pensioner_type,
         p.b_type,
         p.principal_firstname,
@@ -171,7 +165,6 @@ router.get('/profile/:userId', async (req, res) => {
     `, [userId]);
 
     if (profiles.length === 0) {
-      console.log(`No profile found for user ID: ${userId}`);
       return res.status(404).json({
         success: false,
         error: "User profile not found",
@@ -183,7 +176,6 @@ router.get('/profile/:userId', async (req, res) => {
     const profile = profiles[0];
     
     const processingTime = Date.now() - startTime;
-    console.log(`Profile retrieved for user ${userId} (${processingTime}ms)`);
 
     // Format the response
     const profileResponse = {
@@ -193,6 +185,7 @@ router.get('/profile/:userId', async (req, res) => {
       DOB: profile.DOB,
       LASTNAME: profile.LASTNAME,
       AFPSN: profile.AFPSN,
+      MOBILENR: profile.MOBILENR,
       CTRLNR: profile.CTRLNR,
       email: profile.email,
       pensioner_type: profile.pensioner_type,
@@ -292,7 +285,6 @@ router.get('/submissions', async (req, res) => {
   let conn;
 
   try {
-    console.log("=== FORM SUBMISSIONS REQUEST ===");
     
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
@@ -325,8 +317,6 @@ router.get('/submissions', async (req, res) => {
     `);
 
     const processingTime = Date.now() - startTime;
-    console.log(`Form submissions retrieved successfully (${processingTime}ms)`);
-    console.log(`Found ${submissions.length} active submissions`);
 
     const submissionsResponse = {
       success: true,
@@ -356,7 +346,6 @@ router.get('/submissions', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -371,7 +360,6 @@ router.get('/submissions/:userId', async (req, res) => {
 
   try {
     const userId = req.params.userId;
-    console.log(`=== FORM SUBMISSIONS REQUEST FOR USER: ${userId} ===`);
     
     // Validate userId
     if (isNaN(userId) || userId <= 0) {
@@ -412,7 +400,6 @@ router.get('/submissions/:userId', async (req, res) => {
     `, [userId]);
 
     const processingTime = Date.now() - startTime;
-    console.log(`Submissions retrieved for user ${userId}: ${submissions.length} found (${processingTime}ms)`);
 
     res.json({
       success: true,

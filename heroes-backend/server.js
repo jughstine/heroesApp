@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: '*', // allow all for development
+  origin: '*', 
   credentials: true
 }));
 app.use(express.json());
@@ -21,7 +21,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/heroes', heroesRoutes);
-app.use('/api/user', heroesRoutes);  // Add this line
+app.use('/api/user', heroesRoutes); 
 app.use('/api/upload', uploadRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/forms', formsRoutes);

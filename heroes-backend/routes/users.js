@@ -19,14 +19,12 @@ const signupLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Input sanitization middleware
 const sanitizeInput = (req, res, next) => {
   const sanitizeString = (str) => {
     if (typeof str !== 'string') return str;
     return validator.escape(str.trim());
   };
 
-  // Sanitize all string inputs except password (we'll handle that separately)
   for (const key in req.body) {
     if (key !== 'password' && typeof req.body[key] === 'string') {
       req.body[key] = sanitizeString(req.body[key]);
@@ -35,7 +33,7 @@ const sanitizeInput = (req, res, next) => {
   next();
 };
 
-// Enhanced password filtering function
+// password filtering function
 const filterPassword = (password) => {
   if (typeof password !== 'string') return '';
   
@@ -44,7 +42,7 @@ const filterPassword = (password) => {
   return password.replace(/[<>;"'`\\]/g, '').trim();
 };
 
-// Enhanced password validation with more comprehensive checks
+// password validation with comprehensive checks
 const validatePasswordStrength = (password) => {
   const minLength = 8;
   const maxLength = 128;
@@ -84,15 +82,13 @@ const checkDatabaseHealth = async () => {
   }
 };
 
+
+//signup 
 router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
   let conn;
 
   try {
-    // Step 1: Extract and validate input data
-    console.log("=== SIGNUP PROCESS STARTED ===");
-    console.log("Extracting input data...");
-
     const {
       email,
       password,
@@ -106,25 +102,12 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       afpsn
     } = req.body;
 
-    console.log("Received signup request:", {
-      email: email ? email.substring(0, 3) + '***' : 'missing',
-      type,
-      b_type,
-      firstname: firstname ? firstname.substring(0, 2) + '***' : 'missing',
-      lastname: lastname ? lastname.substring(0, 2) + '***' : 'missing',
-      afpsn: afpsn ? afpsn.substring(0, 2) + '***' : 'missing'
-    });
-
-    // Step 2: Basic field validation
-    console.log("Validating required fields...");
-    
     const requiredFields = { email, password, type, firstname, lastname, dob, afpsn };
     const missingFields = Object.entries(requiredFields)
       .filter(([key, value]) => !value)
       .map(([key]) => key);
 
     if (missingFields.length > 0) {
-      console.log("Missing required fields:", missingFields);
       return res.status(400).json({ 
         success: false, 
         error: `Missing required fields: ${missingFields.join(', ')}`,
@@ -133,8 +116,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 3: Enhanced email validation
-    console.log("Validating email format...");
     if (!validator.isEmail(email)) {
       return res.status(400).json({ 
         success: false, 
@@ -144,12 +125,9 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 4: Enhanced password validation with filtering
-    console.log("Validating and filtering password...");
     const filteredPassword = filterPassword(password);
     
     if (filteredPassword !== password) {
-      console.log("Password contained filtered characters");
       return res.status(400).json({ 
         success: false, 
         error: "Password contains invalid characters. Please use only letters, numbers, and common special characters.",
@@ -160,7 +138,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     const passwordValidation = validatePasswordStrength(filteredPassword);
     if (!passwordValidation.isValid) {
-      console.log("Password validation failed:", passwordValidation.errors);
       return res.status(400).json({ 
         success: false, 
         error: "Password does not meet security requirements",
@@ -170,8 +147,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 5: Type validation
-    console.log("Validating pensioner type...");
     if (!['P', 'B'].includes(type)) {
       return res.status(400).json({ 
         success: false, 
@@ -181,8 +156,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 6: Beneficiary-specific validation
-    console.log("Validating beneficiary information...");
     if (type === 'B') {
       if (!b_type || !['SP', 'CH', 'PR', 'SB'].includes(b_type)) {
         return res.status(400).json({ 
@@ -202,8 +175,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       }
     }
 
-    // Step 7: Date validation
-    console.log("Validating date of birth...");
     if (!validator.isDate(dob) || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
       return res.status(400).json({ 
         success: false, 
@@ -213,8 +184,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 8: Database connection health check
-    console.log("Checking database connectivity...");
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -225,36 +194,23 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 9: Get database connection and start transaction
-    console.log(" Establishing database connection...");
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    // Step 10: Normalize data for consistent matching
-    console.log("Step 10: Normalizing input data...");
     const normalizedFirstname = firstname.trim().toUpperCase();
     const normalizedLastname = lastname.trim().toUpperCase();
     const normalizedAfpsn = afpsn.trim().toUpperCase();
     const normalizedEmail = email.toLowerCase().trim();
-    
-    console.log("Normalized values for database query:", {
-      normalizedFirstname: normalizedFirstname.substring(0, 2) + '***',
-      normalizedLastname: normalizedLastname.substring(0, 2) + '***',
-      normalizedAfpsn: normalizedAfpsn.substring(0, 2) + '***',
-      dob,
-      type
-    });
 
-    // Step 11: Check for existing email
-    console.log(" Checking for existing email registration...");
-    const [existingEmail] = await conn.query(
-      `SELECT id FROM users_tbl WHERE email = ?`,
+    const [rows] = await conn.query(
+      `SELECT id FROM users_tbl WHERE email = ? LIMIT 1`,
       [normalizedEmail]
     );
 
-    if (existingEmail.length > 0) {
+    const existingEmail = rows[0];
+
+    if (existingEmail) {
       await conn.rollback();
-      console.log("Email already exists in database");
       return res.status(409).json({ 
         success: false, 
         error: "An account with this email address already exists",
@@ -263,8 +219,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 12: Validate against heroes database
-    console.log("Validating against AFP Heroes database...");
     const [heroes] = await conn.query(
       `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
        FROM test_table 
@@ -280,7 +234,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     if (heroes.length === 0) {
       await conn.rollback();
-      console.log("No matching hero record found");
       return res.status(401).json({ 
         success: false, 
         error: "Authorization failed: Your information does not match any records in the AFP Heroes database.",
@@ -292,7 +245,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     if (heroes.length > 1) {
       await conn.rollback();
-      console.log("Multiple hero records found - data integrity issue");
       return res.status(409).json({ 
         success: false, 
         error: "Multiple matching records found in Heroes database. Please contact system administrator for assistance.",
@@ -303,10 +255,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     const hero_ndx = heroes[0].NDX;
     const validatedRecord = heroes[0];
-    console.log("Hero validation successful:", { hero_ndx, control_number: validatedRecord.CTRLNR });
-
-    // Step 13: Check for existing user account
-    console.log("Checking for existing user account...");
     const [existingUser] = await conn.query(
       `SELECT u.id, u.email FROM users_tbl u 
        JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
@@ -316,7 +264,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     if (existingUser.length > 0) {
       await conn.rollback();
-      console.log("Hero record already has associated user account");
       return res.status(409).json({ 
         success: false, 
         error: "This AFP Hero record already has an associated user account.",
@@ -326,14 +273,8 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Step 14: Hash password with enhanced security
-    console.log(" Securing password...");
     const saltRounds = 12; // Increased from 10 for better security
     const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
-    console.log("Password hashed successfully");
-
-    // Step 15: Insert pensioner record
-    console.log(" Creating pensioner record...");
     const pensionerData = {
       hero_ndx,
       type,
@@ -355,10 +296,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     );
     
     const pensionerId = pensionerResult.insertId;
-    console.log("Pensioner record created:", { pensionerId });
-
-    // Step 16: Create user account
-    console.log(" Creating user account...");
     const [userResult] = await conn.query(
       `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
        VALUES (?, ?, ?, 'UNV', NOW())`,
@@ -366,16 +303,11 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     );
     
     const userId = userResult.insertId;
-    console.log("User account created:", { userId });
 
-    // Step 17: Commit transaction
-    console.log(" Finalizing account creation...");
     await conn.commit();
 
     const processingTime = Date.now() - startTime;
-    console.log(`=== SIGNUP COMPLETED SUCCESSFULLY (${processingTime}ms) ===`);
 
-    // Step 18: Return success response
     const successResponse = {
       success: true,
       message: "Account created successfully for validated AFP Hero",
@@ -506,7 +438,7 @@ router.get("/health", async (req, res) => {
 // Rate limiting for login attempts
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 5 requests per windowMs
+  max: 5, 
   message: {
     success: false,
     error: 'Too many login attempts from this IP, please try again after 15 minutes.',
@@ -585,10 +517,10 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       JOIN test_table h ON p.hero_ndx = h.NDX
       WHERE u.email = ?
+      LIMIT 1
     `, [normalizedEmail]);
 
     if (users.length === 0) {
-      console.log("Login attempt with non-existent email:", normalizedEmail.substring(0, 3) + '***');
       return res.status(401).json({
         success: false,
         error: "Invalid email or password",
@@ -703,7 +635,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   }
 });
 
-// Optional: Logout endpoint
+// Logout endpoint
 router.post("/logout", async (req, res) => {
   try {
     // If you implement JWT tokens, you'd invalidate them here

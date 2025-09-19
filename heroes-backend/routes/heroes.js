@@ -15,7 +15,7 @@ const checkDatabaseHealth = async () => {
   }
 };
 
-// User Profile endpoint - gets the user profile
+// User Profile endpoint
 router.get('/profile', async (req, res) => {
   const startTime = Date.now();
   let conn;
@@ -110,7 +110,7 @@ router.get('/profile', async (req, res) => {
   }
 });
 
-// Profile endpoint with user ID parameter (for when you implement authentication)
+// Profile endpoint with user ID parameter
 router.get('/profile/:userId', async (req, res) => {
   const startTime = Date.now();
   let conn;
@@ -262,24 +262,7 @@ router.get('/health', async (req, res) => {
   }
 });
 
-// Legacy heroes endpoint (keeping for backward compatibility if needed)
-router.get('/', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM test_table ORDER BY LASTNAME DESC LIMIT 5'
-    );
-    res.json({ 
-      success: true, 
-      data: rows,
-      message: 'This endpoint is deprecated. Use /profile for user profile data.'
-    });
-  } catch (error) {
-    console.error('Error fetching heroes:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Form submissions endpoint - gets user's form submissions
+// Form submissions endpoint
 router.get('/submissions', async (req, res) => {
   const startTime = Date.now();
   let conn;
@@ -353,7 +336,6 @@ router.get('/submissions', async (req, res) => {
   }
 });
 
-// Alternative endpoint for specific user (when you implement authentication)
 router.get('/submissions/:userId', async (req, res) => {
   const startTime = Date.now();
   let conn;
@@ -435,7 +417,7 @@ router.get('/submissions/:userId', async (req, res) => {
   }
 });
 
-// Form types reference endpoint (helpful for debugging)
+// Form types reference endpoint
 router.get('/form-types', async (req, res) => {
   try {
     res.json({

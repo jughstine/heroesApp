@@ -91,7 +91,7 @@ router.get('/profile', async (req, res) => {
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error("=== PROFILE ERROR ==="); // ✅ Fixed missing console.error
+    console.error("=== PROFILE ERROR ==="); 
     console.error("Error details:", error);
 
     res.status(500).json({
@@ -115,8 +115,8 @@ router.get('/profile', async (req, res) => {
 // Profile endpoint with user ID parameter
 router.get('/profile/:userId', async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); // ✅ Add pool instance
-  let conn = null; // ✅ Fixed declaration
+  const poolInstance = getPool(); 
+  let conn = null;
 
   try {
     const userId = req.params.userId;
@@ -268,8 +268,8 @@ router.get('/health', async (req, res) => {
 // Form submissions endpoint
 router.get('/submissions', async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); // ✅ Add pool instance
-  let conn = null; // ✅ Fixed declaration
+  const poolInstance = getPool(); 
+  let conn = null; 
 
   try {
     
@@ -342,8 +342,8 @@ router.get('/submissions', async (req, res) => {
 
 router.get('/submissions/:userId', async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); // ✅ Add pool instance
-  let conn = null; // ✅ Fixed declaration
+  const poolInstance = getPool(); 
+  let conn = null; 
 
   try {
     const userId = req.params.userId;

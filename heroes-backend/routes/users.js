@@ -6,6 +6,7 @@ const { pool } = require("../config/database");
 const router = express.Router();
 const { getPool } = require('../config/database');
 
+const db = require('../config/database');
 
 // Rate limiting for signup attempts
 const signupLimiter = rateLimit({
@@ -106,8 +107,10 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       afpsn
     } = req.body;
 
-    const requiredFields = { email, password, type, bos, firstname, lastname, dob, afpsn };
+    let requiredFields = { email, password, type, firstname, lastname, dob, afpsn };
     const missingFields = Object.entries(requiredFields)
+      .filter(([key, value]) => !value || (typeof value === 'string' && value.trim() === ''))
+      .map(([key]) => key);
 
     if (missingFields.length > 0) {
       return res.status(400).json({ 
@@ -216,7 +219,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    conn = await pool.getConnection();
+    conn = await db.getPool().getConnection();
     await conn.beginTransaction();
 
     const normalizedFirstname = firstname.trim().toUpperCase();
@@ -242,7 +245,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Updated query - BOS is NOT in test_table, only validating existing fields
     const [heroes] = await conn.query(
       `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
        FROM test_table 
@@ -520,8 +522,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection(); // ✅ Now this works
-    
+    conn = await db.getPool().getConnection()
     const normalizedEmail = email.toLowerCase().trim();
 
     // Find user with pensioner and hero information
@@ -602,7 +603,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
         email: user.email,
         pensioner_id: user.pensioner_id,
         type: user.type,
-        bos: user.bos, // ✅ Added bos field
+        bos: user.bos, 
         status: 'ACTIVE',
         validated_hero: {
           name: `${user.FIRSTNAME} ${user.LASTNAME}`,
@@ -665,6 +666,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     }
   }
 });
+
 // Logout endpoint
 router.post("/logout", async (req, res) => {
   try {

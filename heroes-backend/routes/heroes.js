@@ -1,11 +1,11 @@
 const express = require('express');
-const { pool, getPool } = require('../config/database'); // ✅ Import both pool and getPool
+const { getPool } = require('../config/database');
 const router = express.Router();
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
   try {
-    const poolInstance = getPool(); // ✅ Use consistent naming
+    const poolInstance = getPool(); 
     const conn = await poolInstance.getConnection();
     await conn.ping();
     conn.release();
@@ -19,7 +19,7 @@ const checkDatabaseHealth = async () => {
 // User Profile endpoint
 router.get('/profile', async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); // ✅ Use consistent naming
+  const poolInstance = getPool(); 
   let conn = null;
 
   try {    

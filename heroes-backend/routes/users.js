@@ -2,10 +2,8 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const rateLimit = require("express-rate-limit");
 const validator = require("validator");
-const { pool } = require("../config/database");
 const router = express.Router();
 const { getPool } = require('../config/database');
-
 const db = require('../config/database');
 
 // Rate limiting for signup attempts

@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { pool: db } = require('../config/database');
+const { getPool } = require('../config/database');
 
-// GET all form types
 router.get('/types', async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT * FROM form_type');
+    const pool = getPool();
+    const [rows] = await pool.execute('SELECT * FROM form_type');
     res.json({ success: true, data: rows });
   } catch (error) {
     console.error('Error fetching form types:', error);
@@ -15,7 +15,8 @@ router.get('/types', async (req, res) => {
 
 // POST - Submit a new form
 router.post('/submit', async (req, res) => {
-  const connection = await db.getConnection();
+   const pool = getPool();
+   const connection = await pool.getConnection();
 
   try {
     await connection.beginTransaction();
@@ -24,12 +25,11 @@ router.post('/submit', async (req, res) => {
       longitude, 
       latitude, 
       requirements, 
-      video_metadata, 
       location_metadata, 
       abroad_status 
     } = req.body;
 
-    // Set form_type_id to 5 as requested
+    // Set form_type_id to 5
     const form_type_id = 5;
 
     // Validate required fields
@@ -109,16 +109,14 @@ router.post('/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Determine applies_to_location based on requirement type and abroad status
-      let appliesToLocation = 'both'; // default value
+      let applies_to_location = 'both'; 
       
-      // Abroad-specific documents
       if (['passport', 'oath_of_allegiance', 'cert_of_naturalization'].includes(requirement_type)) {
-        appliesToLocation = 'abr';
+        applies_to_location = 'abr';
       } 
-      // Local documents and general requirements
+
       else if (['unified_id', 'photo_2x2', 'video_submission', 'home_address', 'crs5_reference'].includes(requirement_type)) {
-        appliesToLocation = abroad_status ? 'abr' : 'loc';
+        applies_to_location = abroad_status ? 'abr' : 'loc';
       }
 
       await connection.execute(
@@ -131,7 +129,7 @@ router.post('/submit', async (req, res) => {
           file_url || null, 
           file_key || null, 
           file_type || null,
-          appliesToLocation
+          applies_to_location
         ]
       );
 
@@ -171,6 +169,10 @@ router.post('/submit', async (req, res) => {
 
 // GET user's form submissions with location data
 router.get('/user/:user_id', async (req, res) => {
+   const pool = getPool();
+   const connection = await pool.getConnection();
+
+
   try {
     const { user_id } = req.params;
 
@@ -192,6 +194,9 @@ router.get('/user/:user_id', async (req, res) => {
 
 // GET specific form submission with requirements and location
 router.get('/:form_id', async (req, res) => {
+   const pool = getPool();
+   const connection = await pool.getConnection();
+  
   try {
     const { form_id } = req.params;
 
@@ -234,6 +239,9 @@ router.get('/:form_id', async (req, res) => {
 
 // GET forms by location status (local vs abroad)
 router.get('/location/:location_status', async (req, res) => {
+   const pool = getPool();
+   const connection = await pool.getConnection();
+  
   try {
     const { location_status } = req.params;
 
@@ -268,8 +276,11 @@ router.get('/location/:location_status', async (req, res) => {
   }
 });
 
-// GET forms by location proximity (bonus feature)
+// GET forms by location proximity 
 router.get('/location/nearby', async (req, res) => {
+   const pool = getPool();
+   const connection = await pool.getConnection();
+  
   try {
     const { longitude, latitude, radius = 10 } = req.query;
 

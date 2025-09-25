@@ -10,7 +10,7 @@ const dbConfig = {
   ssl: { rejectUnauthorized: false },
   connectionLimit: 10,
   connectTimeout: 60000
-  // Removed: acquireTimeout and timeout (deprecated)
+  
 };
 
 let pool = null;

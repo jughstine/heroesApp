@@ -4,11 +4,13 @@ const rateLimit = require("express-rate-limit");
 const validator = require("validator");
 const { pool } = require("../config/database");
 const router = express.Router();
+const { getPool } = require('../config/database');
+
 
 // Rate limiting for signup attempts
 const signupLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
+  windowMs: 30 * 60 * 1000,
+  max: 50,
   message: {
     success: false,
     error: 'Too many signup attempts from this IP, please try again after 15 minutes.',
@@ -72,6 +74,7 @@ const validatePasswordStrength = (password) => {
 // Database connection health check
 const checkDatabaseHealth = async () => {
   try {
+    const pool = getPool(); // now defined
     const conn = await pool.getConnection();
     await conn.ping();
     conn.release();
@@ -94,6 +97,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       password,
       type,        // 'P' or 'B'
       b_type,      // 'SP','CH','PR','SB' if Beneficiary
+      bos,         // 'AR','AF','NV','PC' - Branch of Service
       principal_first_name,
       principal_last_name,
       firstname,
@@ -102,10 +106,8 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       afpsn
     } = req.body;
 
-    const requiredFields = { email, password, type, firstname, lastname, dob, afpsn };
+    const requiredFields = { email, password, type, bos, firstname, lastname, dob, afpsn };
     const missingFields = Object.entries(requiredFields)
-      .filter(([key, value]) => !value)
-      .map(([key]) => key);
 
     if (missingFields.length > 0) {
       return res.status(400).json({ 
@@ -156,6 +158,26 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
+    // Validate Branch of Service (only required for Principals)
+    if (type === 'P') {
+      if (!bos) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Branch of service is required for Principal users",
+          code: 'MISSING_BOS',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+      if (!['AR', 'AF', 'NV', 'PC'].includes(bos)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Invalid branch of service. Must be 'AR' (Army), 'AF' (Air Force), 'NV' (Navy), or 'PC' (Philippine Coast Guard)",
+          code: 'INVALID_BOS',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
     if (type === 'B') {
       if (!b_type || !['SP', 'CH', 'PR', 'SB'].includes(b_type)) {
         return res.status(400).json({ 
@@ -201,6 +223,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     const normalizedLastname = lastname.trim().toUpperCase();
     const normalizedAfpsn = afpsn.trim().toUpperCase();
     const normalizedEmail = email.toLowerCase().trim();
+    const normalizedBos = type === 'P' && bos ? bos.trim().toUpperCase() : null;
 
     const [rows] = await conn.query(
       `SELECT id FROM users_tbl WHERE email = ? LIMIT 1`,
@@ -219,6 +242,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
+    // Updated query - BOS is NOT in test_table, only validating existing fields
     const [heroes] = await conn.query(
       `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
        FROM test_table 
@@ -278,17 +302,20 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     const pensionerData = {
       hero_ndx,
       type,
+      bos: normalizedBos, // Will be null for Beneficiaries
       b_type: b_type || null,
       principal_firstname: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
       principal_lastname: type === 'B' ? principal_last_name?.trim().toUpperCase() : null
     };
     
+    // Updated INSERT query to include BOS
     const [pensionerResult] = await conn.query(
-      `INSERT INTO pensioners_tbl (hero_ndx, type, b_type, principal_firstname, principal_lastname) 
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         pensionerData.hero_ndx, 
-        pensionerData.type, 
+        pensionerData.type,
+        pensionerData.bos,
         pensionerData.b_type,
         pensionerData.principal_firstname,
         pensionerData.principal_lastname
@@ -316,6 +343,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
         email: normalizedEmail,
         pensioner_id: pensionerId,
         type: type,
+        bos: normalizedBos, // Will be null for Beneficiaries
         status: 'ACTIVE',
         validated_hero: {
           name: `${validatedRecord.FIRSTNAME} ${validatedRecord.LASTNAME}`,
@@ -452,7 +480,8 @@ const loginLimiter = rateLimit({
 // Login endpoint
 router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const pool = getPool();
+  let conn = null;
 
   try {
     console.log("=== LOGIN PROCESS STARTED ===");
@@ -491,7 +520,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection();
+    conn = await pool.getConnection(); // ✅ Now this works
     
     const normalizedEmail = email.toLowerCase().trim();
 
@@ -505,6 +534,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
         u.created_at,
         p.id as pensioner_id,
         p.type,
+        p.bos,
         p.b_type,
         p.principal_firstname,
         p.principal_lastname,
@@ -572,6 +602,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
         email: user.email,
         pensioner_id: user.pensioner_id,
         type: user.type,
+        bos: user.bos, // ✅ Added bos field
         status: 'ACTIVE',
         validated_hero: {
           name: `${user.FIRSTNAME} ${user.LASTNAME}`,
@@ -634,12 +665,9 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     }
   }
 });
-
 // Logout endpoint
 router.post("/logout", async (req, res) => {
   try {
-    // If you implement JWT tokens, you'd invalidate them here
-    // For now, just return success
     res.json({
       success: true,
       message: "Logged out successfully",

@@ -12,24 +12,53 @@ const heroesRoutes = require('./routes/heroes');
 const uploadRoutes = require('./routes/upload');
 const usersRoutes = require('./routes/users');
 const formsRoutes = require('./routes/forms');
+const adminForms = require('./routes/admin_forms');
+const { router: adminAuthRoutes } = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
-  credentials: true
-}));
-app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '10mb' }));
+// CORS configuration - FIXED: Only one CORS middleware with proper origin handling
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      process.env.CORS_ORIGIN
+    ].filter(Boolean); // Remove any undefined values
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+};
+
+app.use(cors(corsOptions));
+
+app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '15mb' }));
 app.use(express.urlencoded({ 
   extended: true, 
-  limit: process.env.MAX_FILE_SIZE || '10mb' 
+  limit: process.env.MAX_FILE_SIZE || '15mb' 
 }));
 
+// mobile app routes 
 app.use('/api/heroes', heroesRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/forms', formsRoutes);
+
+// web 
+app.use('/api/admin', adminAuthRoutes);
+app.use('/api/admin_forms', adminForms);
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
@@ -80,7 +109,7 @@ app.use('*', (req, res) => {
   });
 });
 
-const gracefulShutdown = async () => {
+const shutdown = async () => {
   try {
     await closePool();
     console.log('Database pool closed. Shutting down server...');
@@ -90,8 +119,8 @@ const gracefulShutdown = async () => {
   }
 };
 
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 // Start server
 const startServer = async () => {

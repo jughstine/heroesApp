@@ -1,11 +1,12 @@
 const express = require('express');
-const { pool } = require('../config/database');
+const { pool, getPool } = require('../config/database'); // ✅ Import both pool and getPool
 const router = express.Router();
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
   try {
-    const conn = await pool.getConnection();
+    const poolInstance = getPool(); // ✅ Use consistent naming
+    const conn = await poolInstance.getConnection();
     await conn.ping();
     conn.release();
     return true;
@@ -18,7 +19,8 @@ const checkDatabaseHealth = async () => {
 // User Profile endpoint
 router.get('/profile', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); // ✅ Use consistent naming
+  let conn = null;
 
   try {    
     // Database health check
@@ -33,7 +35,7 @@ router.get('/profile', async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
     
     // Updated query to include DOB and TYPE
     const [profiles] = await conn.query(`
@@ -89,7 +91,7 @@ router.get('/profile', async (req, res) => {
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    ("=== PROFILE ERROR ===");
+    console.error("=== PROFILE ERROR ==="); // ✅ Fixed missing console.error
     console.error("Error details:", error);
 
     res.status(500).json({
@@ -113,7 +115,8 @@ router.get('/profile', async (req, res) => {
 // Profile endpoint with user ID parameter
 router.get('/profile/:userId', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); // ✅ Add pool instance
+  let conn = null; // ✅ Fixed declaration
 
   try {
     const userId = req.params.userId;
@@ -139,7 +142,7 @@ router.get('/profile/:userId', async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
     
     // Query to get specific user profile
     const [profiles] = await conn.query(`
@@ -213,7 +216,7 @@ router.get('/profile/:userId', async (req, res) => {
       success: false,
       error: "Failed to retrieve user profile",
       code: 'PROFILE_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
 
   } finally {
@@ -265,7 +268,8 @@ router.get('/health', async (req, res) => {
 // Form submissions endpoint
 router.get('/submissions', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); // ✅ Add pool instance
+  let conn = null; // ✅ Fixed declaration
 
   try {
     
@@ -281,7 +285,7 @@ router.get('/submissions', async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
     
     // This gets submissions for the most recent userr
     const [submissions] = await conn.query(`
@@ -322,7 +326,7 @@ router.get('/submissions', async (req, res) => {
       success: false,
       error: "Failed to retrieve form submissions",
       code: 'SUBMISSIONS_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
 
   } finally {
@@ -338,7 +342,8 @@ router.get('/submissions', async (req, res) => {
 
 router.get('/submissions/:userId', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); // ✅ Add pool instance
+  let conn = null; // ✅ Fixed declaration
 
   try {
     const userId = req.params.userId;
@@ -364,7 +369,7 @@ router.get('/submissions/:userId', async (req, res) => {
       });
     }
 
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
     
     // Query for specific user's submissions
     const [submissions] = await conn.query(`
@@ -403,7 +408,7 @@ router.get('/submissions/:userId', async (req, res) => {
       success: false,
       error: "Failed to retrieve user submissions",
       code: 'USER_SUBMISSIONS_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
 
   } finally {

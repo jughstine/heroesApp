@@ -51,7 +51,7 @@ const createDbConfig = () => {
     
     // Character Set and Timezone
     charset: 'utf8mb4',
-    timezone: 'Z',
+    timezone: '+08:00',
     
     // Number Handling
     supportBigNumbers: true,

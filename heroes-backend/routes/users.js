@@ -9,7 +9,7 @@ const db = require('../config/database');
 // Rate limiting for signup attempts
 const signupLimiter = rateLimit({
   windowMs: 30 * 60 * 1000,
-  max: 50,
+  max: 20,
   message: {
     success: false,
     error: 'Too many signup attempts from this IP, please try again after 15 minutes.',

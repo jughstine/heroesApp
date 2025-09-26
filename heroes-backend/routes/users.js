@@ -126,13 +126,13 @@ const sanitizeInput = (req, res, next) => {
   next();
 };
 
-// Password filtering function
+// Password filtering 
 const filterPassword = (password) => {
   if (typeof password !== 'string') return '';
   return password.replace(/[<>;"'`\\]/g, '').trim();
 };
 
-// Password validation with comprehensive checks
+// Password validation with checks
 const validatePasswordStrength = (password) => {
   const minLength = 8;
   const maxLength = 128;
@@ -159,27 +159,42 @@ const validatePasswordStrength = (password) => {
   };
 };
 
-// Database connection health check 
+// health check 
 const checkDatabaseHealth = async () => {
+  let conn = null;
+  
   try {
     console.log('Checking database health...');
     
-    // Don't initialize if already initialized
-    if (!getPool) {
-      await initializeDatabase();
-    }
-    
-    // Test with a simple query instead of complex health check
-    const pool = getPool();
-    const conn = await pool.getConnection();
-    
+    // Get the pool - don't reinitialize if it already exists
+    let pool;
     try {
-      await conn.execute('SELECT 1 as test');
-      console.log('Database health check passed');
-      return true;
-    } finally {
-      conn.release();
+      pool = getPool();
+      if (!pool) {
+        console.log('Pool not found, initializing database...');
+        await initializeDatabase();
+        pool = getPool();
+      }
+    } catch (error) {
+      console.log('Pool not initialized, initializing database...');
+      await initializeDatabase();
+      pool = getPool();
     }
+    
+    // Test connection with timeout
+    const connectionTimeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), 5000);
+    });
+    
+    const connectionPromise = pool.getConnection();
+    
+    conn = await Promise.race([connectionPromise, connectionTimeout]);
+    
+    // Test with a simple query
+    await conn.execute('SELECT 1 as test');
+    console.log('Database health check passed');
+    return true;
+    
   } catch (error) {
     console.error('Database health check failed:', error.message);
     console.error('Error details:', {
@@ -187,16 +202,26 @@ const checkDatabaseHealth = async () => {
       errno: error.errno,
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
-      database: process.env.DB_NAME
+      database: process.env.DB_NAME,
+      message: error.message
     });
     return false;
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log('Health check connection released');
+      } catch (releaseError) {
+        console.error('Error releasing health check connection:', releaseError);
+      }
+    }
   }
 };
 
 // Signup endpoint
 router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  let conn = null;
 
   try {
     const {
@@ -213,6 +238,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       afpsn
     } = req.body;
 
+    // Input validation 
     let requiredFields = { email, password, type, firstname, lastname, dob, afpsn };
     const missingFields = Object.entries(requiredFields)
       .filter(([key, value]) => !value || (typeof value === 'string' && value.trim() === ''))
@@ -241,7 +267,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     if (filteredPassword !== password) {
       return res.status(400).json({ 
         success: false, 
-        error: "Password contains invalid characters. Please use only letters, numbers, and common special characters.",
+        error: "Password contains invalid characters",
         code: 'INVALID_PASSWORD_CHARS',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -252,7 +278,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       return res.status(400).json({ 
         success: false, 
         error: "Password does not meet security requirements",
-        details: passwordValidation.errors,
         code: 'WEAK_PASSWORD',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -261,25 +286,17 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     if (!['P', 'B'].includes(type)) {
       return res.status(400).json({ 
         success: false, 
-        error: "Invalid pensioner type. Must be 'P' (Principal) or 'B' (Beneficiary)",
+        error: "Invalid pensioner type",
         code: 'INVALID_TYPE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
     if (type === 'P') {
-      if (!bos) {
+      if (!bos || !['AR', 'AF', 'NV', 'PC'].includes(bos)) {
         return res.status(400).json({ 
           success: false, 
-          error: "Branch of service is required for Principal users",
-          code: 'MISSING_BOS',
-          processingTime: `${Date.now() - startTime}ms`
-        });
-      }
-      if (!['AR', 'AF', 'NV', 'PC'].includes(bos)) {
-        return res.status(400).json({ 
-          success: false, 
-          error: "Invalid branch of service. Must be 'AR' (Army), 'AF' (Air Force), 'NV' (Navy), or 'PC' (Philippine Coast Guard)",
+          error: "Invalid or missing branch of service for Principal users",
           code: 'INVALID_BOS',
           processingTime: `${Date.now() - startTime}ms`
         });
@@ -290,7 +307,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       if (!b_type || !['SP', 'CH', 'PR', 'SB'].includes(b_type)) {
         return res.status(400).json({ 
           success: false, 
-          error: "Beneficiary must have valid type: SP (Spouse), CH (Child), PR (Parent), SB (Sibling)",
+          error: "Invalid beneficiary type",
           code: 'INVALID_BENEFICIARY_TYPE',
           processingTime: `${Date.now() - startTime}ms`
         });
@@ -298,7 +315,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       if (!principal_first_name || !principal_last_name) {
         return res.status(400).json({ 
           success: false, 
-          error: "Beneficiary must provide principal's first and last name",
+          error: "Principal information required for beneficiaries",
           code: 'MISSING_PRINCIPAL_INFO',
           processingTime: `${Date.now() - startTime}ms`
         });
@@ -308,70 +325,121 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     if (!validator.isDate(dob) || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
       return res.status(400).json({ 
         success: false, 
-        error: "Date of birth must be in YYYY-MM-DD format and be a valid date",
+        error: "Invalid date format",
         code: 'INVALID_DATE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    const dbHealthy = await checkDatabaseHealth();
-    if (!dbHealthy) {
+    let pool;
+    try {
+      pool = getPool();
+      if (!pool) {
+        await initializeDatabase();
+        pool = getPool();
+      }
+    } catch (initError) {
+      console.error('Database initialization error:', initError);
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    // Get database connection - Initialize first, then get pool
-    await initializeDatabase();
-    const pool = getPool();
-    conn = await pool.getConnection();
-    await conn.beginTransaction();
+    try {
+      const connectionTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timeout')), 15000);
+      });
+      
+      conn = await Promise.race([pool.getConnection(), connectionTimeout]);
+      await conn.beginTransaction();
+      
+    } catch (connError) {
+      console.error('Database connection error:', connError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
 
+    // Normalize data
     const normalizedFirstname = firstname.trim().toUpperCase();
     const normalizedLastname = lastname.trim().toUpperCase();
     const normalizedAfpsn = afpsn.trim().toUpperCase();
     const normalizedEmail = email.toLowerCase().trim();
     const normalizedBos = type === 'P' && bos ? bos.trim().toUpperCase() : null;
 
-    const [rows] = await conn.query(
-      `SELECT id FROM users_tbl WHERE email = ? LIMIT 1`,
-      [normalizedEmail]
-    );
+    // Check for existing email with timeout
+    try {
+      const queryTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query timeout')), 10000);
+      });
+      
+      const [rows] = await Promise.race([
+        conn.query(`SELECT id FROM users_tbl WHERE email = ? LIMIT 1`, [normalizedEmail]),
+        queryTimeout
+      ]);
 
-    const existingEmail = rows[0];
-
-    if (existingEmail) {
+      if (rows[0]) {
+        await conn.rollback();
+        return res.status(409).json({ 
+          success: false, 
+          error: "An account with this email already exists",
+          code: 'EMAIL_EXISTS',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    } catch (queryError) {
       await conn.rollback();
-      return res.status(409).json({ 
-        success: false, 
-        error: "An account with this email address already exists",
-        code: 'EMAIL_EXISTS',
+      console.error('Email check query error:', queryError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    const [heroes] = await conn.query(
-      `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
-       FROM test_table 
-       WHERE UPPER(TRIM(FIRSTNAME)) = ? 
-         AND UPPER(TRIM(LASTNAME)) = ? 
-         AND DATE(DOB) = DATE(?) 
-         AND UPPER(TRIM(AFPSN)) = ? 
-         AND TYPE = ?`,
-      [normalizedFirstname, normalizedLastname, dob, normalizedAfpsn, type]
-    );
-
-    console.log(`Heroes validation query returned ${heroes.length} record(s)`);
+    // Validate against heroes database with timeout
+    let heroes;
+    try {
+      const queryTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query timeout')), 15000);
+      });
+      
+      [heroes] = await Promise.race([
+        conn.query(`
+          SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
+          FROM test_table 
+          WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+            AND UPPER(TRIM(LASTNAME)) = ? 
+            AND DATE(DOB) = DATE(?) 
+            AND UPPER(TRIM(AFPSN)) = ? 
+            AND TYPE = ?`,
+          [normalizedFirstname, normalizedLastname, dob, normalizedAfpsn, type]
+        ),
+        queryTimeout
+      ]);
+    } catch (queryError) {
+      await conn.rollback();
+      console.error('Heroes validation query error:', queryError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
 
     if (heroes.length === 0) {
       await conn.rollback();
       return res.status(401).json({ 
         success: false, 
-        error: "Authorization failed: Your information does not match any records in the AFP Heroes database.",
-        details: "Only validated AFP personnel and their beneficiaries can register. Please verify your information or contact your unit administrator.",
+        error: "Authorization failed: Information does not match our records",
         code: 'NOT_AUTHORIZED',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -381,7 +449,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       await conn.rollback();
       return res.status(409).json({ 
         success: false, 
-        error: "Multiple matching records found in Heroes database. Please contact system administrator for assistance.",
+        error: "Multiple matching records found. Please contact support.",
         code: 'DUPLICATE_RECORDS',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -390,24 +458,43 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     const hero_ndx = heroes[0].NDX;
     const validatedRecord = heroes[0];
     
-    const [existingUser] = await conn.query(
-      `SELECT u.id, u.email FROM users_tbl u 
-       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-       WHERE p.hero_ndx = ?`,
-      [hero_ndx]
-    );
+    // Check for existing user account
+    try {
+      const queryTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query timeout')), 10000);
+      });
+      
+      const [existingUser] = await Promise.race([
+        conn.query(`
+          SELECT u.id, u.email FROM users_tbl u 
+          JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+          WHERE p.hero_ndx = ?`,
+          [hero_ndx]
+        ),
+        queryTimeout
+      ]);
 
-    if (existingUser.length > 0) {
+      if (existingUser.length > 0) {
+        await conn.rollback();
+        return res.status(409).json({ 
+          success: false, 
+          error: "An account already exists for this record",
+          code: 'ACCOUNT_EXISTS',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    } catch (queryError) {
       await conn.rollback();
-      return res.status(409).json({ 
-        success: false, 
-        error: "This AFP Hero record already has an associated user account.",
-        details: "Each validated AFP personnel can only have one account. If you've forgotten your login details, please use the password reset feature.",
-        code: 'ACCOUNT_EXISTS',
+      console.error('Existing user check error:', queryError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
+    // Create account
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
     
@@ -420,64 +507,70 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       principal_lastname: type === 'B' ? principal_last_name?.trim().toUpperCase() : null
     };
     
-    const [pensionerResult] = await conn.query(
-      `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        pensionerData.hero_ndx, 
-        pensionerData.type,
-        pensionerData.bos,
-        pensionerData.b_type,
-        pensionerData.principal_firstname,
-        pensionerData.principal_lastname
-      ]
-    );
-    
-    const pensionerId = pensionerResult.insertId;
-    
-    const [userResult] = await conn.query(
-      `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
-       VALUES (?, ?, ?, 'UNV', NOW())`,
-      [pensionerId, normalizedEmail, hashedPassword]
-    );
-    
-    const userId = userResult.insertId;
+    try {
+      const [pensionerResult] = await conn.query(
+        `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          pensionerData.hero_ndx, 
+          pensionerData.type,
+          pensionerData.bos,
+          pensionerData.b_type,
+          pensionerData.principal_firstname,
+          pensionerData.principal_lastname
+        ]
+      );
+      
+      const pensionerId = pensionerResult.insertId;
+      
+      const [userResult] = await conn.query(
+        `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
+         VALUES (?, ?, ?, 'UNV', NOW())`,
+        [pensionerId, normalizedEmail, hashedPassword]
+      );
+      
+      const userId = userResult.insertId;
+      await conn.commit();
 
-    await conn.commit();
+      const processingTime = Date.now() - startTime;
 
-    const processingTime = Date.now() - startTime;
-
-    const successResponse = {
-      success: true,
-      message: "Account created successfully for validated AFP Hero",
-      user: {
-        id: userId,
-        email: normalizedEmail,
-        pensioner_id: pensionerId,
-        type: type,
-        bos: normalizedBos,
-        status: 'ACTIVE',
-        validated_hero: {
-          name: `${validatedRecord.FIRSTNAME} ${validatedRecord.LASTNAME}`,
-          afpsn: validatedRecord.AFPSN,
-          control_number: validatedRecord.CTRLNR,
-          type: validatedRecord.TYPE
+      res.status(201).json({
+        success: true,
+        message: "Account created successfully",
+        user: {
+          id: userId,
+          email: normalizedEmail,
+          pensioner_id: pensionerId,
+          type: type,
+          bos: normalizedBos,
+          status: 'ACTIVE'
         },
-        ...(type === 'B' && {
-          principal_info: {
-            firstname: principal_first_name.trim().toUpperCase(),
-            lastname: principal_last_name.trim().toUpperCase(),
-            relationship: b_type
-          }
-        })
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        accountCreated: new Date().toISOString()
-      }
-    };
+        meta: {
+          processingTime: `${processingTime}ms`,
+          accountCreated: new Date().toISOString()
+        }
+      });
 
-    res.status(201).json(successResponse);
+    } catch (insertError) {
+      await conn.rollback();
+      console.error('Database insert error:', insertError);
+      
+      if (insertError.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({
+          success: false,
+          error: "Account already exists",
+          code: 'DUPLICATE_ENTRY',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+      
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
 
   } catch (error) {
     if (conn) {
@@ -489,42 +582,20 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     }
 
     const processingTime = Date.now() - startTime;
-    console.error("=== SIGNUP ERROR ===");
-    console.error("Error details:", error);
-    console.error(`Processing time: ${processingTime}ms`);
+    console.error("Signup error:", error.code || error.message);
 
-    let errorResponse = {
+    //  error response 
+    res.status(500).json({
       success: false,
-      error: "Account creation failed due to server error",
-      code: 'SERVER_ERROR',
+      error: "Service temporarily unavailable. Please try again later.",
+      code: 'SERVICE_ERROR',
       processingTime: `${processingTime}ms`
-    };
-
-    if (error.code === 'ER_DUP_ENTRY') {
-      errorResponse.error = "Account with this information already exists";
-      errorResponse.code = 'DUPLICATE_ENTRY';
-      return res.status(409).json(errorResponse);
-    }
-    
-    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-      errorResponse.error = "Database connection failed. Please try again later.";
-      errorResponse.code = 'DB_CONNECTION_ERROR';
-      return res.status(503).json(errorResponse);
-    }
-
-    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-      errorResponse.error = "Database access denied. Please contact system administrator.";
-      errorResponse.code = 'DB_ACCESS_ERROR';
-      return res.status(503).json(errorResponse);
-    }
-
-    res.status(500).json(errorResponse);
+    });
 
   } finally {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -532,14 +603,12 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   }
 });
 
-// Login endpoint 
+// Production-ready login endpoint
 router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    console.log("=== LOGIN PROCESS STARTED ===");
-    
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -560,52 +629,92 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    const dbHealthy = await checkDatabaseHealth();
-    if (!dbHealthy) {
+    // Database connection with timeout
+    let pool;
+    try {
+      pool = getPool();
+      if (!pool) {
+        await initializeDatabase();
+        pool = getPool();
+      }
+    } catch (initError) {
+      console.error('Database initialization error:', initError);
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    // Initialize database and get connection
-    await initializeDatabase();
-    const pool = getPool();
-    conn = await pool.getConnection();
+    try {
+      const connectionTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timeout')), 15000);
+      });
+      
+      conn = await Promise.race([pool.getConnection(), connectionTimeout]);
+      
+    } catch (connError) {
+      console.error('Database connection error:', connError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
     
     const normalizedEmail = email.toLowerCase().trim();
 
-    const [users] = await conn.query(`
-      SELECT 
-        u.id as user_id,
-        u.email,
-        u.password_hash,
-        u.status as user_status,
-        u.created_at,
-        p.id as pensioner_id,
-        p.type,
-        p.bos,
-        p.b_type,
-        p.principal_firstname,
-        p.principal_lastname,
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.AFPSN,
-        h.CTRLNR,
-        h.TYPE as hero_type
-      FROM users_tbl u
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.email = ?
-      LIMIT 1
-    `, [normalizedEmail]);
+    // Execute login query with timeout
+    let users;
+    try {
+      const queryTimeout = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query timeout')), 15000);
+      });
+      
+      [users] = await Promise.race([
+        conn.query(`
+          SELECT 
+            u.id as user_id,
+            u.email,
+            u.password_hash,
+            u.status as user_status,
+            u.created_at,
+            p.id as pensioner_id,
+            p.type,
+            p.bos,
+            p.b_type,
+            p.principal_firstname,
+            p.principal_lastname,
+            h.FIRSTNAME,
+            h.LASTNAME,
+            h.AFPSN,
+            h.CTRLNR,
+            h.TYPE as hero_type
+          FROM users_tbl u
+          JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+          JOIN test_table h ON p.hero_ndx = h.NDX
+          WHERE u.email = ?
+          LIMIT 1
+        `, [normalizedEmail]),
+        queryTimeout
+      ]);
+      
+    } catch (queryError) {
+      console.error('Login query error:', queryError);
+      return res.status(503).json({
+        success: false,
+        error: "Service temporarily unavailable. Please try again later.",
+        code: 'SERVICE_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
 
     if (users.length === 0) {
       return res.status(401).json({
         success: false,
-        error: "Invalid email or password",
+        error: "Invalid credentials",
         code: 'INVALID_CREDENTIALS',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -616,7 +725,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     if (user.user_status === 'SUS') {
       return res.status(403).json({
         success: false,
-        error: "Your account has been suspended. Please contact support for assistance.",
+        error: "Account suspended. Please contact support.",
         code: 'ACCOUNT_SUSPENDED',
         processingTime: `${Date.now() - startTime}ms`
       });
@@ -625,22 +734,25 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     
     if (!passwordMatch) {
-      console.log("Invalid password attempt for user:", user.user_id);
       return res.status(401).json({
         success: false,
-        error: "Invalid email or password",
+        error: "Invalid credentials",
         code: 'INVALID_CREDENTIALS',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    await conn.query(
-      'UPDATE users_tbl SET last_login = NOW() WHERE id = ?',
-      [user.user_id]
-    );
+    // Update last login 
+    try {
+      await conn.query(
+        'UPDATE users_tbl SET last_login = NOW() WHERE id = ?',
+        [user.user_id]
+      );
+    } catch (updateError) {
+      console.warn('Failed to update last_login:', updateError.code);
+    }
 
     const processingTime = Date.now() - startTime;
-    console.log(`=== LOGIN SUCCESSFUL (${processingTime}ms) ===`);
 
     const loginResponse = {
       success: true,
@@ -676,36 +788,19 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error("=== LOGIN ERROR ===");
-    console.error("Error details:", error);
-    console.error(`Processing time: ${processingTime}ms`);
+    console.error("Login error:", error.code || error.message);
 
-    let errorResponse = {
+    res.status(500).json({
       success: false,
-      error: "Login failed due to server error",
-      code: 'SERVER_ERROR',
+      error: "Service temporarily unavailable. Please try again later.",
+      code: 'SERVICE_ERROR',
       processingTime: `${processingTime}ms`
-    };
-
-    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-      errorResponse.error = "Database connection failed. Please try again later.";
-      errorResponse.code = 'DB_CONNECTION_ERROR';
-      return res.status(503).json(errorResponse);
-    }
-
-    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-      errorResponse.error = "Database access denied. Please contact system administrator.";
-      errorResponse.code = 'DB_ACCESS_ERROR';
-      return res.status(503).json(errorResponse);
-    }
-
-    res.status(500).json(errorResponse);
+    });
 
   } finally {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }

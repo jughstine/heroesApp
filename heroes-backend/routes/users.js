@@ -3,8 +3,7 @@ const bcrypt = require("bcryptjs");
 const rateLimit = require("express-rate-limit");
 const validator = require("validator");
 const router = express.Router();
-const { getPool } = require('../config/database');
-const db = require('../config/database');
+const { getPool, initializeDatabase, healthCheck } = require('../config/database');
 
 // Rate limiting for signup attempts
 const signupLimiter = rateLimit({
@@ -13,6 +12,20 @@ const signupLimiter = rateLimit({
   message: {
     success: false,
     error: 'Too many signup attempts from this IP, please try again after 15 minutes.',
+    retryAfter: 900,
+    code: 'RATE_LIMITED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Rate limiting for login attempts
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: {
+    success: false,
+    error: 'Too many login attempts from this IP, please try again after 15 minutes.',
     retryAfter: 900,
     code: 'RATE_LIMITED'
   },
@@ -34,16 +47,13 @@ const sanitizeInput = (req, res, next) => {
   next();
 };
 
-// password filtering function
+// Password filtering function
 const filterPassword = (password) => {
   if (typeof password !== 'string') return '';
-  
-  // Remove potentially dangerous characters that could be used for injection
-  // Allow alphanumeric and common password special characters
   return password.replace(/[<>;"'`\\]/g, '').trim();
 };
 
-// password validation with comprehensive checks
+// Password validation with comprehensive checks
 const validatePasswordStrength = (password) => {
   const minLength = 8;
   const maxLength = 128;
@@ -52,7 +62,7 @@ const validatePasswordStrength = (password) => {
   const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
   const hasMinLength = password.length >= minLength;
   const hasMaxLength = password.length <= maxLength;
-  const noRepeatedChars = !/(.)\1{2,}/.test(password); // No more than 2 repeated chars
+  const noRepeatedChars = !/(.)\1{2,}/.test(password);
   const noCommonPatterns = !/^(123456|password|qwerty|abc123|admin|letmein)/i.test(password);
 
   const errors = [];
@@ -70,22 +80,29 @@ const validatePasswordStrength = (password) => {
   };
 };
 
-// Database connection health check
+// Database connection health check - Updated to use healthCheck from database config
 const checkDatabaseHealth = async () => {
   try {
-    const pool = getPool(); // now defined
-    const conn = await pool.getConnection();
-    await conn.ping();
-    conn.release();
-    return true;
+    // Initialize database if not already done
+    await initializeDatabase();
+    
+    // Use the comprehensive health check
+    const health = await healthCheck();
+    
+    if (health.status === 'healthy') {
+      console.log('Database health check passed');
+      return true;
+    } else {
+      console.error('Database health check failed:', health.error);
+      return false;
+    }
   } catch (error) {
-    console.error('Database health check failed:', error);
+    console.error('Database health check failed:', error.message);
     return false;
   }
 };
 
-
-//signup 
+// Signup endpoint
 router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
   let conn;
@@ -94,9 +111,9 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     const {
       email,
       password,
-      type,        // 'P' or 'B'
-      b_type,      // 'SP','CH','PR','SB' if Beneficiary
-      bos,         // 'AR','AF','NV','PC' - Branch of Service
+      type,
+      b_type,
+      bos,
       principal_first_name,
       principal_last_name,
       firstname,
@@ -159,7 +176,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Validate Branch of Service (only required for Principals)
     if (type === 'P') {
       if (!bos) {
         return res.status(400).json({ 
@@ -217,7 +233,10 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    conn = await db.getPool().getConnection();
+    // Get database connection - Initialize first, then get pool
+    await initializeDatabase();
+    const pool = getPool();
+    conn = await pool.getConnection();
     await conn.beginTransaction();
 
     const normalizedFirstname = firstname.trim().toUpperCase();
@@ -279,6 +298,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
 
     const hero_ndx = heroes[0].NDX;
     const validatedRecord = heroes[0];
+    
     const [existingUser] = await conn.query(
       `SELECT u.id, u.email FROM users_tbl u 
        JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
@@ -297,18 +317,18 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    const saltRounds = 12; // Increased from 10 for better security
+    const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
+    
     const pensionerData = {
       hero_ndx,
       type,
-      bos: normalizedBos, // Will be null for Beneficiaries
+      bos: normalizedBos,
       b_type: b_type || null,
       principal_firstname: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
       principal_lastname: type === 'B' ? principal_last_name?.trim().toUpperCase() : null
     };
     
-    // Updated INSERT query to include BOS
     const [pensionerResult] = await conn.query(
       `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -323,6 +343,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     );
     
     const pensionerId = pensionerResult.insertId;
+    
     const [userResult] = await conn.query(
       `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
        VALUES (?, ?, ?, 'UNV', NOW())`,
@@ -343,7 +364,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
         email: normalizedEmail,
         pensioner_id: pensionerId,
         type: type,
-        bos: normalizedBos, // Will be null for Beneficiaries
+        bos: normalizedBos,
         status: 'ACTIVE',
         validated_hero: {
           name: `${validatedRecord.FIRSTNAME} ${validatedRecord.LASTNAME}`,
@@ -351,7 +372,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
           control_number: validatedRecord.CTRLNR,
           type: validatedRecord.TYPE
         },
-        // Include principal names if beneficiary
         ...(type === 'B' && {
           principal_info: {
             firstname: principal_first_name.trim().toUpperCase(),
@@ -369,7 +389,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     res.status(201).json(successResponse);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -383,7 +402,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     console.error("Error details:", error);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Account creation failed due to server error",
@@ -409,11 +427,9 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       return res.status(503).json(errorResponse);
     }
 
-    // Generic server error
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -425,62 +441,9 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   }
 });
 
-// Health check endpoint for the signup system
-router.get("/health", async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    const dbHealthy = await checkDatabaseHealth();
-    const processingTime = Date.now() - startTime;
-    
-    res.json({
-      success: true,
-      status: 'healthy',
-      services: {
-        database: dbHealthy ? 'healthy' : 'degraded',
-        signup: 'operational'
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
-    });
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    
-    res.status(500).json({
-      success: false,
-      status: 'unhealthy',
-      error: 'Health check failed',
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-});
-
-
-//login
-
-// Rate limiting for login attempts
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, 
-  message: {
-    success: false,
-    error: 'Too many login attempts from this IP, please try again after 15 minutes.',
-    retryAfter: 900,
-    code: 'RATE_LIMITED'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// Login endpoint
+// Login endpoint 
 router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
-  const pool = getPool();
   let conn = null;
 
   try {
@@ -488,7 +451,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     
     const { email, password } = req.body;
 
-    // Basic validation
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -498,7 +460,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Email validation
     if (!validator.isEmail(email)) {
       return res.status(400).json({
         success: false,
@@ -508,7 +469,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -519,11 +479,13 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Get database connection
-    conn = await db.getPool().getConnection()
+    // Initialize database and get connection
+    await initializeDatabase();
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Find user with pensioner and hero information
     const [users] = await conn.query(`
       SELECT 
         u.id as user_id,
@@ -560,7 +522,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
 
     const user = users[0];
 
-    // Check account status
     if (user.user_status === 'SUS') {
       return res.status(403).json({
         success: false,
@@ -570,7 +531,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Verify password
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     
     if (!passwordMatch) {
@@ -583,7 +543,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Update last login timestamp (optional)
     await conn.query(
       'UPDATE users_tbl SET last_login = NOW() WHERE id = ?',
       [user.user_id]
@@ -592,7 +551,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     const processingTime = Date.now() - startTime;
     console.log(`=== LOGIN SUCCESSFUL (${processingTime}ms) ===`);
 
-    // Return success response
     const loginResponse = {
       success: true,
       message: "Login successful",
@@ -609,7 +567,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
           control_number: user.CTRLNR,
           type: user.hero_type
         },
-        // Include principal info if beneficiary
         ...(user.type === 'B' && {
           principal_info: {
             firstname: user.principal_firstname,
@@ -662,6 +619,58 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
         console.error("Connection release error:", releaseError);
       }
     }
+  }
+});
+
+// Health check endpoint using the database's comprehensive health check
+router.get("/health", async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const health = await healthCheck();
+    const processingTime = Date.now() - startTime;
+    
+    if (health.status === 'healthy') {
+      res.json({
+        success: true,
+        status: 'healthy',
+        services: {
+          database: 'healthy',
+          signup: 'operational',
+          login: 'operational'
+        },
+        database: health.database,
+        pool: health.pool,
+        metrics: health.metrics,
+        meta: {
+          processingTime: `${processingTime}ms`,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } else {
+      res.status(503).json({
+        success: false,
+        status: 'degraded',
+        error: health.error,
+        meta: {
+          processingTime: `${processingTime}ms`,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    
+    res.status(500).json({
+      success: false,
+      status: 'unhealthy',
+      error: 'Health check failed',
+      details: error.message,
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString()
+      }
+    });
   }
 });
 

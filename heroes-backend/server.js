@@ -18,7 +18,7 @@ const { router: adminAuthRoutes } = require('./routes/admin');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS configuration - Updated for React Native support
+// CORS configuration
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, curl, Postman)

@@ -33,7 +33,7 @@ const validateConfig = () => {
   }
 };
 
-// Production-ready database configuration
+// database configuration
 const createDbConfig = () => {
   const isProduction = process.env.NODE_ENV === 'production';
   const isDigitalOcean = process.env.DB_HOST && process.env.DB_HOST.includes('digitalocean');
@@ -46,9 +46,12 @@ const createDbConfig = () => {
     database: process.env.DB_NAME,
     
     // Connection Pool Settings
-    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || (isProduction ? 50 : 10),
+    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10,
     queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 0,
     
+    // Connection timeout settings
+    connectionLimit: 50,       
+
     // Character Set and Timezone
     charset: 'utf8mb4',
     timezone: '+08:00',
@@ -62,28 +65,22 @@ const createDbConfig = () => {
     typeCast: true,
     nestTables: false,
     rowsAsArray: false,
-    
-    // SSL Configuration - Special handling for DigitalOcean
-    ssl: isProduction ? (isDigitalOcean ? {
-      // DigitalOcean managed databases require SSL but use self-signed certs
-      rejectUnauthorized: false
-    } : {
-      // For other production databases with proper SSL certs
-      rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
-      ca: process.env.DB_SSL_CA,
-      cert: process.env.DB_SSL_CERT,
-      key: process.env.DB_SSL_KEY,
-      ciphers: process.env.DB_SSL_CIPHERS
-    }) : false
   };
 
-  // Remove undefined values for non-DigitalOcean SSL configs
-  if (config.ssl && !isDigitalOcean) {
-    Object.keys(config.ssl).forEach(key => {
-      if (config.ssl[key] === undefined) {
-        delete config.ssl[key];
-      }
-    });
+  // Only add SSL in production
+  if (isProduction) {
+    if (isDigitalOcean) {
+      config.ssl = {
+        rejectUnauthorized: false
+      };
+    } else if (process.env.DB_SSL_CA) {
+      config.ssl = {
+        rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
+        ca: process.env.DB_SSL_CA,
+        cert: process.env.DB_SSL_CERT,
+        key: process.env.DB_SSL_KEY,
+      };
+    }
   }
 
   return config;
@@ -131,7 +128,6 @@ const initializeDatabase = async () => {
       host: dbConfig.host,
       port: dbConfig.port,
       database: dbConfig.database,
-      connectionLimit: dbConfig.connectionLimit
     });
 
     return pool;

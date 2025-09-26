@@ -80,24 +80,36 @@ const validatePasswordStrength = (password) => {
   };
 };
 
-// Database connection health check - Updated to use healthCheck from database config
+// Database connection health check 
 const checkDatabaseHealth = async () => {
   try {
-    // Initialize database if not already done
-    await initializeDatabase();
+    console.log('Checking database health...');
     
-    // Use the comprehensive health check
-    const health = await healthCheck();
+    // Don't initialize if already initialized
+    if (!getPool) {
+      await initializeDatabase();
+    }
     
-    if (health.status === 'healthy') {
+    // Test with a simple query instead of complex health check
+    const pool = getPool();
+    const conn = await pool.getConnection();
+    
+    try {
+      await conn.execute('SELECT 1 as test');
       console.log('Database health check passed');
       return true;
-    } else {
-      console.error('Database health check failed:', health.error);
-      return false;
+    } finally {
+      conn.release();
     }
   } catch (error) {
     console.error('Database health check failed:', error.message);
+    console.error('Error details:', {
+      code: error.code,
+      errno: error.errno,
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME
+    });
     return false;
   }
 };
@@ -622,36 +634,49 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   }
 });
 
-// Health check endpoint using the database's comprehensive health check
+// Health check and available endpoints
 router.get("/health", async (req, res) => {
   const startTime = Date.now();
-  
+
+  const availableEndpoints = [
+    { method: "POST", path: "/api/users/signup", description: "signup" },
+    { method: "POST", path: "/api/users/login", description: "signin" },
+    { method: "GET", path: "/api/users/health", description: "health status" },
+    { method: "POST", path: "/api/users/logout", description: "logout" }
+  ];
+
   try {
     const health = await healthCheck();
     const processingTime = Date.now() - startTime;
-    
-    if (health.status === 'healthy') {
+
+    if (health.status === "healthy") {
       res.json({
         success: true,
-        status: 'healthy',
+        status: "healthy",
         services: {
-          database: 'healthy',
-          signup: 'operational',
-          login: 'operational'
+          database: "healthy",
+          signup: "operational",
+          login: "operational",
+          logout: "operational"
         },
         database: health.database,
         pool: health.pool,
         metrics: health.metrics,
+
+        availableEndpoints,
+
         meta: {
           processingTime: `${processingTime}ms`,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          environment: process.env.NODE_ENV || "development"
         }
       });
     } else {
       res.status(503).json({
         success: false,
-        status: 'degraded',
+        status: "degraded",
         error: health.error,
+        availableEndpoints, 
         meta: {
           processingTime: `${processingTime}ms`,
           timestamp: new Date().toISOString()
@@ -660,12 +685,13 @@ router.get("/health", async (req, res) => {
     }
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    
+
     res.status(500).json({
       success: false,
-      status: 'unhealthy',
-      error: 'Health check failed',
+      status: "unhealthy",
+      error: "Health check failed",
       details: error.message,
+      availableEndpoints, 
       meta: {
         processingTime: `${processingTime}ms`,
         timestamp: new Date().toISOString()

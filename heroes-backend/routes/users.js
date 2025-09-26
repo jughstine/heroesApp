@@ -5,6 +5,85 @@ const validator = require("validator");
 const router = express.Router();
 const { getPool, initializeDatabase, healthCheck } = require('../config/database');
 
+router.get("/", async (req, res) => {
+  res.json({
+    success: true,
+    message: "Users API endpoint",
+    availableEndpoints: [
+      "POST /api/users/signup",
+      "POST /api/users/login", 
+      "GET /api/users/health",
+      "POST /api/users/logout"
+    ]
+  });
+});
+
+// Health check and available endpoints
+router.get("/health", async (req, res) => {
+  const startTime = Date.now();
+
+  const availableEndpoints = [
+    { method: "POST", path: "/api/users/signup", description: "signup" },
+    { method: "POST", path: "/api/users/login", description: "signin" },
+    { method: "GET", path: "/api/users/health", description: "health status" },
+    { method: "POST", path: "/api/users/logout", description: "logout" }
+  ];
+
+  try {
+    const health = await healthCheck();
+    const processingTime = Date.now() - startTime;
+
+    if (health.status === "healthy") {
+      res.json({
+        success: true,
+        status: "healthy",
+        services: {
+          database: "healthy",
+          signup: "operational",
+          login: "operational",
+          logout: "operational"
+        },
+        database: health.database,
+        pool: health.pool,
+        metrics: health.metrics,
+
+        availableEndpoints,
+
+        meta: {
+          processingTime: `${processingTime}ms`,
+          timestamp: new Date().toISOString(),
+          environment: process.env.NODE_ENV || "development"
+        }
+      });
+    } else {
+      res.status(503).json({
+        success: false,
+        status: "degraded",
+        error: health.error,
+        availableEndpoints, 
+        meta: {
+          processingTime: `${processingTime}ms`,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    res.status(500).json({
+      success: false,
+      status: "unhealthy",
+      error: "Health check failed",
+      details: error.message,
+      availableEndpoints, 
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+});
+
 // Rate limiting for signup attempts
 const signupLimiter = rateLimit({
   windowMs: 30 * 60 * 1000,
@@ -631,72 +710,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
         console.error("Connection release error:", releaseError);
       }
     }
-  }
-});
-
-// Health check and available endpoints
-router.get("/health", async (req, res) => {
-  const startTime = Date.now();
-
-  const availableEndpoints = [
-    { method: "POST", path: "/api/users/signup", description: "signup" },
-    { method: "POST", path: "/api/users/login", description: "signin" },
-    { method: "GET", path: "/api/users/health", description: "health status" },
-    { method: "POST", path: "/api/users/logout", description: "logout" }
-  ];
-
-  try {
-    const health = await healthCheck();
-    const processingTime = Date.now() - startTime;
-
-    if (health.status === "healthy") {
-      res.json({
-        success: true,
-        status: "healthy",
-        services: {
-          database: "healthy",
-          signup: "operational",
-          login: "operational",
-          logout: "operational"
-        },
-        database: health.database,
-        pool: health.pool,
-        metrics: health.metrics,
-
-        availableEndpoints,
-
-        meta: {
-          processingTime: `${processingTime}ms`,
-          timestamp: new Date().toISOString(),
-          environment: process.env.NODE_ENV || "development"
-        }
-      });
-    } else {
-      res.status(503).json({
-        success: false,
-        status: "degraded",
-        error: health.error,
-        availableEndpoints, 
-        meta: {
-          processingTime: `${processingTime}ms`,
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-
-    res.status(500).json({
-      success: false,
-      status: "unhealthy",
-      error: "Health check failed",
-      details: error.message,
-      availableEndpoints, 
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
-    });
   }
 });
 

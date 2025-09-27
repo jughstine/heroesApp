@@ -177,7 +177,6 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     const normalizedEmail = email.toLowerCase().trim();
     logger.info(`Login attempt for: ${normalizedEmail}`);
 
-    // Use executeQuery for better connection handling
     const users = await executeQuery(`
       SELECT 
         u.id as user_id,

@@ -26,18 +26,16 @@ const validateConfig = () => {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  // Validate SSL configuration in production (skip for DigitalOcean)
-  const isDigitalOcean = process.env.DB_HOST && process.env.DB_HOST.includes('digitalocean');
-  if (process.env.NODE_ENV === 'production' && !process.env.DB_SSL_CA && !isDigitalOcean) {
-    logger.warn('DB_SSL_CA not provided in production. Database connections may not be secure.');
-  }
+  logger.info('Database configuration validated', {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || '3306',
+    user: process.env.DB_USER,
+    database: process.env.DB_NAME
+  });
 };
 
-// Database configuration with only valid MySQL2 options
+//  database config
 const createDbConfig = () => {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const isDigitalOcean = process.env.DB_HOST && process.env.DB_HOST.includes('digitalocean');
-  
   const config = {
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT) || 3306,
@@ -45,15 +43,16 @@ const createDbConfig = () => {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     
-    // Connection Pool Settings (valid for MySQL2)
-    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || (isProduction ? 20 : 10),
-    queueLimit: 100,
-    
-    // Valid timeout settings
-    waitForConnections: true,
-    idleTimeout: 300000,
-    maxIdle: 10,    
+    // Connection Pool Settings - Conservative for stability
+    connectionLimit: 10,
+    queueLimit: 0,
 
+    // Timeout settings
+    waitForConnections: true,
+    idleTimeout: 300000,        // 5 minutes
+    maxIdle: 5,
+    connectTimeout: 10000,      // 10 seconds
+    
     // Character Set and Timezone
     charset: 'utf8mb4',
     timezone: '+08:00',
@@ -67,27 +66,20 @@ const createDbConfig = () => {
     typeCast: true,
     nestTables: false,
     rowsAsArray: false,
-    
-    // Additional valid settings
     multipleStatements: false,
     namedPlaceholders: false,
+    
+    // disable SSL
+    ssl: false
   };
 
-  // Only add SSL in production
-  if (isProduction) {
-    if (isDigitalOcean) {
-      config.ssl = {
-        rejectUnauthorized: false
-      };
-    } else if (process.env.DB_SSL_CA) {
-      config.ssl = {
-        rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false',
-        ca: process.env.DB_SSL_CA,
-        cert: process.env.DB_SSL_CERT,
-        key: process.env.DB_SSL_KEY,
-      };
-    }
-  }
+  logger.info('Database config created', {
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    connectionLimit: config.connectionLimit,
+    ssl: config.ssl
+  });
 
   return config;
 };
@@ -99,48 +91,72 @@ let poolStats = {
   totalQueries: 0,
   successfulQueries: 0,
   failedQueries: 0,
-  connectionErrors: 0
+  connectionErrors: 0,
+  retries: 0
 };
 
-// Initialize database pool
-const initializeDatabase = async () => {
-  try {
-    validateConfig();
-    
-    if (pool) {
-      logger.info('Database pool already initialized');
-      return pool;
-    }
-
-    const dbConfig = createDbConfig();
-    pool = mysql.createPool(dbConfig);
-    
-    // Set up pool event listeners
-    pool.on('connection', (connection) => {
-      logger.debug(`New database connection established: ${connection.threadId}`);
-    });
-
-    pool.on('error', (err) => {
-      poolStats.connectionErrors++;
-      logger.error('Database pool error:', err);
+// Initialize database with retry logic
+const initializeDatabase = async (retries = 3) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      validateConfig();
       
-      if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-        logger.info('Attempting to reconnect to database...');
+      if (pool) {
+        logger.info('Database pool already initialized');
+        return pool;
       }
-    });
 
-    poolStats.created = new Date();
-    logger.info('Database pool initialized successfully', {
-      host: dbConfig.host,
-      port: dbConfig.port,
-      database: dbConfig.database,
-      connectionLimit: dbConfig.connectionLimit
-    });
+      const dbConfig = createDbConfig();
+      logger.info(`Database initialization attempt ${attempt}/${retries}`);
 
-    return pool;
-  } catch (error) {
-    logger.error('Failed to initialize database pool:', error);
-    throw error;
+      pool = mysql.createPool(dbConfig);
+      
+      // Test connection immediately
+      await testConnectionInternal();
+      
+      // Set up event listeners
+      pool.on('connection', (connection) => {
+        logger.info(`New database connection: ${connection.threadId}`);
+      });
+
+      pool.on('error', (err) => {
+        poolStats.connectionErrors++;
+        logger.error('Database pool error:', {
+          code: err.code,
+          message: err.message,
+          errno: err.errno
+        });
+      });
+
+      poolStats.created = new Date();
+      logger.info('Database pool initialized successfully', { attempt });
+      return pool;
+    } catch (error) {
+      logger.error(`Database init attempt ${attempt}/${retries} failed:`, {
+        code: error.code,
+        message: error.message
+      });
+      
+      if (attempt === retries) {
+        throw error;
+      }
+      
+      // Wait before retry
+      const waitTime = attempt * 2000;
+      logger.info(`Retrying in ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+};
+
+// Internal test function
+const testConnectionInternal = async () => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.execute('SELECT 1 as test');
+    return true;
+  } finally {
+    connection.release();
   }
 };
 
@@ -155,11 +171,11 @@ const testConnection = async () => {
     const connection = await pool.getConnection();
     
     try {
-      await connection.execute('SELECT 1 as test, NOW() as timestamp');
+      const [rows] = await connection.execute('SELECT 1 as test, NOW() as timestamp');
       poolStats.successfulQueries++;
       
       const duration = Date.now() - startTime;
-      logger.debug(`Database connection test successful (${duration}ms)`);
+      logger.debug(`Connection test successful (${duration}ms)`);
       
       return {
         success: true,
@@ -171,11 +187,71 @@ const testConnection = async () => {
     }
   } catch (error) {
     poolStats.failedQueries++;
-    logger.error('Database connection test failed:', error);
+    logger.error('Connection test failed:', error);
     throw new Error(`Database connection test failed: ${error.message}`);
   }
 };
 
+// Enhanced executeQuery with retries
+const executeQuery = async (query, params = [], retries = 1) => {
+  const startTime = Date.now();
+  poolStats.totalQueries++;
+  
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      if (!pool) {
+        await initializeDatabase();
+      }
+
+      const [results] = await pool.execute(query, params);
+      poolStats.successfulQueries++;
+      
+      const duration = Date.now() - startTime;
+      if (duration > 2000) {
+        logger.warn('Slow query detected', { duration, query: query.substring(0, 50) });
+      }
+
+      return results;
+    } catch (error) {
+      const isConnectionError = [
+        'PROTOCOL_CONNECTION_LOST',
+        'ECONNRESET', 
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'ECONNREFUSED'
+      ].includes(error.code);
+      
+      if (isConnectionError && attempt <= retries) {
+        poolStats.retries++;
+        logger.warn(`Retrying query due to connection error: ${error.code}`);
+        
+        // Reset pool
+        if (pool) {
+          try {
+            await pool.end();
+          } catch (e) {
+            // Ignore close errors
+          }
+          pool = null;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      
+      poolStats.failedQueries++;
+      logger.error('Query failed permanently:', {
+        code: error.code,
+        message: error.message,
+        query: query.substring(0, 50)
+      });
+      
+      throw error;
+    }
+  }
+};
+
+// Get connection
 const getConnection = async () => {
   if (!pool) {
     await initializeDatabase();
@@ -183,8 +259,72 @@ const getConnection = async () => {
   return await pool.getConnection();
 };
 
+// Pool statistics
+const getPoolStats = () => {
+  if (!pool) {
+    return { error: 'Database pool not initialized', stats: poolStats };
+  }
 
-// Get detailed connection information
+  const poolInfo = pool.pool || pool;
+  
+  return {
+    ...poolStats,
+    uptime: poolStats.created ? Date.now() - poolStats.created.getTime() : 0,
+    connections: {
+      total: poolInfo._allConnections?.length || 0,
+      free: poolInfo._freeConnections?.length || 0,
+      used: (poolInfo._allConnections?.length || 0) - (poolInfo._freeConnections?.length || 0),
+      limit: 10
+    },
+    config: {
+      host: process.env.DB_HOST,
+      port: parseInt(process.env.DB_PORT) || 3306,
+      database: process.env.DB_NAME,
+      environment: process.env.NODE_ENV || 'development'
+    }
+  };
+};
+
+// Health check
+const healthCheck = async () => {
+  try {
+    const connectionTest = await testConnection();
+    const stats = getPoolStats();
+    
+    return {
+      status: 'healthy',
+      database: {
+        connected: connectionTest.success,
+        responseTime: connectionTest.duration,
+        threadId: connectionTest.threadId
+      },
+      pool: {
+        totalConnections: stats.connections.total,
+        freeConnections: stats.connections.free,
+        usedConnections: stats.connections.used,
+        utilization: Math.round((stats.connections.used / 10) * 100)
+      },
+      metrics: {
+        totalQueries: stats.totalQueries,
+        successfulQueries: stats.successfulQueries,
+        failedQueries: stats.failedQueries,
+        retries: stats.retries,
+        connectionErrors: stats.connectionErrors,
+        errorRate: stats.totalQueries > 0 ? Math.round((stats.failedQueries / stats.totalQueries) * 100) : 0,
+        uptime: stats.uptime
+      }
+    };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      error: error.message,
+      code: error.code,
+      timestamp: new Date().toISOString()
+    };
+  }
+};
+
+// Get connection info
 const getConnectionInfo = async () => {
   try {
     if (!pool) {
@@ -215,7 +355,7 @@ const getConnectionInfo = async () => {
         timezone: rows[0].timezone,
         host: process.env.DB_HOST,
         port: parseInt(process.env.DB_PORT) || 3306,
-        ssl: process.env.NODE_ENV === 'production'
+        ssl: false
       };
     } finally {
       connection.release();
@@ -227,74 +367,8 @@ const getConnectionInfo = async () => {
   }
 };
 
-// Get pool statistics
-const getPoolStats = () => {
-  if (!pool) {
-    return { error: 'Database pool not initialized' };
-  }
-
-  const poolInfo = pool.pool || pool;
-  
-  return {
-    ...poolStats,
-    uptime: poolStats.created ? Date.now() - poolStats.created.getTime() : 0,
-    connections: {
-      total: poolInfo._allConnections?.length || 0,
-      free: poolInfo._freeConnections?.length || 0,
-      used: (poolInfo._allConnections?.length || 0) - (poolInfo._freeConnections?.length || 0),
-      acquiring: poolInfo._acquiringConnections?.length || 0,
-      limit: parseInt(process.env.DB_CONNECTION_LIMIT) || 50
-    },
-    config: {
-      host: process.env.DB_HOST,
-      port: parseInt(process.env.DB_PORT) || 3306,
-      database: process.env.DB_NAME,
-      environment: process.env.NODE_ENV || 'development'
-    }
-  };
-};
-
-// Execute query with error tracking and logging
-const executeQuery = async (query, params = []) => {
-  const startTime = Date.now();
-  
-  try {
-    if (!pool) {
-      await initializeDatabase();
-    }
-
-    const [results] = await pool.execute(query, params);
-    
-    poolStats.totalQueries++;
-    poolStats.successfulQueries++;
-    
-    const duration = Date.now() - startTime;
-    
-    if (duration > 1000) { // Log slow queries
-      logger.warn('Slow query detected', {
-        query: query.substring(0, 100) + (query.length > 100 ? '...' : ''),
-        duration,
-        params: params.length
-      });
-    }
-
-    return results;
-  } catch (error) {
-    poolStats.totalQueries++;
-    poolStats.failedQueries++;
-    
-    logger.error('Query execution failed', {
-      query: query.substring(0, 100) + (query.length > 100 ? '...' : ''),
-      error: error.message,
-      duration: Date.now() - startTime
-    });
-    
-    throw error;
-  }
-};
-
-// Close database pool with graceful shutdown
-const closePool = async (timeout = 10000) => {
+// Close pool
+const closePool = async (timeout = 5000) => {
   if (!pool) {
     logger.info('No database pool to close');
     return;
@@ -302,34 +376,25 @@ const closePool = async (timeout = 10000) => {
 
   try {
     logger.info('Closing database pool...');
-    
-    // Set a timeout for graceful shutdown
-    const closePromise = pool.end();
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Pool close timeout')), timeout);
-    });
-
-    await Promise.race([closePromise, timeoutPromise]);
+    await Promise.race([
+      pool.end(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Close timeout')), timeout))
+    ]);
     
     pool = null;
     logger.info('Database pool closed successfully');
   } catch (error) {
-    logger.error('Error closing database pool:', error);
-    
-    // Force close if graceful shutdown fails
+    logger.error('Error closing pool:', error);
     try {
       await pool.destroy();
       pool = null;
-      logger.warn('Database pool force closed');
     } catch (destroyError) {
-      logger.error('Failed to force close pool:', destroyError);
+      logger.error('Failed to destroy pool:', destroyError);
     }
-    
-    throw error;
   }
 };
 
-// Get pool instance (with safety check)
+// Get pool instance
 const getPool = () => {
   if (!pool) {
     throw new Error('Database pool not initialized. Call initializeDatabase() first.');
@@ -337,60 +402,16 @@ const getPool = () => {
   return pool;
 };
 
-// Health check function for monitoring
-const healthCheck = async () => {
-  try {
-    const connectionTest = await testConnection();
-    const stats = getPoolStats();
-    
-    return {
-      status: 'healthy',
-      database: {
-        connected: connectionTest.success,
-        responseTime: connectionTest.duration,
-        threadId: connectionTest.threadId
-      },
-      pool: {
-        totalConnections: stats.connections.total,
-        freeConnections: stats.connections.free,
-        usedConnections: stats.connections.used,
-        connectionLimit: stats.connections.limit,
-        utilization: Math.round((stats.connections.used / stats.connections.limit) * 100)
-      },
-      metrics: {
-        totalQueries: stats.totalQueries,
-        successfulQueries: stats.successfulQueries,
-        failedQueries: stats.failedQueries,
-        errorRate: stats.totalQueries > 0 ? Math.round((stats.failedQueries / stats.totalQueries) * 100) : 0,
-        uptime: stats.uptime
-      }
-    };
-  } catch (error) {
-    return {
-      status: 'unhealthy',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    };
-  }
-};
-
 module.exports = {
-  // Core functions
   initializeDatabase,
   testConnection,
   getConnectionInfo,
   closePool,
   getPool,
   executeQuery,
-  
-  // Monitoring and stats
+  getConnection,
   getPoolStats,
   healthCheck,
-  getConnection,
-  
-  // Legacy support
   pool: () => getPool(),
-  
-  // Logger export for consistent logging
   logger
 };

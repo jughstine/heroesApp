@@ -603,7 +603,7 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
   }
 });
 
-// Production-ready login endpoint
+// login endpoint
 router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
   const startTime = Date.now();
   let conn = null;
@@ -629,89 +629,122 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Database connection with timeout
+    // Get database pool - it should already be initialized based on your logs
     let pool;
     try {
       pool = getPool();
-      if (!pool) {
+    } catch (poolError) {
+      console.error('Pool not available:', poolError.message);
+      try {
         await initializeDatabase();
         pool = getPool();
+      } catch (initError) {
+        console.error('Database initialization failed:', initError);
+        return res.status(503).json({
+          success: false,
+          error: "Database service temporarily unavailable. Please try again later.",
+          code: 'DB_INITIALIZATION_FAILED',
+          processingTime: `${Date.now() - startTime}ms`
+        });
       }
-    } catch (initError) {
-      console.error('Database initialization error:', initError);
-      return res.status(503).json({
-        success: false,
-        error: "Service temporarily unavailable. Please try again later.",
-        code: 'SERVICE_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
-      });
     }
 
+    // Get connection with timeout using Promise.race
     try {
-      const connectionTimeout = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Connection timeout')), 15000);
+      console.log('Getting database connection...');
+      
+      const connectionPromise = pool.getConnection();
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Connection acquisition timeout')), 30000);
       });
       
-      conn = await Promise.race([pool.getConnection(), connectionTimeout]);
+      conn = await Promise.race([connectionPromise, timeoutPromise]);
+      console.log('Connection acquired successfully');
       
     } catch (connError) {
-      console.error('Database connection error:', connError);
+      console.error('Failed to get database connection:', connError.message);
       return res.status(503).json({
         success: false,
-        error: "Service temporarily unavailable. Please try again later.",
-        code: 'SERVICE_UNAVAILABLE',
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_CONNECTION_TIMEOUT',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
     
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Execute login query with timeout
+    // Execute login query with manual timeout handling
     let users;
     try {
-      const queryTimeout = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Query timeout')), 15000);
+      console.log('Executing login query for:', normalizedEmail);
+      
+      const queryPromise = conn.query(`
+        SELECT 
+          u.id as user_id,
+          u.email,
+          u.password_hash,
+          u.status as user_status,
+          u.created_at,
+          p.id as pensioner_id,
+          p.type,
+          p.bos,
+          p.b_type,
+          p.principal_firstname,
+          p.principal_lastname,
+          h.FIRSTNAME,
+          h.LASTNAME,
+          h.AFPSN,
+          h.CTRLNR,
+          h.TYPE as hero_type
+        FROM users_tbl u
+        JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+        JOIN test_table h ON p.hero_ndx = h.NDX
+        WHERE u.email = ?
+        LIMIT 1
+      `, [normalizedEmail]);
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query execution timeout')), 20000); // 20 second timeout
       });
       
-      [users] = await Promise.race([
-        conn.query(`
-          SELECT 
-            u.id as user_id,
-            u.email,
-            u.password_hash,
-            u.status as user_status,
-            u.created_at,
-            p.id as pensioner_id,
-            p.type,
-            p.bos,
-            p.b_type,
-            p.principal_firstname,
-            p.principal_lastname,
-            h.FIRSTNAME,
-            h.LASTNAME,
-            h.AFPSN,
-            h.CTRLNR,
-            h.TYPE as hero_type
-          FROM users_tbl u
-          JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-          JOIN test_table h ON p.hero_ndx = h.NDX
-          WHERE u.email = ?
-          LIMIT 1
-        `, [normalizedEmail]),
-        queryTimeout
-      ]);
+      [users] = await Promise.race([queryPromise, timeoutPromise]);
+      console.log('Login query completed, found:', users.length, 'users');
       
     } catch (queryError) {
-      console.error('Login query error:', queryError);
+      console.error('Login query failed:', queryError.message);
+      
+      // Check if it's a timeout or connection error
+      if (queryError.message.includes('timeout')) {
+        return res.status(503).json({
+          success: false,
+          error: "Database service temporarily unavailable. Please try again later.",
+          code: 'DB_QUERY_TIMEOUT',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+      
+      // Check for connection lost errors
+      if (queryError.code === 'PROTOCOL_CONNECTION_LOST' || 
+          queryError.code === 'ECONNRESET') {
+        return res.status(503).json({
+          success: false,
+          error: "Database service temporarily unavailable. Please try again later.",
+          code: 'DB_CONNECTION_LOST',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+      
+      // Generic database error
       return res.status(503).json({
         success: false,
-        error: "Service temporarily unavailable. Please try again later.",
-        code: 'SERVICE_UNAVAILABLE',
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_QUERY_ERROR',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
     if (users.length === 0) {
+      console.log('No user found for email:', normalizedEmail);
       return res.status(401).json({
         success: false,
         error: "Invalid credentials",
@@ -721,6 +754,7 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     }
 
     const user = users[0];
+    console.log('User found:', user.email, 'Status:', user.user_status);
 
     if (user.user_status === 'SUS') {
       return res.status(403).json({
@@ -731,9 +765,12 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
+    // Verify password
+    console.log('Verifying password...');
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     
     if (!passwordMatch) {
+      console.log('Password verification failed for:', normalizedEmail);
       return res.status(401).json({
         success: false,
         error: "Invalid credentials",
@@ -742,17 +779,24 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
+    console.log('Password verified successfully');
+
     // Update last login 
     try {
-      await conn.query(
-        'UPDATE users_tbl SET last_login = NOW() WHERE id = ?',
-        [user.user_id]
-      );
+      const updatePromise = conn.query('UPDATE users_tbl SET last_login = NOW() WHERE id = ?', [user.user_id]);
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Update timeout')), 5000);
+      });
+      
+      await Promise.race([updatePromise, timeoutPromise]);
+      console.log('Last login updated');
     } catch (updateError) {
-      console.warn('Failed to update last_login:', updateError.code);
+      console.warn('Failed to update last_login (non-critical):', updateError.message);
+      // Don't fail the login for this
     }
 
     const processingTime = Date.now() - startTime;
+    console.log(`Login successful for ${normalizedEmail} in ${processingTime}ms`);
 
     const loginResponse = {
       success: true,
@@ -788,12 +832,12 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error("Login error:", error.code || error.message);
+    console.error("Unexpected login error:", error);
 
     res.status(500).json({
       success: false,
-      error: "Service temporarily unavailable. Please try again later.",
-      code: 'SERVICE_ERROR',
+      error: "Database service temporarily unavailable. Please try again later.",
+      code: 'UNEXPECTED_ERROR',
       processingTime: `${processingTime}ms`
     });
 
@@ -801,8 +845,9 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
     if (conn) {
       try {
         conn.release();
+        console.log('Connection released');
       } catch (releaseError) {
-        console.error("Connection release error:", releaseError);
+        console.error("Connection release error:", releaseError.message);
       }
     }
   }

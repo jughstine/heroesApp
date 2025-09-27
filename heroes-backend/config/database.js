@@ -47,7 +47,7 @@ const createDbConfig = () => {
     
     // Connection Pool Settings
     connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || (isProduction ? 50 : 10),
-    queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 0,
+    queueLimit: 50,
     
     //  timeout settings
     waitForConnections: true,

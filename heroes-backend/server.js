@@ -184,4 +184,198 @@ const startServer = async () => {
   }
 };
 
+//
+// test server
+// 
+
+app.get('/api/diagnostic/database', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const diagnostic = {
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      
+      // Environment variables check
+      environmentVariables: {
+        DB_HOST: process.env.DB_HOST ? 'SET' : 'MISSING',
+        DB_PORT: process.env.DB_PORT || '3306 (default)',
+        DB_USER: process.env.DB_USER ? 'SET' : 'MISSING',
+        DB_PASSWORD: process.env.DB_PASSWORD ? 'SET' : 'MISSING',
+        DB_NAME: process.env.DB_NAME ? 'SET' : 'MISSING'
+      },
+      
+      // Database configuration
+      databaseConfig: {
+        host: process.env.DB_HOST,
+        port: parseInt(process.env.DB_PORT) || 3306,
+        database: process.env.DB_NAME,
+        ssl: false
+      }
+    };
+
+    //  MySQL connection
+    let connectionTest = {
+      status: 'failed',
+      error: null,
+      duration: 0
+    };
+
+    try {
+      const mysql = require('mysql2/promise');
+      const testConfig = {
+        host: process.env.DB_HOST,
+        port: parseInt(process.env.DB_PORT) || 3306,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        ssl: false,
+        connectTimeout: 5000
+      };
+
+      const testStart = Date.now();
+      const connection = await mysql.createConnection(testConfig);
+      
+      try {
+        const [rows] = await connection.execute('SELECT 1 as test, NOW() as timestamp, CONNECTION_ID() as conn_id, VERSION() as version');
+        connectionTest = {
+          status: 'success',
+          duration: Date.now() - testStart,
+          result: rows[0],
+          connectionId: rows[0].conn_id,
+          serverVersion: rows[0].version
+        };
+      } finally {
+        await connection.end();
+      }
+    } catch (error) {
+      connectionTest = {
+        status: 'failed',
+        duration: Date.now() - startTime,
+        error: {
+          code: error.code,
+          errno: error.errno,
+          sqlState: error.sqlState,
+          message: error.message
+        }
+      };
+    }
+
+    // Pool connection test
+    let poolTest = {
+      status: 'failed',
+      error: null
+    };
+
+    try {
+      const { testConnection } = require('./config/database');
+      const poolResult = await testConnection();
+      poolTest = {
+        status: 'success',
+        ...poolResult
+      };
+    } catch (error) {
+      poolTest = {
+        status: 'failed',
+        error: {
+          code: error.code,
+          message: error.message
+        }
+      };
+    }
+
+    // DNS resolution check
+    let dnsTest = {
+      status: 'unknown',
+      error: null
+    };
+
+    if (process.env.DB_HOST) {
+      try {
+        const dns = require('dns').promises;
+        const dnsStart = Date.now();
+        const addresses = await dns.lookup(process.env.DB_HOST);
+        dnsTest = {
+          status: 'success',
+          duration: Date.now() - dnsStart,
+          resolved: addresses
+        };
+      } catch (error) {
+        dnsTest = {
+          status: 'failed',
+          error: {
+            code: error.code,
+            message: error.message
+          }
+        };
+      }
+    }
+
+    const totalDuration = Date.now() - startTime;
+
+    res.json({
+      success: true,
+      message: 'Database diagnostic completed',
+      totalDuration: `${totalDuration}ms`,
+      diagnostic: {
+        ...diagnostic,
+        tests: {
+          directConnection: connectionTest,
+          poolConnection: poolTest,
+          dnsResolution: dnsTest
+        },
+        summary: {
+          canConnectDirectly: connectionTest.status === 'success',
+          canConnectViaPool: poolTest.status === 'success',
+          canResolveDNS: dnsTest.status === 'success',
+          overallStatus: connectionTest.status === 'success' ? 'healthy' : 'unhealthy'
+        }
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Diagnostic test failed',
+      details: {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      },
+      duration: `${Date.now() - startTime}ms`
+    });
+  }
+});
+
+// Network connectivity test endpoint
+app.get('/api/diagnostic/network', async (req, res) => {
+  try {
+    const os = require('os');
+    const networkInterfaces = os.networkInterfaces();
+    
+    res.json({
+      success: true,
+      serverInfo: {
+        hostname: os.hostname(),
+        platform: os.platform(),
+        arch: os.arch(),
+        uptime: os.uptime(),
+        networkInterfaces: Object.keys(networkInterfaces).reduce((acc, name) => {
+          acc[name] = networkInterfaces[name].filter(iface => iface.family === 'IPv4');
+          return acc;
+        }, {})
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+//
+// 
+
 startServer();

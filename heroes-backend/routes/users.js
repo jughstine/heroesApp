@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const rateLimit = require("express-rate-limit");
 const validator = require("validator");
 const router = express.Router();
-const { getConnection, executeQuery, healthCheck, logger } = require('../config/database');
+const { getConnection, executeQuery, healthCheck, testConnection, logger } = require('../config/database');
 
 router.get("/", async (req, res) => {
   res.json({
@@ -56,6 +56,7 @@ router.get("/health", async (req, res) => {
         success: false,
         status: "degraded",
         error: health.error,
+        code: health.code || 'HEALTH_CHECK_FAILED',
         meta: {
           processingTime: `${processingTime}ms`,
           timestamp: new Date().toISOString()
@@ -64,11 +65,13 @@ router.get("/health", async (req, res) => {
     }
   } catch (error) {
     const processingTime = Date.now() - startTime;
+    logger.error('Health check endpoint error:', error);
     res.status(500).json({
       success: false,
       status: "unhealthy",
       error: "Health check failed",
       details: error.message,
+      code: error.code || 'HEALTH_CHECK_ERROR',
       meta: {
         processingTime: `${processingTime}ms`,
         timestamp: new Date().toISOString()
@@ -83,8 +86,8 @@ const signupLimiter = rateLimit({
   max: 20,
   message: {
     success: false,
-    error: 'Too many signup attempts from this IP, please try again after 15 minutes.',
-    retryAfter: 900,
+    error: 'Too many signup attempts from this IP, please try again after 30 minutes.',
+    retryAfter: 1800,
     code: 'RATE_LIMITED'
   },
   standardHeaders: true,
@@ -149,8 +152,30 @@ const validatePasswordStrength = (password) => {
   };
 };
 
-// Enhanced login endpoint with better error handling
-router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
+// Database connection validation middleware
+const validateDatabaseConnection = async (req, res, next) => {
+  try {
+    await testConnection();
+    next();
+  } catch (error) {
+    logger.error('Database connection validation failed:', {
+      code: error.code,
+      message: error.message,
+      endpoint: req.path
+    });
+    
+    return res.status(503).json({
+      success: false,
+      error: "Database service temporarily unavailable. Please try again later.",
+      code: 'DB_CONNECTION_FAILED',
+      details: error.code || 'CONNECTION_ERROR',
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+// Enhanced login endpoint with connection validation
+router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -285,38 +310,45 @@ router.post("/login", loginLimiter, sanitizeInput, async (req, res) => {
       processingTime
     });
 
-    // Determine specific error response
-    let errorMessage = "Service temporarily unavailable. Please try again later.";
-    let errorCode = 'SERVICE_ERROR';
-    let statusCode = 500;
+    // Enhanced error categorization
+    let errorResponse = {
+      success: false,
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString()
+    };
 
-    if (error.code === 'PROTOCOL_CONNECTION_LOST' || 
-        error.code === 'ECONNRESET' ||
-        error.code === 'ETIMEDOUT') {
-      errorMessage = "Database connection issue. Please try again in a moment.";
-      errorCode = 'DB_CONNECTION_ERROR';
-      statusCode = 503;
-    } else if (error.message.includes('timeout')) {
-      errorMessage = "Request timed out. Please try again.";
-      errorCode = 'TIMEOUT_ERROR';
-      statusCode = 503;
-    } else if (error.message.includes('connection')) {
-      errorMessage = "Database temporarily unavailable. Please try again.";
-      errorCode = 'DB_UNAVAILABLE';
-      statusCode = 503;
+    if (error.code === 'PROTOCOL_CONNECTION_LOST') {
+      errorResponse.error = "Database connection lost. Please try again.";
+      errorResponse.code = 'CONNECTION_LOST';
+      errorResponse.statusCode = 503;
+    } else if (error.code === 'ECONNRESET') {
+      errorResponse.error = "Database connection reset. Please try again.";
+      errorResponse.code = 'CONNECTION_RESET';
+      errorResponse.statusCode = 503;
+    } else if (error.code === 'ETIMEDOUT') {
+      errorResponse.error = "Database request timed out. Please try again.";
+      errorResponse.code = 'TIMEOUT_ERROR';
+      errorResponse.statusCode = 503;
+    } else if (error.code === 'ECONNREFUSED') {
+      errorResponse.error = "Unable to connect to database. Please try again later.";
+      errorResponse.code = 'CONNECTION_REFUSED';
+      errorResponse.statusCode = 503;
+    } else if (error.code === 'ENOTFOUND') {
+      errorResponse.error = "Database server not found. Please contact support.";
+      errorResponse.code = 'SERVER_NOT_FOUND';
+      errorResponse.statusCode = 503;
+    } else {
+      errorResponse.error = "Service temporarily unavailable. Please try again later.";
+      errorResponse.code = 'SERVICE_ERROR';
+      errorResponse.statusCode = 500;
     }
 
-    res.status(statusCode).json({
-      success: false,
-      error: errorMessage,
-      code: errorCode,
-      processingTime: `${processingTime}ms`
-    });
+    res.status(errorResponse.statusCode).json(errorResponse);
   }
 });
 
-// Enhanced signup endpoint
-router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
+// Enhanced signup endpoint with connection validation
+router.post("/signup", signupLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -389,7 +421,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       });
     }
 
-    // Additional validation logic...
     const normalizedFirstname = firstname.trim().toUpperCase();
     const normalizedLastname = lastname.trim().toUpperCase();
     const normalizedAfpsn = afpsn.trim().toUpperCase();
@@ -465,7 +496,6 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
     try {
       await connection.beginTransaction();
 
-      // Create account
       const saltRounds = 12;
       const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
       
@@ -538,28 +568,27 @@ router.post("/signup", signupLimiter, sanitizeInput, async (req, res) => {
       processingTime
     });
 
-    let errorMessage = "Service temporarily unavailable. Please try again later.";
-    let errorCode = 'SERVICE_ERROR';
-    let statusCode = 500;
+    let errorResponse = {
+      success: false,
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString()
+    };
 
     if (error.code === 'ER_DUP_ENTRY') {
-      errorMessage = "Account already exists";
-      errorCode = 'DUPLICATE_ENTRY';
-      statusCode = 409;
-    } else if (error.code === 'PROTOCOL_CONNECTION_LOST' || 
-               error.code === 'ECONNRESET' ||
-               error.code === 'ETIMEDOUT') {
-      errorMessage = "Database connection issue. Please try again in a moment.";
-      errorCode = 'DB_CONNECTION_ERROR';
-      statusCode = 503;
+      errorResponse.error = "Account already exists";
+      errorResponse.code = 'DUPLICATE_ENTRY';
+      errorResponse.statusCode = 409;
+    } else if (['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'].includes(error.code)) {
+      errorResponse.error = "Database connection issue. Please try again in a moment.";
+      errorResponse.code = 'DB_CONNECTION_ERROR';
+      errorResponse.statusCode = 503;
+    } else {
+      errorResponse.error = "Service temporarily unavailable. Please try again later.";
+      errorResponse.code = 'SERVICE_ERROR';
+      errorResponse.statusCode = 500;
     }
 
-    res.status(statusCode).json({
-      success: false,
-      error: errorMessage,
-      code: errorCode,
-      processingTime: `${processingTime}ms`
-    });
+    res.status(errorResponse.statusCode).json(errorResponse);
   }
 });
 
@@ -574,6 +603,7 @@ router.post("/logout", async (req, res) => {
       }
     });
   } catch (error) {
+    logger.error('Logout error:', error);
     res.status(500).json({
       success: false,
       error: "Logout failed",

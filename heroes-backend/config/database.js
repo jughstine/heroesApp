@@ -33,7 +33,7 @@ const validateConfig = () => {
   }
 };
 
-// database configuration
+// Database configuration with only valid MySQL2 options
 const createDbConfig = () => {
   const isProduction = process.env.NODE_ENV === 'production';
   const isDigitalOcean = process.env.DB_HOST && process.env.DB_HOST.includes('digitalocean');
@@ -45,15 +45,15 @@ const createDbConfig = () => {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     
-    // Connection Pool Settings
-    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || (isProduction ? 50 : 10),
-    queueLimit: 50,
+    // Connection Pool Settings (valid for MySQL2)
+    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || (isProduction ? 20 : 10),
+    queueLimit: 100,
     
-    //  timeout settings
+    // Valid timeout settings
     waitForConnections: true,
-    idleTimeout: 300000,      // 5 minutes - close idle connections
-    maxIdle: 10,             // Maximum idle connections in pool
-    
+    idleTimeout: 300000,
+    maxIdle: 10,    
+
     // Character Set and Timezone
     charset: 'utf8mb4',
     timezone: '+08:00',
@@ -71,9 +71,6 @@ const createDbConfig = () => {
     // Additional valid settings
     multipleStatements: false,
     namedPlaceholders: false,
-    
-    // Enable keep-alive for long connections
-    keepAliveInitialDelay: 0,
   };
 
   // Only add SSL in production
@@ -137,6 +134,7 @@ const initializeDatabase = async () => {
       host: dbConfig.host,
       port: dbConfig.port,
       database: dbConfig.database,
+      connectionLimit: dbConfig.connectionLimit
     });
 
     return pool;
@@ -177,6 +175,14 @@ const testConnection = async () => {
     throw new Error(`Database connection test failed: ${error.message}`);
   }
 };
+
+const getConnection = async () => {
+  if (!pool) {
+    await initializeDatabase();
+  }
+  return await pool.getConnection();
+};
+
 
 // Get detailed connection information
 const getConnectionInfo = async () => {
@@ -380,6 +386,7 @@ module.exports = {
   // Monitoring and stats
   getPoolStats,
   healthCheck,
+  getConnection,
   
   // Legacy support
   pool: () => getPool(),

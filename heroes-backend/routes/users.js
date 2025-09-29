@@ -41,7 +41,7 @@ router.get("/health", async (req, res) => {
         pool: health.pool,
         metrics: health.metrics,
         availableEndpoints: [
-          { method: "POST", path: "/api/users/sigup", description: "signup" },
+          { method: "POST", path: "/api/users/signup", description: "signup" },
           { method: "POST", path: "/api/users/login", description: "signin" },
           { method: "GET", path: "/api/users/health", description: "health status" },
           { method: "POST", path: "/api/users/logout", description: "logout" }
@@ -211,6 +211,8 @@ const validateDatabaseConnection = async (req, res, next) => {
   }
 };
 
+// SIGNUP 
+
 const generateValidationToken = (data) => {
   const token = crypto.randomBytes(32).toString('hex');
   return { token, data };
@@ -359,28 +361,25 @@ const debugTokenStatus = async (token) => {
 
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
-// SIGNUP 
 router.post("/signup", (req, res, next) => {
     const { step } = req.body;
-    switch (step) {
-      case 1:
-        return step1Limiter(req, res, next);
-      case 2:
-        return step2Limiter(req, res, next);
-      case 3:
-        return createAccountLimiter(req, res, next);
-      default:
-        return step1Limiter(req, res, next); 
+    const stepNumber = parseInt(step, 10) || 1;
+    switch (stepNumber) {
+      case 1: return step1Limiter(req, res, next);
+      case 2: return step2Limiter(req, res, next);
+      case 3: return createAccountLimiter(req, res, next);
+      default: return step1Limiter(req, res, next); 
     }
   },
   sanitizeInput, 
   validateDatabaseConnection, 
   async (req, res) => {
     const startTime = Date.now();
-    const { step = 1 } = req.body;
+    const { step } = req.body;
+    const stepNumber = parseInt(step, 10) || 1;
 
     try {
-      switch (step) {
+      switch (stepNumber) {  
         case 1:
           return await handleStep1(req, res, startTime);
         case 2:
@@ -397,12 +396,12 @@ router.post("/signup", (req, res, next) => {
       }
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      logger.error(`Signup Step ${step} error:`, error);
+      logger.error(`Signup Step ${stepNumber} error:`, error);
 
       res.status(500).json({
         success: false,
-        error: `Step ${step} failed. Please try again.`,
-        code: `STEP${step}_ERROR`,
+        error: `Step ${stepNumber} failed. Please try again.`,
+        code: `STEP${stepNumber}_ERROR`,
         processingTime: `${processingTime}ms`
       });
     }

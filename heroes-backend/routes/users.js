@@ -363,7 +363,7 @@ const debugTokenStatus = async (token) => {
 
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
-// SPLIT SIGNUP ROUTES
+// SIGNUP 
 
 // STEP 1: Validate pensioner type and AFPSN
 router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
@@ -1032,24 +1032,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
 
     res.status(errorResponse.statusCode).json(errorResponse);
   }
-});
-
-router.post("/signup", signupLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
-  const startTime = Date.now();
-
-  // Redirect to new multi-step process
-  res.status(410).json({
-    success: false,
-    error: "This signup endpoint is deprecated. Please use the new multi-step signup process for better reliability.",
-    code: 'ENDPOINT_DEPRECATED',
-    newProcess: {
-      step1: "POST /api/users/validate-step1 - Validate pensioner type & AFPSN",
-      step2: "POST /api/users/validate-step2 - Validate personal information", 
-      step3: "POST /api/users/create-account - Create user account"
-    },
-    processingTime: `${Date.now() - startTime}ms`,
-    timestamp: new Date().toISOString()
-  });
 });
 
 // Logout endpoint

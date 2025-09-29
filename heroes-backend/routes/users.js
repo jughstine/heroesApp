@@ -360,10 +360,7 @@ const debugTokenStatus = async (token) => {
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
-
-// signup route handle
 router.post("/signup", (req, res, next) => {
-
     const { step } = req.body;
     switch (step) {
       case 1:

@@ -8,13 +8,6 @@ const {
   closePool 
 } = require('./config/database');
 
-const heroesRoutes = require('./routes/heroes');
-const uploadRoutes = require('./routes/upload');
-const usersRoutes = require('./routes/users');
-const formsRoutes = require('./routes/forms');
-const adminForms = require('./routes/admin_forms');
-const { router: adminAuthRoutes } = require('./routes/admin');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -78,6 +71,13 @@ app.use(express.urlencoded({
   extended: true, 
   limit: process.env.MAX_FILE_SIZE || '15mb' 
 }));
+
+const heroesRoutes = require('./routes/heroes');
+const uploadRoutes = require('./routes/upload');
+const usersRoutes = require('./routes/users');
+const formsRoutes = require('./routes/forms');
+const adminForms = require('./routes/admin_forms');
+const { router: adminAuthRoutes } = require('./routes/admin');
 
 // mobile app routes 
 app.use('/api/heroes', heroesRoutes);

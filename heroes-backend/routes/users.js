@@ -365,501 +365,508 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
 
-// STEP 1: Validate pensioner type and AFPSN
-router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
-  const startTime = Date.now();
+// signup route handle
+router.post("/signup", (req, res, next) => {
 
-  try {
-    const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
-
-    // Basic validation
-    if (!type || !afpsn) {
-      return res.status(400).json({
-        success: false,
-        error: "Pensioner type and AFP Serial Number are required",
-        code: 'MISSING_REQUIRED_FIELDS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
+    const { step } = req.body;
+    switch (step) {
+      case 1:
+        return step1Limiter(req, res, next);
+      case 2:
+        return step2Limiter(req, res, next);
+      case 3:
+        return createAccountLimiter(req, res, next);
+      default:
+        return step1Limiter(req, res, next); 
     }
+  },
+  sanitizeInput, 
+  validateDatabaseConnection, 
+  async (req, res) => {
+    const startTime = Date.now();
+    const { step = 1 } = req.body;
 
-    if (!['P', 'B'].includes(type)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid pensioner type",
-        code: 'INVALID_TYPE',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Type-specific validation
-    if (type === 'P' && !bos) {
-      return res.status(400).json({
-        success: false,
-        error: "Branch of service is required for principal pensioners",
-        code: 'MISSING_BOS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    if (type === 'B') {
-      if (!b_type || !principal_first_name || !principal_last_name) {
-        return res.status(400).json({
-          success: false,
-          error: "Beneficiary type and principal information are required",
-          code: 'MISSING_BENEFICIARY_INFO',
-          processingTime: `${Date.now() - startTime}ms`
-        });
+    try {
+      switch (step) {
+        case 1:
+          return await handleStep1(req, res, startTime);
+        case 2:
+          return await handleStep2(req, res, startTime);
+        case 3:
+          return await handleStep3(req, res, startTime);
+        default:
+          return res.status(400).json({
+            success: false,
+            error: "Invalid step. Must be 1, 2, or 3.",
+            code: 'INVALID_STEP',
+            processingTime: `${Date.now() - startTime}ms`
+          });
       }
-    }
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      logger.error(`Signup Step ${step} error:`, error);
 
-    const normalizedAfpsn = afpsn.trim().toUpperCase();
-
-    // Check if AFPSN exists in heroes database (basic check)
-    const afpsnExists = await executeQuery(`
-      SELECT COUNT(*) as count FROM test_table 
-      WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?`,
-      [normalizedAfpsn, type]
-    );
-
-    if (afpsnExists[0].count === 0) {
-      return res.status(401).json({
+      res.status(500).json({
         success: false,
-        error: "AFP Serial Number not found in our records",
-        code: 'AFPSN_NOT_FOUND',
+        error: `Step ${step} failed. Please try again.`,
+        code: `STEP${step}_ERROR`,
+        processingTime: `${processingTime}ms`
+      });
+    }
+  }
+);
+
+// STEP 1
+async function handleStep1(req, res, startTime) {
+  const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
+
+  // Basic validation
+  if (!type || !afpsn) {
+    return res.status(400).json({
+      success: false,
+      error: "Pensioner type and AFP Serial Number are required",
+      code: 'MISSING_REQUIRED_FIELDS',
+      step: 1,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  if (!['P', 'B'].includes(type)) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid pensioner type. Must be 'P' (Principal) or 'B' (Beneficiary)",
+      code: 'INVALID_TYPE',
+      step: 1,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  // Type-specific validation
+  if (type === 'P' && !bos) {
+    return res.status(400).json({
+      success: false,
+      error: "Branch of service is required for principal pensioners",
+      code: 'MISSING_BOS',
+      step: 1,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  if (type === 'B') {
+    if (!b_type || !principal_first_name || !principal_last_name) {
+      return res.status(400).json({
+        success: false,
+        error: "Beneficiary type and principal information are required for beneficiaries",
+        code: 'MISSING_BENEFICIARY_INFO',
+        step: 1,
         processingTime: `${Date.now() - startTime}ms`
       });
     }
+  }
 
-    // Check if account already exists for this AFPSN
-    const existingAccount = await executeQuery(`
-      SELECT u.id FROM users_tbl u 
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-      JOIN test_table h ON p.hero_ndx = h.NDX 
-      WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
-      [normalizedAfpsn, type]
-    );
+  const normalizedAfpsn = afpsn.trim().toUpperCase();
 
-    if (existingAccount.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: "An account already exists for this AFP Serial Number",
-        code: 'ACCOUNT_EXISTS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
+  const afpsnExists = await executeQuery(`
+    SELECT COUNT(*) as count FROM test_table 
+    WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?`,
+    [normalizedAfpsn, type]
+  );
 
-    // Generate step 1 validation token
-    const tokenData = {
+  if (afpsnExists[0].count === 0) {
+    return res.status(404).json({
+      success: false,
+      error: "AFP Serial Number not found in our records",
+      code: 'AFPSN_NOT_FOUND',
+      step: 1,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const existingAccount = await executeQuery(`
+    SELECT u.id FROM users_tbl u 
+    JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+    JOIN test_table h ON p.hero_ndx = h.NDX 
+    WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
+    [normalizedAfpsn, type]
+  );
+
+  if (existingAccount.length > 0) {
+    return res.status(409).json({
+      success: false,
+      error: "An account already exists for this AFP Serial Number",
+      code: 'ACCOUNT_EXISTS',
+      step: 1,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const tokenData = {
+    type,
+    afpsn: normalizedAfpsn,
+    bos: type === 'P' ? bos?.trim().toUpperCase() : null,
+    b_type: b_type || null,
+    principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
+    principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
+    step: 1,
+  };
+  
+  const { token } = generateValidationToken(tokenData);
+  const step1Token = await storeValidationToken(token, tokenData);
+
+  const processingTime = Date.now() - startTime;
+  logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} in ${processingTime}ms`);
+
+  return res.json({
+    success: true,
+    message: "Step 1 validation completed successfully",
+    step: 1,
+    nextStep: 2,
+    step1Token,
+    data: {
       type,
       afpsn: normalizedAfpsn,
-      bos: type === 'P' ? bos?.trim().toUpperCase() : null,
-      b_type: b_type || null,
-      principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
-      principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
-      step: 1,
-    };
-    
-    const { token } = generateValidationToken(tokenData);
-    const step1Token = await storeValidationToken(token, tokenData);
+      recordsFound: afpsnExists[0].count
+    },
+    meta: {
+      processingTime: `${processingTime}ms`,
+      validUntil: new Date(Date.now() + 3600000).toISOString() // 1 hour
+    }
+  });
+}
 
-    const processingTime = Date.now() - startTime;
-    logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} in ${processingTime}ms`);
+// STEP 2
+async function handleStep2(req, res, startTime) {
+  const { step1Token, firstname, lastname, dob } = req.body;
 
-    res.json({
-      success: true,
-      message: "Step 1 validation completed",
-      step1Token,
-      data: {
-        type,
-        afpsn: normalizedAfpsn,
-        recordsFound: afpsnExists[0].count
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        validUntil: new Date(Date.now() + 3600000).toISOString() // 1 hour
-      }
-    });
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    logger.error("Step 1 validation error:", error);
-
-    res.status(500).json({
+  if (!step1Token) {
+    return res.status(400).json({
       success: false,
-      error: "Step 1 validation failed. Please try again.",
-      code: 'STEP1_VALIDATION_ERROR',
-      processingTime: `${processingTime}ms`
-    });
-  }
-});
-
-// STEP 2: Validate personal information against heroes database
-router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
-  const startTime = Date.now();
-
-  try {
-    const { step1Token, firstname, lastname, dob } = req.body;
-
-    if (!step1Token) {
-      return res.status(400).json({
-        success: false,
-        error: "Step 1 validation token is required",
-        code: 'MISSING_STEP1_TOKEN',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Debug token in development only
-    if (process.env.NODE_ENV === 'development') {
-      try {
-        await debugTokenStatus(step1Token);
-      } catch (debugError) {
-        logger.warn('Debug token status failed:', debugError.message);
-      }
-    }
-
-    // Verify step 1 token
-    let step1Data;
-    try {
-      step1Data = await getValidationToken(step1Token);
-      
-      if (!step1Data || step1Data.step !== 1) {
-        throw new Error('Invalid step sequence - expected step 1 data');
-      }
-      
-      logger.info(`Step 1 data retrieved for validation: type=${step1Data.type}, afpsn=${step1Data.afpsn}`);
-      
-    } catch (error) {
-      logger.warn(`Step 2 token validation failed: ${error.message}`);
-      
-      let errorCode = 'INVALID_STEP1_TOKEN';
-      let errorMessage = "Invalid validation token. Please start over from Step 1.";
-      
-      if (error.message.includes('expired')) {
-        errorCode = 'TOKEN_EXPIRED';
-        errorMessage = "Your validation has expired. Please start over from Step 1.";
-      } else if (error.message.includes('token data')) {
-        errorCode = 'TOKEN_DATA_ERROR';
-        errorMessage = "Token data is corrupted. Please start over from Step 1.";
-      }
-      
-      return res.status(400).json({
-        success: false,
-        error: errorMessage,
-        code: errorCode,
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Basic validation
-    if (!firstname || !lastname || !dob) {
-      return res.status(400).json({
-        success: false,
-        error: "First name, last name, and date of birth are required",
-        code: 'MISSING_PERSONAL_INFO',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const normalizedFirstname = firstname.trim().toUpperCase();
-    const normalizedLastname = lastname.trim().toUpperCase();
-
-    // Validate against heroes database
-    const heroes = await executeQuery(`
-      SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
-      FROM test_table 
-      WHERE UPPER(TRIM(FIRSTNAME)) = ? 
-        AND UPPER(TRIM(LASTNAME)) = ? 
-        AND DATE(DOB) = DATE(?) 
-        AND UPPER(TRIM(AFPSN)) = ? 
-        AND TYPE = ?`,
-      [normalizedFirstname, normalizedLastname, dob, step1Data.afpsn, step1Data.type]
-    );
-
-    if (heroes.length === 0) {
-      logger.warn(`No matching hero found for: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${step1Data.afpsn}`);
-      return res.status(401).json({
-        success: false,
-        error: "Personal information does not match our records. Please verify your details.",
-        code: 'PERSONAL_INFO_MISMATCH',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    if (heroes.length > 1) {
-      logger.warn(`Multiple heroes found for: ${normalizedFirstname} ${normalizedLastname}`);
-      return res.status(409).json({
-        success: false,
-        error: "Multiple matching records found. Please contact support.",
-        code: 'DUPLICATE_RECORDS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const heroData = heroes[0];
-    logger.info(`Hero matched: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN})`);
-
-    // Create step 2 token data
-    const step2TokenData = {
-      ...step1Data, // Include all step 1 data
-      firstname: normalizedFirstname,
-      lastname: normalizedLastname,
-      dob,
-      hero_ndx: heroData.NDX,
-      hero_ctrl_nr: heroData.CTRLNR,
+      error: "Step 1 validation token is required",
+      code: 'MISSING_STEP1_TOKEN',
       step: 2,
-      validated_at: new Date().toISOString()
-    };
-    
-    // Generate and store step 2 token
-    const { token } = generateValidationToken(step2TokenData);
-    const step2Token = await storeValidationToken(token, step2TokenData, 2); // 2 hours
-
-    const processingTime = Date.now() - startTime;
-    logger.info(`Step 2 validation successful for: ${normalizedFirstname} ${normalizedLastname} in ${processingTime}ms`);
-
-    res.json({
-      success: true,
-      message: "Step 2 validation completed - Record matched!",
-      step2Token,
-      heroData: {
-        name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
-        afpsn: heroData.AFPSN,
-        controlNumber: heroData.CTRLNR,
-        type: heroData.TYPE,
-        dob: heroData.DOB
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        validUntil: new Date(Date.now() + 7200000).toISOString() // 2 hours
-      }
-    });
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    logger.error("Step 2 validation error:", {
-      message: error.message,
-      stack: error.stack,
-      processingTime
-    });
-
-    res.status(500).json({
-      success: false,
-      error: "Step 2 validation failed. Please try again.",
-      code: 'STEP2_VALIDATION_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
   }
-});
+
+  // Debug token in development only
+  if (process.env.NODE_ENV === 'development') {
+    try {
+      await debugTokenStatus(step1Token);
+    } catch (debugError) {
+      logger.warn('Debug token status failed:', debugError.message);
+    }
+  }
+
+  let step1Data;
+  try {
+    step1Data = await getValidationToken(step1Token);
+    
+    if (!step1Data || step1Data.step !== 1) {
+      throw new Error('Invalid step sequence - expected step 1 data');
+    }
+    
+    logger.info(`Step 1 data retrieved for validation: type=${step1Data.type}, afpsn=${step1Data.afpsn}`);
+    
+  } catch (error) {
+    logger.warn(`Step 2 token validation failed: ${error.message}`);
+    
+    let errorCode = 'INVALID_STEP1_TOKEN';
+    let errorMessage = "Invalid validation token. Please start over from Step 1.";
+    
+    if (error.message.includes('expired')) {
+      errorCode = 'TOKEN_EXPIRED';
+      errorMessage = "Your validation has expired. Please start over from Step 1.";
+    } else if (error.message.includes('token data')) {
+      errorCode = 'TOKEN_DATA_ERROR';
+      errorMessage = "Token data is corrupted. Please start over from Step 1.";
+    }
+    
+    return res.status(400).json({
+      success: false,
+      error: errorMessage,
+      code: errorCode,
+      step: 2,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  // Basic validation
+  if (!firstname || !lastname || !dob) {
+    return res.status(400).json({
+      success: false,
+      error: "First name, last name, and date of birth are required",
+      code: 'MISSING_PERSONAL_INFO',
+      step: 2,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const normalizedFirstname = firstname.trim().toUpperCase();
+  const normalizedLastname = lastname.trim().toUpperCase();
+
+  // Validate against heroes database
+  const heroes = await executeQuery(`
+    SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
+    FROM test_table 
+    WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+      AND UPPER(TRIM(LASTNAME)) = ? 
+      AND DATE(DOB) = DATE(?) 
+      AND UPPER(TRIM(AFPSN)) = ? 
+      AND TYPE = ?`,
+    [normalizedFirstname, normalizedLastname, dob, step1Data.afpsn, step1Data.type]
+  );
+
+  if (heroes.length === 0) {
+    logger.warn(`No matching hero found for: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${step1Data.afpsn}`);
+    return res.status(401).json({
+      success: false,
+      error: "Personal information does not match our records. Please verify your details.",
+      code: 'PERSONAL_INFO_MISMATCH',
+      step: 2,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  if (heroes.length > 1) {
+    logger.warn(`Multiple heroes found for: ${normalizedFirstname} ${normalizedLastname}`);
+    return res.status(409).json({
+      success: false,
+      error: "Multiple matching records found. Please contact support.",
+      code: 'DUPLICATE_RECORDS',
+      step: 2,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const heroData = heroes[0];
+  logger.info(`Hero matched: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN})`);
+
+  // Create step 2 token data
+  const step2TokenData = {
+    ...step1Data, // Include all step 1 data
+    firstname: normalizedFirstname,
+    lastname: normalizedLastname,
+    dob,
+    hero_ndx: heroData.NDX,
+    hero_ctrl_nr: heroData.CTRLNR,
+    step: 2,
+    validated_at: new Date().toISOString()
+  };
+  
+  // Generate and store step 2 token
+  const { token } = generateValidationToken(step2TokenData);
+  const step2Token = await storeValidationToken(token, step2TokenData, 2); // 2 hours
+
+  const processingTime = Date.now() - startTime;
+  logger.info(`Step 2 validation successful for: ${normalizedFirstname} ${normalizedLastname} in ${processingTime}ms`);
+
+  return res.json({
+    success: true,
+    message: "Step 2 validation completed - Record matched!",
+    step: 2,
+    nextStep: 3,
+    step2Token,
+    heroData: {
+      name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
+      afpsn: heroData.AFPSN,
+      controlNumber: heroData.CTRLNR,
+      type: heroData.TYPE,
+      dob: heroData.DOB
+    },
+    meta: {
+      processingTime: `${processingTime}ms`,
+      validUntil: new Date(Date.now() + 7200000).toISOString() // 2 hours
+    }
+  });
+}
 
 // STEP 3: Create account with email and password
-router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
-  const startTime = Date.now();
+async function handleStep3(req, res, startTime) {
+  const { step2Token, email, password } = req.body;
 
+  // Verify step 2 token
+  let validationData;
   try {
-    const { step2Token, email, password } = req.body;
-
-    // Verify step 2 token
-    let validationData;
-    try {
-      validationData = await getValidationToken(step2Token);
-      if (validationData.step !== 2) {
-        throw new Error('Invalid step 2 token');
-      }
-    } catch (error) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid or expired step 2 validation. Please start over.",
-        code: 'INVALID_STEP2_TOKEN',
-        processingTime: `${Date.now() - startTime}ms`
-      });
+    validationData = await getValidationToken(step2Token);
+    if (validationData.step !== 2) {
+      throw new Error('Invalid step 2 token');
     }
-
-    // Email and password validation
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "Email and password are required",
-        code: 'MISSING_CREDENTIALS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    if (!validator.isEmail(email)) {
-      return res.status(400).json({
-        success: false,
-        error: "Please enter a valid email address",
-        code: 'INVALID_EMAIL',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const filteredPassword = filterPassword(password);
-    
-    if (filteredPassword !== password) {
-      return res.status(400).json({
-        success: false,
-        error: "Password contains invalid characters",
-        code: 'INVALID_PASSWORD_CHARS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const passwordValidation = validatePasswordStrength(filteredPassword);
-    if (!passwordValidation.isValid) {
-      return res.status(400).json({
-        success: false,
-        error: "Password does not meet security requirements",
-        details: passwordValidation.errors,
-        code: 'WEAK_PASSWORD',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
-
-    // Check for existing email
-    const existingUsers = await executeQuery(
-      'SELECT id FROM users_tbl WHERE email = ? LIMIT 1', 
-      [normalizedEmail]
-    );
-
-    if (existingUsers.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: "An account with this email already exists",
-        code: 'EMAIL_EXISTS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Double-check hero record hasn't been claimed (race condition protection)
-    const existingHeroAccount = await executeQuery(`
-      SELECT u.id, u.email FROM users_tbl u 
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-      WHERE p.hero_ndx = ?`,
-      [validationData.hero_ndx]
-    );
-
-    if (existingHeroAccount.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: "An account already exists for this record",
-        code: 'HERO_ACCOUNT_EXISTS',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Create account using transaction
-    const connection = await getConnection();
-    
-    try {
-      await connection.beginTransaction();
-
-      const saltRounds = 12;
-      const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
-      
-      // Create pensioner record
-      const pensionerData = {
-        hero_ndx: validationData.hero_ndx,
-        type: validationData.type,
-        bos: validationData.bos,
-        b_type: validationData.b_type,
-        principal_firstname: validationData.principal_first_name,
-        principal_lastname: validationData.principal_last_name
-      };
-      
-      const [pensionerResult] = await connection.execute(
-        `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          pensionerData.hero_ndx, 
-          pensionerData.type,
-          pensionerData.bos,
-          pensionerData.b_type,
-          pensionerData.principal_firstname,
-          pensionerData.principal_lastname
-        ]
-      );
-      
-      const pensionerId = pensionerResult.insertId;
-      
-      // Create user record
-      const [userResult] = await connection.execute(
-        `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
-         VALUES (?, ?, ?, 'UNV', NOW())`,
-        [pensionerId, normalizedEmail, hashedPassword]
-      );
-      
-      const userId = userResult.insertId;
-      await connection.commit();
-
-      const processingTime = Date.now() - startTime;
-      logger.info(`Account creation successful for ${normalizedEmail} (${validationData.firstname} ${validationData.lastname}) in ${processingTime}ms`);
-
-      res.status(201).json({
-        success: true,
-        message: "Account created successfully",
-        user: {
-          id: userId,
-          email: normalizedEmail,
-          pensioner_id: pensionerId,
-          type: validationData.type,
-          bos: pensionerData.bos,
-          status: 'ACTIVE',
-          validated_hero: {
-            name: `${validationData.firstname} ${validationData.lastname}`,
-            afpsn: validationData.afpsn,
-            control_number: validationData.hero_ctrl_nr
-          },
-          ...(validationData.type === 'B' && {
-            principal_info: {
-              firstname: validationData.principal_first_name,
-              lastname: validationData.principal_last_name,
-              relationship: validationData.b_type
-            }
-          })
-        },
-        meta: {
-          processingTime: `${processingTime}ms`,
-          accountCreated: new Date().toISOString()
-        }
-      });
-
-    } catch (insertError) {
-      await connection.rollback();
-      throw insertError;
-    } finally {
-      connection.release();
-    }
-
   } catch (error) {
-    const processingTime = Date.now() - startTime;
-    logger.error("Account creation error:", error);
-
-    let errorResponse = {
+    return res.status(400).json({
       success: false,
-      processingTime: `${processingTime}ms`,
-      timestamp: new Date().toISOString()
-    };
-
-    if (error.code === 'ER_DUP_ENTRY') {
-      errorResponse.error = "Account already exists";
-      errorResponse.code = 'DUPLICATE_ENTRY';
-      errorResponse.statusCode = 409;
-    } else if (['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'].includes(error.code)) {
-      errorResponse.error = "Database connection issue. Please try again in a moment.";
-      errorResponse.code = 'DB_CONNECTION_ERROR';
-      errorResponse.statusCode = 503;
-    } else {
-      errorResponse.error = "Account creation failed. Please try again later.";
-      errorResponse.code = 'ACCOUNT_CREATION_ERROR';
-      errorResponse.statusCode = 500;
-    }
-
-    res.status(errorResponse.statusCode).json(errorResponse);
+      error: "Invalid or expired step 2 validation. Please start over.",
+      code: 'INVALID_STEP2_TOKEN',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
   }
-});
+
+  // Email and password validation
+  if (!email || !password) {
+    return res.status(400).json({
+      success: false,
+      error: "Email and password are required",
+      code: 'MISSING_CREDENTIALS',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  if (!validator.isEmail(email)) {
+    return res.status(400).json({
+      success: false,
+      error: "Please enter a valid email address",
+      code: 'INVALID_EMAIL',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const filteredPassword = filterPassword(password);
+  
+  if (filteredPassword !== password) {
+    return res.status(400).json({
+      success: false,
+      error: "Password contains invalid characters",
+      code: 'INVALID_PASSWORD_CHARS',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const passwordValidation = validatePasswordStrength(filteredPassword);
+  if (!passwordValidation.isValid) {
+    return res.status(400).json({
+      success: false,
+      error: "Password does not meet security requirements",
+      details: passwordValidation.errors,
+      code: 'WEAK_PASSWORD',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Check for existing email
+  const existingUsers = await executeQuery(
+    'SELECT id FROM users_tbl WHERE email = ? LIMIT 1', 
+    [normalizedEmail]
+  );
+
+  if (existingUsers.length > 0) {
+    return res.status(409).json({
+      success: false,
+      error: "An account with this email already exists",
+      code: 'EMAIL_EXISTS',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  // Double-check hero record hasn't been claimed (race condition protection)
+  const existingHeroAccount = await executeQuery(`
+    SELECT u.id, u.email FROM users_tbl u 
+    JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+    WHERE p.hero_ndx = ?`,
+    [validationData.hero_ndx]
+  );
+
+  if (existingHeroAccount.length > 0) {
+    return res.status(409).json({
+      success: false,
+      error: "An account already exists for this record",
+      code: 'HERO_ACCOUNT_EXISTS',
+      step: 3,
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+
+  // Create account using transaction
+  const connection = await getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
+    
+    // Create pensioner record
+    const pensionerData = {
+      hero_ndx: validationData.hero_ndx,
+      type: validationData.type,
+      bos: validationData.bos,
+      b_type: validationData.b_type,
+      principal_firstname: validationData.principal_first_name,
+      principal_lastname: validationData.principal_last_name
+    };
+    
+    const [pensionerResult] = await connection.execute(
+      `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        pensionerData.hero_ndx, 
+        pensionerData.type,
+        pensionerData.bos,
+        pensionerData.b_type,
+        pensionerData.principal_firstname,
+        pensionerData.principal_lastname
+      ]
+    );
+    
+    const pensionerId = pensionerResult.insertId;
+    
+    // Create user record
+    const [userResult] = await connection.execute(
+      `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
+       VALUES (?, ?, ?, 'UNV', NOW())`,
+      [pensionerId, normalizedEmail, hashedPassword]
+    );
+    
+    const userId = userResult.insertId;
+    await connection.commit();
+
+    const processingTime = Date.now() - startTime;
+    logger.info(`Account creation successful for ${normalizedEmail} (${validationData.firstname} ${validationData.lastname}) in ${processingTime}ms`);
+
+    return res.status(201).json({
+      success: true,
+      message: "Account created successfully! Welcome to the system.",
+      step: 3,
+      completed: true,
+      user: {
+        id: userId,
+        email: normalizedEmail,
+        pensioner_id: pensionerId,
+        type: validationData.type,
+        bos: pensionerData.bos,
+        status: 'ACTIVE',
+        validated_hero: {
+          name: `${validationData.firstname} ${validationData.lastname}`,
+          afpsn: validationData.afpsn,
+          control_number: validationData.hero_ctrl_nr
+        },
+        ...(validationData.type === 'B' && {
+          principal_info: {
+            firstname: validationData.principal_first_name,
+            lastname: validationData.principal_last_name,
+            relationship: validationData.b_type
+          }
+        })
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        accountCreated: new Date().toISOString()
+      }
+    });
+
+  } catch (insertError) {
+    await connection.rollback();
+    throw insertError;
+  } finally {
+    connection.release();
+  }
+}
 
 //  login 
 router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {

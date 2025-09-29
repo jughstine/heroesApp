@@ -11,9 +11,7 @@ router.get("/", async (req, res) => {
     success: true,
     message: "Users API endpoint",
     availableEndpoints: [
-      "POST /api/users/validate-step1",
-      "POST /api/users/validate-step2",
-      "POST /api/users/create-account",
+      "POST /api/users/signup",
       "POST /api/users/login", 
       "GET /api/users/health",
       "POST /api/users/logout"
@@ -43,9 +41,7 @@ router.get("/health", async (req, res) => {
         pool: health.pool,
         metrics: health.metrics,
         availableEndpoints: [
-          { method: "POST", path: "/api/users/validate-step1", description: "Step 1: Validate pensioner type & AFPSN" },
-          { method: "POST", path: "/api/users/validate-step2", description: "Step 2: Validate personal information" },
-          { method: "POST", path: "/api/users/create-account", description: "Step 3: Create user account" },
+          { method: "POST", path: "/api/users/sigup", description: "signup" },
           { method: "POST", path: "/api/users/login", description: "signin" },
           { method: "GET", path: "/api/users/health", description: "health status" },
           { method: "POST", path: "/api/users/logout", description: "logout" }

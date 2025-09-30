@@ -11,10 +11,8 @@ const router = express.Router();
 try {
   const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
   ffmpeg.setFfmpegPath(ffmpegPath);
-  console.log('✅ FFmpeg path set to:', ffmpegPath);
 } catch (error) {
   console.error('❌ Failed to set FFmpeg path:', error.message);
-  console.log('Install @ffmpeg-installer/ffmpeg: npm install @ffmpeg-installer/ffmpeg');
 }
 
 // Promisify fs functions
@@ -56,9 +54,7 @@ const upload = multer({
       // Documents (if needed)
       'application/pdf'
     ];
-    
-    console.log('File MIME type:', file.mimetype);
-    
+        
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
@@ -87,16 +83,13 @@ const testFFmpeg = async () => {
       if (err) {
         console.error('❌ FFmpeg test failed:', err.message);
         reject(err);
-      } else {
-        console.log('✅ FFmpeg is available');
-        
+      } else {        
         // Check for x265 codec
         ffmpeg.getAvailableCodecs((err, codecs) => {
           if (err) {
             console.warn('⚠️ Could not check codecs:', err.message);
           } else {
             const hasX265 = codecs && codecs.libx265;
-            console.log(`x265 codec available: ${hasX265 ? '✅ YES' : '❌ NO'}`);
           }
           resolve(true);
         });
@@ -120,13 +113,6 @@ const compressVideo = (inputPath, outputPath, options = {}) => {
       preset = 'medium', // Better balance of speed vs compression
       maintainQuality = true
     } = options;
-
-    console.log(`🎬 Starting H.265 compression:`, {
-      input: inputPath,
-      output: outputPath,
-      quality,
-      preset
-    });
 
     // First check if FFmpeg is available
     ffmpeg.getAvailableFormats((err, formats) => {
@@ -157,16 +143,13 @@ const compressVideo = (inputPath, outputPath, options = {}) => {
         .size(`${maxWidth}x${maxHeight}`)
         .autopad()
         .on('start', (commandLine) => {
-          console.log('🚀 FFmpeg command:', commandLine);
         })
         .on('progress', (progress) => {
           const percent = Math.round(progress.percent || 0);
-          if (percent % 20 === 0 || percent > 90) { // Log every 20% or near end
-            console.log(`📈 Compression progress: ${percent}%`);
+          if (percent % 20 === 0 || percent > 90) {
           }
         })
         .on('end', () => {
-          console.log('✅ Video compression completed');
           resolve();
         })
         .on('error', (err) => {
@@ -197,13 +180,6 @@ router.post('/', upload.single('file'), async (req, res) => {
       });
     }
 
-    console.log('📁 Processing file:', {
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: `${(req.file.size / 1024 / 1024).toFixed(2)}MB`,
-      folder: req.body.folder || 'default'
-    });
-
     const timestamp = Date.now();
     const folder = req.body.folder || 'uploads';
     let fileName = `${folder}/${timestamp}-${req.file.originalname}`;
@@ -212,9 +188,12 @@ router.post('/', upload.single('file'), async (req, res) => {
     let finalMimetype = req.file.mimetype;
     let compressionAttempted = false;
 
-    // Process video files
-    if (isVideo(req.file.mimetype)) {
-      console.log('🎥 Video file detected, attempting compression...');
+    // Check if we should skip compression (already compressed on client)
+    const skipCompression = req.body.skipCompression === 'true' || 
+                           req.body.alreadyCompressed === 'true';
+
+    // Process video files (only if not already compressed)
+    if (isVideo(req.file.mimetype) && !skipCompression) {
       compressionAttempted = true;
       
       try {
@@ -226,11 +205,9 @@ router.post('/', upload.single('file'), async (req, res) => {
         tempInputPath = path.join(tempDir, `input-${timestamp}${originalExt}`);
         tempOutputPath = path.join(tempDir, `output-${timestamp}.mp4`);
 
-        console.log('📂 Temp files:', { input: tempInputPath, output: tempOutputPath });
 
         // Write input file to temp directory
         await writeFile(tempInputPath, req.file.buffer);
-        console.log('✅ Input file written to temp directory');
 
         // Parse compression options from request
         const compressionOptions = {};
@@ -239,8 +216,6 @@ router.post('/', upload.single('file'), async (req, res) => {
         if (req.body.maxHeight) compressionOptions.maxHeight = parseInt(req.body.maxHeight);
         if (req.body.preset) compressionOptions.preset = req.body.preset;
         if (req.body.maintainQuality !== undefined) compressionOptions.maintainQuality = req.body.maintainQuality === 'true';
-
-        console.log('⚙️ Compression options:', compressionOptions);
 
         // Compress video
         await compressVideo(tempInputPath, tempOutputPath, compressionOptions);
@@ -263,25 +238,23 @@ router.post('/', upload.single('file'), async (req, res) => {
         // Update filename to reflect H.265 compression
         fileName = `${folder}/${timestamp}-${baseName}-h265.mp4`;
 
-        const reductionPercent = Math.round((1 - finalSize/req.file.size) * 100);
-        console.log(`🎯 Video compressed successfully:`);
-        console.log(`   Original: ${(req.file.size / 1024 / 1024).toFixed(2)}MB`);
-        console.log(`   Compressed: ${(finalSize / 1024 / 1024).toFixed(2)}MB`);
-        console.log(`   Reduction: ${reductionPercent}%`);
-        
+        const reductionPercent = Math.round((1 - finalSize/req.file.size) * 100);        
       } catch (compressionError) {
         console.error('❌ Video compression failed:', compressionError.message);
         
         // If compression fails, upload original file
-        console.log('⚠️ Uploading original video file instead');
         fileBuffer = req.file.buffer;
         finalSize = req.file.size;
         finalMimetype = req.file.mimetype;
       }
+    } else if (isVideo(req.file.mimetype) && skipCompression) {
+      // Keep the original compressed buffer from client
+      fileBuffer = req.file.buffer;
+      finalSize = req.file.size;
+      finalMimetype = req.file.mimetype;
     }
 
     // Upload to DigitalOcean Spaces
-    console.log('☁️ Uploading to DigitalOcean Spaces...');
     await minioClient.putObject(
       process.env.SPACES_BUCKET,
       fileName,
@@ -311,16 +284,9 @@ router.post('/', upload.single('file'), async (req, res) => {
       folder: folder,
       compressed: isVideo(req.file.mimetype) && finalSize < req.file.size,
       compressionAttempted: compressionAttempted,
+      clientCompressed: skipCompression,
       ...metadata
     };
-
-    console.log('✅ Upload successful:', {
-      url: publicUrl,
-      originalSize: `${(req.file.size / 1024 / 1024).toFixed(2)}MB`,
-      finalSize: `${(finalSize / 1024 / 1024).toFixed(2)}MB`,
-      compressionRatio: `${responseData.compressionRatio}%`,
-      compressed: responseData.compressed
-    });
 
     res.json({
       success: true,
@@ -349,11 +315,9 @@ router.post('/', upload.single('file'), async (req, res) => {
     try {
       if (tempInputPath && fs.existsSync(tempInputPath)) {
         await unlink(tempInputPath);
-        console.log('🧹 Cleaned up input temp file');
       }
       if (tempOutputPath && fs.existsSync(tempOutputPath)) {
         await unlink(tempOutputPath);
-        console.log('🧹 Cleaned up output temp file');
       }
     } catch (cleanupError) {
       console.error('Temp file cleanup error:', cleanupError);

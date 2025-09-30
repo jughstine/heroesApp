@@ -15,6 +15,25 @@ router.use(authenticateAdminToken);
 router.get('/', async (req, res) => {
   try {
     const pool = getPool();
+    
+    // DEBUG: Check the join relationship (simplified)
+    console.log('\n=== DEBUGGING NAME ISSUE ===');
+    const [debugJoin] = await pool.execute(`
+      SELECT 
+        u.id as user_id,
+        u.email,
+        u.pensioner_ndx,
+        t.NDX,
+        t.FIRSTNAME,
+        t.LASTNAME
+      FROM users_tbl u
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      LIMIT 5
+    `);
+    console.log('DEBUG - User to Test Table Join:');
+    console.log(JSON.stringify(debugJoin, null, 2));
+    
+    // Main query with extra debug fields
     const [rows] = await pool.execute(`
       SELECT 
         fs.id,
@@ -27,6 +46,8 @@ router.get('/', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
+        u.pensioner_ndx,
+        t.NDX as test_table_ndx,
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -34,9 +55,19 @@ router.get('/', async (req, res) => {
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
-      ORDER BY fs.submitted_at DESC
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      ORDER BY fs.submitted_at DESC
+      LIMIT 10
     `);
+
+    console.log('\nDEBUG - First 3 forms:');
+    rows.slice(0, 3).forEach((row, i) => {
+      console.log(`\nForm ${i + 1}:`);
+      console.log(`  ID: ${row.id}, User: ${row.user_email}`);
+      console.log(`  pensioner_ndx: ${row.pensioner_ndx}, test_table_ndx: ${row.test_table_ndx}`);
+      console.log(`  FIRSTNAME: ${row.FIRSTNAME}, LASTNAME: ${row.LASTNAME}`);
+    });
+    console.log('=== END DEBUG ===\n');
 
     res.json({ 
       success: true, 
@@ -108,7 +139,8 @@ router.get('/paginated', async (req, res) => {
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       ${whereClause}
     `;
 
@@ -135,7 +167,8 @@ router.get('/paginated', async (req, res) => {
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      
       ${whereClause}
       ORDER BY ${sortColumn} ${sortOrder}
       LIMIT ? OFFSET ?
@@ -419,7 +452,8 @@ router.get('/status/:status', async (req, res) => {
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       WHERE fs.status = ?
       ORDER BY fs.submitted_at DESC
     `, [status]);

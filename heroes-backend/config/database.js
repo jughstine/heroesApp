@@ -26,12 +26,6 @@ const validateConfig = () => {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  logger.info('Database configuration validated', {
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT || '3306',
-    user: process.env.DB_USER,
-    database: process.env.DB_NAME
-  });
 };
 
 //  database config
@@ -72,14 +66,6 @@ const createDbConfig = () => {
     // disable SSL
     ssl: false
   };
-
-  logger.info('Database config created', {
-    host: config.host,
-    port: config.port,
-    database: config.database,
-    connectionLimit: config.connectionLimit,
-    ssl: config.ssl
-  });
 
   return config;
 };

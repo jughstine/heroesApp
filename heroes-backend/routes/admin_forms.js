@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getPool } = require('../config/database');
-const { authenticateAdminToken } = require('./admin'); 
+const { authenticateAdminToken, requireSuperAdmin } = require('./admin'); 
 
 const SORT_COLUMN_MAP = {
   'id': 'fs.id',
@@ -12,28 +12,436 @@ const SORT_COLUMN_MAP = {
 };
 router.use(authenticateAdminToken);
 
+// ==================== HISTORY LOGS ROUTES ====================
+
+// GET history logs statistics
+router.get('/history-logs/stats', async (req, res) => {
+  try {
+    const pool = getPool();
+
+    const [stats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as totalLogs,
+        COUNT(CASE WHEN status = 'p' THEN 1 END) as pendingActions,
+        COUNT(CASE WHEN status = 'a' THEN 1 END) as approvedActions,
+        COUNT(CASE WHEN status = 'd' THEN 1 END) as deniedActions,
+        COUNT(CASE WHEN status = 'n' THEN 1 END) as noteActions,
+        COUNT(CASE WHEN action_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 END) as recentActions,
+        COUNT(CASE WHEN action_date >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as weekActions
+      FROM history_logs
+    `);
+
+    // Get most active admins
+    const [activeAdmins] = await pool.execute(`
+      SELECT 
+        a.id,
+        a.name,
+        a.email,
+        COUNT(hl.id) as action_count
+      FROM history_logs hl
+      JOIN admins_tbl a ON hl.action_by = a.id
+      GROUP BY a.id, a.name, a.email
+      ORDER BY action_count DESC
+      LIMIT 5
+    `);
+
+    // Get recent activity trend (last 7 days)
+    const [trend] = await pool.execute(`
+      SELECT 
+        DATE(action_date) as date,
+        COUNT(*) as count,
+        COUNT(CASE WHEN status = 'a' THEN 1 END) as approved,
+        COUNT(CASE WHEN status = 'd' THEN 1 END) as denied,
+        COUNT(CASE WHEN status = 'n' THEN 1 END) as notes
+      FROM history_logs
+      WHERE action_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(action_date)
+      ORDER BY date DESC
+    `);
+
+    res.json({
+      success: true,
+      stats: {
+        ...stats[0],
+        activeAdmins: activeAdmins,
+        weeklyTrend: trend
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching history log stats:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history log statistics' 
+    });
+  }
+});
+
+// GET history logs for a specific form
+router.get('/history-logs/form/:form_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid form ID' 
+      });
+    }
+
+    const formId = parseInt(form_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      WHERE hl.form_submission_id = ?
+      ORDER BY hl.action_date DESC
+    `, [formId]);
+
+    res.json({
+      success: true,
+      data: {
+        form_id: formId,
+        log_count: logs.length,
+        logs: logs
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching form history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch form history logs' 
+    });
+  }
+});
+
+// GET history logs by a specific admin
+router.get('/history-logs/admin/:admin_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { admin_id } = req.params;
+
+    if (!admin_id || isNaN(parseInt(admin_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid admin ID' 
+      });
+    }
+
+    const adminId = parseInt(admin_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status
+      FROM history_logs hl
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      WHERE hl.action_by = ?
+      ORDER BY hl.action_date DESC
+    `, [adminId]);
+
+    // Get admin info
+    const [adminInfo] = await pool.execute(
+      'SELECT id, name, email, role FROM admins_tbl WHERE id = ?',
+      [adminId]
+    );
+
+    if (adminInfo.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Admin not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        admin: adminInfo[0],
+        log_count: logs.length,
+        logs: logs
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching admin history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch admin history logs' 
+    });
+  }
+});
+
+// GET all history logs with pagination and filtering
+router.get('/history-logs', async (req, res) => {
+  try {
+    const pool = getPool();
+    const {
+      page = 1,
+      limit = 50,
+      status,
+      search,
+      form_id,
+      admin_id,
+      sort_by = 'action_date',
+      sort_order = 'DESC'
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Build WHERE clause
+    let whereConditions = [];
+    let queryParams = [];
+
+    if (status && ['p', 'a', 'd', 'n'].includes(status)) {
+      whereConditions.push('hl.status = ?');
+      queryParams.push(status);
+    }
+
+    if (form_id && !isNaN(parseInt(form_id, 10))) {
+      whereConditions.push('hl.form_submission_id = ?');
+      queryParams.push(parseInt(form_id, 10));
+    }
+
+    if (admin_id && !isNaN(parseInt(admin_id, 10))) {
+      whereConditions.push('hl.action_by = ?');
+      queryParams.push(parseInt(admin_id, 10));
+    }
+
+    if (search && search.trim()) {
+      whereConditions.push(`(
+        hl.remarks LIKE ? OR 
+        a.name LIKE ? OR 
+        a.email LIKE ? OR 
+        CAST(hl.id AS CHAR) LIKE ? OR
+        CAST(hl.form_submission_id AS CHAR) LIKE ?
+      )`);
+      const searchParam = `%${search.trim()}%`;
+      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    // Safe sorting
+    const sortColumns = {
+      'action_date': 'hl.action_date',
+      'id': 'hl.id',
+      'form_id': 'hl.form_submission_id',
+      'status': 'hl.status'
+    };
+    const sortColumn = sortColumns[sort_by] || sortColumns['action_date'];
+    const sortOrderSafe = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      ${whereClause}
+    `;
+
+    const [countResult] = await pool.execute(countQuery, queryParams);
+    const totalCount = countResult[0].total;
+
+    // Get paginated data - USE DIRECT INTERPOLATION FOR LIMIT/OFFSET
+    // This is safe because we've sanitized these to be integers above
+    const dataQuery = `
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status,
+        t.FIRSTNAME as pensioner_firstname,
+        t.LASTNAME as pensioner_lastname
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      ${whereClause}
+      ORDER BY ${sortColumn} ${sortOrderSafe}
+      LIMIT ${limitNum} OFFSET ${offset}
+    `;
+
+    // Pass only the WHERE clause parameters, not limit/offset
+    const [rows] = await pool.execute(dataQuery, queryParams);
+
+    const totalPages = Math.ceil(totalCount / limitNum);
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        current_page: pageNum,
+        total_pages: totalPages,
+        total_count: totalCount,
+        per_page: limitNum,
+        has_next: pageNum < totalPages,
+        has_prev: pageNum > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history logs' 
+    });
+  }
+});
+
+// GET specific history log details
+router.get('/history-logs/:log_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { log_id } = req.params;
+
+    if (!log_id || isNaN(parseInt(log_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid log ID' 
+      });
+    }
+
+    const logId = parseInt(log_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status,
+        fs.submitted_at,
+        t.FIRSTNAME as pensioner_firstname,
+        t.LASTNAME as pensioner_lastname,
+        t.AFPSN
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      WHERE hl.id = ?
+    `, [logId]);
+
+    if (logs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'History log not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: logs[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching history log details:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history log details' 
+    });
+  }
+});
+
+// DELETE - Delete a history log (Super Admin only)
+router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
+  try {
+    const pool = getPool();
+    const { log_id } = req.params;
+
+    if (!log_id || isNaN(parseInt(log_id))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid log ID'
+      });
+    }
+
+    const logId = parseInt(log_id);
+
+    // Check if log exists
+    const [logExists] = await pool.execute(
+      'SELECT id FROM history_logs WHERE id = ?',
+      [logId]
+    );
+
+    if (logExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'History log not found'
+      });
+    }
+
+    // Delete the log
+    await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
+
+    console.log(`History log ${logId} deleted by admin ${req.admin.adminId} (${req.admin.email})`);
+
+    res.json({
+      success: true,
+      message: 'History log deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting history log:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete history log' 
+    });
+  }
+});
+
+// ==================== FORM SUBMISSION ROUTES ====================
+
 router.get('/', async (req, res) => {
   try {
     const pool = getPool();
     
-    // DEBUG: Check the join relationship (simplified)
-    console.log('\n=== DEBUGGING NAME ISSUE ===');
-    const [debugJoin] = await pool.execute(`
-      SELECT 
-        u.id as user_id,
-        u.email,
-        u.pensioner_ndx,
-        t.NDX,
-        t.FIRSTNAME,
-        t.LASTNAME
-      FROM users_tbl u
-      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      LIMIT 5
-    `);
-    console.log('DEBUG - User to Test Table Join:');
-    console.log(JSON.stringify(debugJoin, null, 2));
-    
-    // Main query with extra debug fields
     const [rows] = await pool.execute(`
       SELECT 
         fs.id,
@@ -41,6 +449,7 @@ router.get('/', async (req, res) => {
         fs.form_type_id,
         fs.status,
         fs.submitted_at,
+        fs.reviewed_at,
         fs.longitude,
         fs.latitude,
         fs.location as location_status,
@@ -51,23 +460,20 @@ router.get('/', async (req, res) => {
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
-        t.SUFFIX
+        t.SUFFIX,
+        t.AFPSN,
+        t.DOB,       
+        t.TYPE,         
+        p.type,          
+        p.b_type         
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      ORDER BY fs.submitted_at DESC
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      ORDER BY fs.submitted_at DESC
       LIMIT 10
     `);
-
-    console.log('\nDEBUG - First 3 forms:');
-    rows.slice(0, 3).forEach((row, i) => {
-      console.log(`\nForm ${i + 1}:`);
-      console.log(`  ID: ${row.id}, User: ${row.user_email}`);
-      console.log(`  pensioner_ndx: ${row.pensioner_ndx}, test_table_ndx: ${row.test_table_ndx}`);
-      console.log(`  FIRSTNAME: ${row.FIRSTNAME}, LASTNAME: ${row.LASTNAME}`);
-    });
-    console.log('=== END DEBUG ===\n');
 
     res.json({ 
       success: true, 
@@ -98,10 +504,9 @@ router.get('/paginated', async (req, res) => {
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10)); // Cap at 100
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
     const offset = (pageNum - 1) * limitNum;
     
-    // Build WHERE clause based on filters
     let whereConditions = [];
     let queryParams = [];
 
@@ -129,17 +534,15 @@ router.get('/paginated', async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-    // Safe sorting with column mapping
     const sortColumn = SORT_COLUMN_MAP[sort_by] || SORT_COLUMN_MAP['submitted_at'];
     const sortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
 
-    // Get total count
     const countQuery = `
       SELECT COUNT(*) as total
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       ${whereClause}
     `;
@@ -162,13 +565,18 @@ router.get('/paginated', async (req, res) => {
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
-        t.SUFFIX        
-        
+        t.SUFFIX,
+        t.AFPSN,
+        t.TYPE,         
+        t.CTRLNR,
+        t.DOB,         
+        p.type,      
+        p.b_type     
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       ${whereClause}
       ORDER BY ${sortColumn} ${sortOrder}
       LIMIT ? OFFSET ?
@@ -201,171 +609,96 @@ router.get('/paginated', async (req, res) => {
   }
 });
 
-// GET specific form details for admin
-router.get('/:form_id', async (req, res) => {
+router.get('/export/bulk', async (req, res) => {
   try {
     const pool = getPool();
-    const { form_id } = req.params;
+    const { status, location_status, form_type } = req.query;
 
-    // Validate form_id is a number
-    if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid form ID' 
-      });
+    let whereConditions = ["(fs.status = 'a' OR fs.status = 'd')"];
+    let queryParams = [];
+
+    if (status && ['a', 'd'].includes(status)) {
+      whereConditions = [`fs.status = ?`];
+      queryParams.push(status);
     }
 
-    const formId = parseInt(form_id);
+    if (location_status && ['loc', 'abr'].includes(location_status)) {
+      whereConditions.push('fs.location = ?');
+      queryParams.push(location_status);
+    }
 
-    // Get form submission details with user and location info
-    const [submissionRows] = await pool.execute(`
+    if (form_type) {
+      whereConditions.push('ft.name = ?');
+      queryParams.push(form_type);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    const [forms] = await pool.execute(`
       SELECT 
-        fs.*,
-        fs.location as location_status,
+        fs.id,
+        fs.reviewed_at,
+        fs.submitted_at,
+        fs.longitude,
+        fs.latitude,
         ft.name as form_type_name,
-        u.email as user_email,
         t.FIRSTNAME,
         t.LASTNAME,
-        t.MIDDLENAME,    
-        t.SUFFIX,        
-        u.created_at as user_created_at
+        t.AFPSN,
+        t.DOB,
+        t.TYPE,
+        p.b_type
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
-      WHERE fs.id = ?
-    `, [formId]);
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      ${whereClause}
+      ORDER BY fs.submitted_at DESC
+    `, queryParams);
 
-    if (submissionRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Form submission not found' 
-      });
+    const formIds = forms.map(f => f.id);
+    if (formIds.length === 0) {
+      return res.json({ success: true, data: [] });
     }
 
-    // Get form requirements
-    const [requirementRows] = await pool.execute(
-      'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
-      [formId]
-    );
+    const placeholders = formIds.map(() => '?').join(',');
+    const [requirements] = await pool.execute(`
+      SELECT form_id, requirement_type, value
+      FROM form_requirements
+      WHERE form_id IN (${placeholders})
+        AND requirement_type IN ('home_address', 'mobile_number')
+    `, formIds);
 
-    const formData = {
-      ...submissionRows[0],
-      requirements: requirementRows,
-      location: {
-        longitude: submissionRows[0].longitude,
-        latitude: submissionRows[0].latitude,
-        status: submissionRows[0].location
+    const requirementMap = {};
+    requirements.forEach(req => {
+      if (!requirementMap[req.form_id]) {
+        requirementMap[req.form_id] = {};
       }
-    };
-
-    res.json({ 
-      success: true, 
-      data: formData 
+      requirementMap[req.form_id][req.requirement_type] = req.value;
     });
 
+    const exportData = forms.map(form => ({
+      ...form,
+      home_address: requirementMap[form.id]?.home_address || '',
+      mobilenr: requirementMap[form.id]?.mobile_number || ''
+    }));
+
+    res.json({ success: true, data: exportData });
+
   } catch (error) {
-    console.error('Error fetching admin form details:', error);
+    console.error('Error fetching bulk export:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to fetch form details' 
+      error: 'Failed to fetch export data' 
     });
   }
 });
 
-// PUT - Update form status (admin only)
-router.put('/:form_id/status', async (req, res) => {
-  try {
-    const pool = getPool();
-    const { form_id } = req.params;
-    const { status, admin_notes } = req.body;
-
-    // Validate form_id
-    if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ success: false, error: 'Invalid form ID' });
-    }
-
-    // Get admin ID from JWT token (set by authenticateAdminToken middleware)
-    const adminId = req.admin.adminId;
-
-    if (!adminId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Admin authentication required'
-      });
-    }
-
-    const formId = parseInt(form_id);
-    const validStatuses = ['p', 'a', 'd'];
-
-    if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)'
-      });
-    }
-
-    if (admin_notes && admin_notes.length > 1000) {
-      return res.status(400).json({
-        success: false,
-        error: 'Admin notes cannot exceed 1000 characters'
-      });
-    }
-
-    const [existingForm] = await pool.execute(
-      'SELECT id, status FROM form_submission WHERE id = ?',
-      [formId]
-    );
-
-    if (existingForm.length === 0) {
-      return res.status(404).json({ success: false, error: 'Form submission not found' });
-    }
-
-    await pool.query('START TRANSACTION');
-
-    try {
-      const updateQuery = admin_notes !== undefined
-        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
-        : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
-
-      const updateParams = admin_notes !== undefined
-        ? [status, admin_notes, formId]
-        : [status, formId];
-
-      // Set admin ID for any database triggers
-      await pool.execute('SET @current_admin_id = ?', [adminId]);
-
-      await pool.execute(updateQuery, updateParams);
-
-      await pool.execute('COMMIT');
-
-      console.log(`Form ${formId} status updated to ${status} by admin ${adminId} (${req.admin.email})`);
-
-      res.json({ 
-        success: true, 
-        message: 'Form status updated successfully',
-        updated_by: {
-          admin_id: adminId,
-          admin_email: req.admin.email,
-          admin_name: req.admin.name
-        }
-      });
-    } catch (transactionError) {
-      await pool.execute('ROLLBACK');
-      throw transactionError;
-    }
-  } catch (error) {
-    console.error('Error updating form status:', error);
-    res.status(500).json({ success: false, error: 'Failed to update form status' });
-  }
-});
-
-// GET dashboard statistics
 router.get('/analytics/dashboard-stats', async (req, res) => {
   try {
     const pool = getPool();
 
-    // Use Promise.all for concurrent queries (better performance)
     const [
       [overallStats],
       [recentStats], 
@@ -426,13 +759,11 @@ router.get('/analytics/dashboard-stats', async (req, res) => {
   }
 });
 
-// GET forms by status
 router.get('/status/:status', async (req, res) => {
   try {
     const pool = getPool();
     const { status } = req.params;
 
-    // Validate status
     if (!['p', 'a', 'd'].includes(status)) {
       return res.status(400).json({
         success: false,
@@ -448,12 +779,17 @@ router.get('/status/:status', async (req, res) => {
         t.FIRSTNAME,    
         t.LASTNAME,      
         t.MIDDLENAME,    
-        t.SUFFIX         
+        t.SUFFIX,
+        t.AFPSN,
+        t.DOB,
+        t.TYPE,         
+        p.type,          
+        p.b_type         
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
-      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.hero_ndx
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX      
       WHERE fs.status = ?
       ORDER BY fs.submitted_at DESC
     `, [status]);
@@ -482,13 +818,11 @@ router.get('/status/:status', async (req, res) => {
   }
 });
 
-// GET forms by location status  
 router.get('/location/:location_status', async (req, res) => {
   try {
     const pool = getPool();
     const { location_status } = req.params;
 
-    // Validate location status
     if (!['loc', 'abr'].includes(location_status)) {
       return res.status(400).json({
         success: false,
@@ -508,6 +842,7 @@ router.get('/location/:location_status', async (req, res) => {
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN test_table t ON u.pensioner_ndx = t.NDX
       WHERE fs.location = ?
       ORDER BY fs.submitted_at DESC
     `, [location_status]);
@@ -536,14 +871,168 @@ router.get('/location/:location_status', async (req, res) => {
   }
 });
 
-// POST - Add admin notes to a form
+router.get('/:form_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid form ID' 
+      });
+    }
+
+    const formId = parseInt(form_id);
+
+    const [submissionRows] = await pool.execute(`
+      SELECT 
+        fs.*,
+        fs.location as location_status,
+        ft.name as form_type_name,
+        u.email as user_email,
+        t.FIRSTNAME,
+        t.LASTNAME,
+        t.MIDDLENAME,    
+        t.SUFFIX,
+        t.AFPSN,
+        t.DOB, 
+        t.TYPE,         
+        p.type,      
+        p.b_type,     
+        u.created_at as user_created_at
+      FROM form_submission fs
+      JOIN form_type ft ON fs.form_type_id = ft.id
+      JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      WHERE fs.id = ?
+    `, [formId]);
+
+    if (submissionRows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Form submission not found' 
+      });
+    }
+
+    const [requirementRows] = await pool.execute(
+      'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
+      [formId]
+    );
+
+    const formData = {
+      ...submissionRows[0],
+      requirements: requirementRows,
+      location: {
+        longitude: submissionRows[0].longitude,
+        latitude: submissionRows[0].latitude,
+        status: submissionRows[0].location
+      }
+    };
+
+    res.json({ 
+      success: true, 
+      data: formData 
+    });
+
+  } catch (error) {
+    console.error('Error fetching admin form details:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch form details' 
+    });
+  }
+});
+
+router.put('/:form_id/status', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+    const { status, admin_notes } = req.body;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ success: false, error: 'Invalid form ID' });
+    }
+
+    const adminId = req.admin.adminId;
+
+    if (!adminId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Admin authentication required'
+      });
+    }
+
+    const formId = parseInt(form_id);
+    const validStatuses = ['p', 'a', 'd'];
+
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)'
+      });
+    }
+
+    if (admin_notes && admin_notes.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Admin notes cannot exceed 1000 characters'
+      });
+    }
+
+    const [existingForm] = await pool.execute(
+      'SELECT id, status FROM form_submission WHERE id = ?',
+      [formId]
+    );
+
+    if (existingForm.length === 0) {
+      return res.status(404).json({ success: false, error: 'Form submission not found' });
+    }
+
+    await pool.query('START TRANSACTION');
+
+    try {
+      const updateQuery = admin_notes !== undefined
+        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
+        : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
+
+      const updateParams = admin_notes !== undefined
+        ? [status, admin_notes, formId]
+        : [status, formId];
+
+      await pool.execute('SET @current_admin_id = ?', [adminId]);
+      await pool.execute(updateQuery, updateParams);
+
+      await pool.execute('COMMIT');
+
+      console.log(`Form ${formId} status updated to ${status} by admin ${adminId} (${req.admin.email})`);
+
+      res.json({ 
+        success: true, 
+        message: 'Form status updated successfully',
+        updated_by: {
+          admin_id: adminId,
+          admin_email: req.admin.email,
+          admin_name: req.admin.name
+        }
+      });
+    } catch (transactionError) {
+      await pool.execute('ROLLBACK');
+      throw transactionError;
+    }
+  } catch (error) {
+    console.error('Error updating form status:', error);
+    res.status(500).json({ success: false, error: 'Failed to update form status' });
+  }
+});
+
 router.post('/:form_id/notes', async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
     const { notes } = req.body;
 
-    // Validate form_id
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({
         success: false,
@@ -552,10 +1041,8 @@ router.post('/:form_id/notes', async (req, res) => {
     }
     const formId = parseInt(form_id);
 
-    // Get admin ID from JWT token
     const adminId = req.admin.adminId;
 
-    // Validate notes
     if (!notes || typeof notes !== 'string' || notes.trim().length === 0) {
       return res.status(400).json({
         success: false,
@@ -570,7 +1057,6 @@ router.post('/:form_id/notes', async (req, res) => {
       });
     }
 
-    // Check if form exists
     const [existingForm] = await pool.execute(
       'SELECT id FROM form_submission WHERE id = ?',
       [formId]
@@ -586,13 +1072,11 @@ router.post('/:form_id/notes', async (req, res) => {
     await pool.query('START TRANSACTION');
 
     try {
-      // Update form with admin notes
       await pool.execute(
         'UPDATE form_submission SET admin_notes = ?, reviewed_at = NOW() WHERE id = ?',
         [notes.trim(), formId]
       );
 
-      // Insert into history_logs
       await pool.execute(
         `INSERT INTO history_logs 
           (form_submission_id, action_by, status, remarks, action_date)
@@ -627,13 +1111,11 @@ router.post('/:form_id/notes', async (req, res) => {
   }
 });
 
-// DELETE - Delete a form submission (admin only)
 router.delete('/:form_id', async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
 
-    // Validate form_id
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({
         success: false,
@@ -643,14 +1125,11 @@ router.delete('/:form_id', async (req, res) => {
 
     const formId = parseInt(form_id);
 
-    // Use transaction for data consistency
     await pool.execute('START TRANSACTION');
 
     try {
-      // First delete related requirements
       await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
       
-      // Then delete the form submission
       const [result] = await pool.execute('DELETE FROM form_submission WHERE id = ?', [formId]);
 
       if (result.affectedRows === 0) {

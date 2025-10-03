@@ -1054,4 +1054,397 @@ router.post("/logout", async (req, res) => {
   }
 });
 
+// PROFILE ROUTES
+
+// Add these endpoints to your users.js route file
+
+// Rate limiter for profile updates
+const profileUpdateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: {
+    success: false,
+    error: 'Too many update attempts. Please try again later.',
+    code: 'RATE_LIMITED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Update Email Endpoint
+router.put("/update-email/:userId", profileUpdateLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { userId } = req.params;
+    const { email } = req.body;
+
+    // Validation
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: "Email is required",
+        code: 'MISSING_EMAIL',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    if (!validator.isEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter a valid email address",
+        code: 'INVALID_EMAIL',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if user exists
+    const userCheck = await executeQuery(
+      'SELECT id, email FROM users_tbl WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (userCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Check if new email already exists (excluding current user)
+    const emailExists = await executeQuery(
+      'SELECT id FROM users_tbl WHERE email = ? AND id != ? LIMIT 1',
+      [normalizedEmail, userId]
+    );
+
+    if (emailExists.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: "This email is already in use by another account",
+        code: 'EMAIL_EXISTS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Update email
+    await executeQuery(
+      'UPDATE users_tbl SET email = ?, updated_at = NOW() WHERE id = ?',
+      [normalizedEmail, userId]
+    );
+
+    const processingTime = Date.now() - startTime;
+    logger.info(`Email updated successfully for user ${userId}: ${normalizedEmail} in ${processingTime}ms`);
+
+    res.json({
+      success: true,
+      message: "Email updated successfully",
+      data: {
+        email: normalizedEmail
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Email update error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to update email. Please try again.",
+      code: 'EMAIL_UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  }
+});
+
+// Update Password Endpoint
+router.put("/update-password/:userId", profileUpdateLimiter, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { userId } = req.params;
+    const { currentPassword, newPassword } = req.body;
+
+    // Validation
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: "Current password and new password are required",
+        code: 'MISSING_PASSWORDS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Filter and validate new password
+    const filteredNewPassword = filterPassword(newPassword);
+    
+    if (filteredNewPassword !== newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: "New password contains invalid characters",
+        code: 'INVALID_PASSWORD_CHARS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const passwordValidation = validatePasswordStrength(filteredNewPassword);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: "New password does not meet security requirements",
+        details: passwordValidation.errors,
+        code: 'WEAK_PASSWORD',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Get user with current password hash
+    const users = await executeQuery(
+      'SELECT id, email, password_hash FROM users_tbl WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const user = users[0];
+
+    // Verify current password
+    const passwordMatch = await bcrypt.compare(currentPassword, user.password_hash);
+    
+    if (!passwordMatch) {
+      logger.warn(`Password change failed - incorrect current password for user ${userId}`);
+      return res.status(401).json({
+        success: false,
+        error: "Current password is incorrect",
+        code: 'INCORRECT_PASSWORD',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Hash new password
+    const saltRounds = 12;
+    const hashedNewPassword = await bcrypt.hash(filteredNewPassword, saltRounds);
+
+    // Update password
+    await executeQuery(
+      'UPDATE users_tbl SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+      [hashedNewPassword, userId]
+    );
+
+    const processingTime = Date.now() - startTime;
+    logger.info(`Password updated successfully for user ${userId} (${user.email}) in ${processingTime}ms`);
+
+    res.json({
+      success: true,
+      message: "Password updated successfully",
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Password update error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to update password. Please try again.",
+      code: 'PASSWORD_UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  }
+});
+
+// Update Mobile Number Endpoint
+router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { userId } = req.params;
+    const { mobile } = req.body;
+
+    // Validation
+    if (!mobile) {
+      return res.status(400).json({
+        success: false,
+        error: "Mobile number is required",
+        code: 'MISSING_MOBILE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const normalizedMobile = mobile.trim();
+    const mobileRegex = /^[0-9+\-\s()]{10,15}$/;
+    
+    if (!mobileRegex.test(normalizedMobile)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter a valid mobile number (10-15 digits)",
+        code: 'INVALID_MOBILE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const userCheck = await executeQuery(
+      'SELECT id FROM users_tbl WHERE id = ? LIMIT 1',
+      [userId]
+    );
+
+    if (userCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pensionerData = await executeQuery(`
+      SELECT p.hero_ndx 
+      FROM pensioners_tbl p
+      JOIN users_tbl u ON u.pensioner_ndx = p.id
+      WHERE u.id = ?
+      LIMIT 1`,
+      [userId]
+    );
+
+    if (pensionerData.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Pensioner record not found",
+        code: 'PENSIONER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const heroNdx = pensionerData[0].hero_ndx;
+
+    // Update mobile in test_table (heroes table)
+    await executeQuery(
+      'UPDATE test_table SET MOBILENR = ? WHERE NDX = ?',
+      [normalizedMobile, heroNdx]
+    );
+
+    const processingTime = Date.now() - startTime;
+    logger.info(`Mobile number updated successfully for user ${userId} (hero_ndx: ${heroNdx}) in ${processingTime}ms`);
+
+    res.json({
+      success: true,
+      message: "Mobile number updated successfully",
+      data: {
+        mobile: normalizedMobile
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Mobile update error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to update mobile number. Please try again.",
+      code: 'MOBILE_UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  }
+});
+
+router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { userId } = req.params;
+
+    const userProfile = await executeQuery(`
+      SELECT 
+        u.id as user_id,
+        u.email,
+        u.status,
+        u.created_at,
+        p.type,
+        p.bos,
+        p.b_type,
+        p.principal_firstname,
+        p.principal_lastname,
+        h.FIRSTNAME,
+        h.LASTNAME,
+        h.AFPSN,
+        h.DOB,
+        h.MOBILENR,
+        h.CTRLNR
+      FROM users_tbl u
+      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      JOIN test_table h ON p.hero_ndx = h.NDX
+      WHERE u.id = ?
+      LIMIT 1
+    `, [userId]);
+
+    if (userProfile.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+        code: 'PROFILE_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const profile = userProfile[0];
+    const processingTime = Date.now() - startTime;
+
+    // Return data at top level to match Profile.js expectations
+    res.json({
+      success: true,
+      user_id: profile.user_id,
+      EMAIL: profile.email,      // Uppercase to match Profile.js
+      FIRSTNAME: profile.FIRSTNAME,
+      LASTNAME: profile.LASTNAME,
+      AFPSN: profile.AFPSN,
+      DOB: profile.DOB,
+      MOBILE: profile.MOBILENR,  // Map MOBILENR to MOBILE
+      BOS: profile.bos,
+      TYPE: profile.type,
+      CTRLNR: profile.CTRLNR,
+      ...(profile.type === 'B' && {
+        B_TYPE: profile.b_type,
+        PRINCIPAL_FIRSTNAME: profile.principal_firstname,
+        PRINCIPAL_LASTNAME: profile.principal_lastname
+      }),
+      created_at: profile.created_at,
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Profile fetch error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch profile",
+      code: 'PROFILE_FETCH_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  }
+});
 module.exports = router;

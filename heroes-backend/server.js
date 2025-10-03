@@ -14,6 +14,7 @@ const usersRoutes = require('./routes/users');
 const formsRoutes = require('./routes/forms');
 const adminForms = require('./routes/admin_forms');
 const { router: adminAuthRoutes } = require('./routes/admin');
+const inquiryRouter = require('./routes/inquiries');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -84,6 +85,7 @@ app.use('/api/heroes', heroesRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/forms', formsRoutes);
+app.use('/api/inquiries', inquiryRouter);
 
 // web 
 app.use('/api/admin', adminAuthRoutes);

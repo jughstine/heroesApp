@@ -15,7 +15,7 @@ const minioClient = new Client({
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB limit
+    fileSize: 20 * 1024 * 1024, // 20mb limit
   },
   fileFilter: (req, file, cb) => {
     const allowedMimes = [

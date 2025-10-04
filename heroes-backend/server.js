@@ -14,7 +14,7 @@ const usersRoutes = require('./routes/users');
 const formsRoutes = require('./routes/forms');
 const adminForms = require('./routes/admin_forms');
 const { router: adminAuthRoutes } = require('./routes/admin');
-const inquiryRouter = require('./routes/inquiries');
+const inquiriesRouter = require('./routes/inquiries');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -74,10 +74,10 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '15mb' }));
+app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '20mb' }));
 app.use(express.urlencoded({ 
   extended: true, 
-  limit: process.env.MAX_FILE_SIZE || '15mb' 
+  limit: process.env.MAX_FILE_SIZE || '20mb' 
 }));
 
 // mobile app routes 
@@ -85,11 +85,39 @@ app.use('/api/heroes', heroesRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/forms', formsRoutes);
-app.use('/api/inquiries', inquiryRouter);
+app.use('/api/inquiries', inquiriesRouter);
 
 // web 
 app.use('/api/admin', adminAuthRoutes);
 app.use('/api/admin_forms', adminForms);
+
+app.get('/api/test-inquiries', (req, res) => {
+  res.json({
+    message: 'Tama ang routes mo',
+    inquiriesRouter: typeof inquiriesRouter,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// mag chek muna ng mga routes
+app.get('/api/check-routes', (req, res) => {
+  res.json({
+    success: true,
+    routes: [
+      '/api/heroes',
+      '/api/upload',
+      '/api/users',
+      '/api/forms', 
+      '/api/inquiries',
+      '/api/admin',
+      '/api/admin_forms',
+      '/api/health',
+      '/api/test-inquiries'
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
+
 
 // Enhanced health check endpoint
 app.get('/api/health', async (req, res) => {
@@ -377,7 +405,5 @@ app.get('/api/diagnostic/network', async (req, res) => {
   }
 });
 
-//
-// 
 
 startServer();

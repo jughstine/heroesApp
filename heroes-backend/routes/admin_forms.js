@@ -1004,13 +1004,17 @@ router.put('/:form_id/status', async (req, res) => {
       await pool.execute('SET @current_admin_id = ?', [adminId]);
       await pool.execute(updateQuery, updateParams);
 
-      await pool.execute('COMMIT');
+      // Delete form_requirements if status is denied
+      if (status === 'd') {
+        await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
+      }
 
-      console.log(`Form ${formId} status updated to ${status} by admin ${adminId} (${req.admin.email})`);
+      await pool.execute('COMMIT');
 
       res.json({ 
         success: true, 
         message: 'Form status updated successfully',
+        requirements_deleted: status === 'd',
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,

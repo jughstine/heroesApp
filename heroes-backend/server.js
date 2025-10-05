@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer'); 
 require('dotenv').config();
 
 const { 
@@ -74,10 +75,14 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '20mb' }));
+app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '500mb',
+ verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ 
   extended: true, 
-  limit: process.env.MAX_FILE_SIZE || '20mb' 
+  limit: process.env.MAX_FILE_SIZE || '500mb' 
 }));
 
 // mobile app routes 
@@ -164,26 +169,6 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   }
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ 
-    success: false, 
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
-    path: req.originalUrl,
-    timestamp: new Date().toISOString()
-  });
 });
 
 const shutdown = async () => {
@@ -405,5 +390,79 @@ app.get('/api/diagnostic/network', async (req, res) => {
   }
 });
 
+
+// test env
+app.get('/api/debugme', (req, res) => {
+  res.json({
+    maxFileSize: process.env.MAX_FILE_SIZE,
+    nodeEnv: process.env.NODE_ENV,
+    dbHost: process.env.DB_HOST ? 'SET' : 'NOT SET',
+    allEnvKeys: Object.keys(process.env).filter(key => key.includes('MAX_FILE') || key.includes('NODE_ENV'))
+  });
+});
+
+
+// upload size
+const testUpload = multer({
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB
+  },
+  storage: multer.memoryStorage()
+});
+
+// Test upload endpoint
+app.post('/api/test-upload-direct', testUpload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
+    }
+
+    const fileSizeMB = (req.file.size / (1024 * 1024)).toFixed(2);
+    
+    res.json({
+      success: true,
+      message: 'Direct upload test successful',
+      fileInfo: {
+        originalName: req.file.originalname,
+        size: req.file.size,
+        sizeMB: fileSizeMB,
+        mimetype: req.file.mimetype,
+        server: 'Node.js direct',
+        nginxBypassed: true
+      }
+    });
+  } catch (error) {
+    console.error('Test upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      errorCode: error.code
+    });
+  }
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ 
+    success: false, 
+    error: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found',
+    path: req.originalUrl,
+    timestamp: new Date().toISOString()
+  });
+});
 
 startServer();

@@ -544,33 +544,42 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     const { inquiry_id } = req.params;
     const { assigned_to } = req.body;
 
-    if (!assigned_to) {
+    // Check if assigned_to is explicitly provided in the request body
+    // Allow null for unassignment, but reject if the field is missing entirely
+    if (!req.body.hasOwnProperty('assigned_to')) {
       return res.status(400).json({
         success: false,
-        error: 'assigned_to user ID is required',
+        error: 'assigned_to field is required (use null to unassign)',
         code: 'MISSING_ASSIGNED_TO',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
-    // Optionally verify the assigned_to user exists in users_tbl
-    const [userCheck] = await conn.execute(
-      'SELECT id FROM users_tbl WHERE id = ?',
-      [assigned_to]
-    );
+    // If assigned_to is not null, verify the user exists
+    if (assigned_to !== null) {
+      // Check against admins_tbl instead of users_tbl since you're using admin assignments
+      const [userCheck] = await conn.execute(
+        'SELECT id FROM admins_tbl WHERE id = ?',
+        [assigned_to]
+      );
 
-    if (userCheck.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid assigned_to user ID',
-        code: 'INVALID_USER',
-        processingTime: `${Date.now() - startTime}ms`
-      });
+      if (userCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid assigned_to admin ID',
+          code: 'INVALID_USER',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
     }
 
+    // Update assignment (allow null)
+    // Only auto-progress to in_prog if assigning (not unassigning)
     const [result] = await conn.execute(
-      'UPDATE inquiries SET assigned_to = ?, status = IF(status = "pen", "in_prog", status), updated_at = NOW() WHERE id = ?',
-      [assigned_to, inquiry_id]
+      assigned_to !== null
+        ? 'UPDATE inquiries SET assigned_to = ?, status = IF(status = "pen", "in_prog", status), updated_at = NOW() WHERE id = ?'
+        : 'UPDATE inquiries SET assigned_to = NULL, updated_at = NOW() WHERE id = ?',
+      assigned_to !== null ? [assigned_to, inquiry_id] : [inquiry_id]
     );
 
     if (result.affectedRows === 0) {
@@ -584,7 +593,7 @@ router.put('/:inquiry_id/assign', async (req, res) => {
 
     res.json({ 
       success: true, 
-      message: 'Inquiry assigned successfully',
+      message: assigned_to !== null ? 'Inquiry assigned successfully' : 'Inquiry unassigned successfully',
       data: {
         inquiry_id: parseInt(inquiry_id),
         assigned_to: assigned_to
@@ -613,7 +622,6 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     }
   }
 });
-
 // GET - Analytics/Statistics for inquiries
 router.get('/analytics/stats', async (req, res) => {
   const startTime = Date.now();

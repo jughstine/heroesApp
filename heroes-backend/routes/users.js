@@ -1056,8 +1056,6 @@ router.post("/logout", async (req, res) => {
 
 // PROFILE ROUTES
 
-// Add these endpoints to your users.js route file
-
 // Rate limiter for profile updates
 const profileUpdateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes

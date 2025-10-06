@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const { Client } = require('minio');
+const { getPool } = require('../config/database'); // Import your database config
 const router = express.Router();
 
 const minioClient = new Client({
@@ -10,6 +11,20 @@ const minioClient = new Client({
   accessKey: process.env.SPACES_KEY,
   secretKey: process.env.SPACES_SECRET,
 });
+
+// Database connection health check (same as your other routes)
+const checkDatabaseHealth = async () => {
+  try {
+    const pool = getPool();
+    const conn = await pool.getConnection();
+    await conn.ping();
+    conn.release();
+    return true;
+  } catch (error) {
+    console.error('Database health check failed:', error);
+    return false;
+  }
+};
 
 // Configure multer for file uploads
 const upload = multer({
@@ -35,6 +50,9 @@ const upload = multer({
 
 // Upload file to DigitalOcean Spaces
 router.post('/', upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({ 
@@ -65,7 +83,7 @@ router.post('/', upload.single('file'), async (req, res) => {
 
     // For pre-compressed videos, upload directly without server-side compression
     if (isPreCompressed) {
-      console.log('📤 Uploading pre-compressed video directly to storage...');
+      console.log('?? Uploading pre-compressed video directly to storage...');
     }
 
     // Upload to DigitalOcean Spaces with proper metadata
@@ -109,43 +127,52 @@ router.post('/', upload.single('file'), async (req, res) => {
       ...metadata
     };
 
-    console.log('✅ Upload successful:', {
+    console.log('? Upload successful:', {
       url: publicUrl,
       size: (req.file.size / 1024 / 1024).toFixed(2) + ' MB'
     });
 
     res.json({
       success: true,
-      data: responseData
+      data: responseData,
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
     
   } catch (error) {
-    console.error('❌ Upload error:', error);
+    const processingTime = Date.now() - startTime;
+    console.error('? Upload error:', error);
     
     if (error instanceof multer.MulterError) {
       if (error.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ 
           success: false, 
-          error: 'File too large. Maximum size is 500MB.' 
+          error: 'File too large. Maximum size is 500MB.',
+          processingTime: `${processingTime}ms`
         });
       }
     }
     
     res.status(500).json({ 
       success: false, 
-      error: error.message || 'Upload failed'
+      error: error.message || 'Upload failed',
+      processingTime: `${processingTime}ms`
     });
   }
 });
 
 // Delete file from DigitalOcean Spaces
 router.delete('/:key(*)', async (req, res) => {
+  const startTime = Date.now();
+
   try {
     const { key } = req.params;
     if (!key) {
       return res.status(400).json({ 
         success: false, 
-        error: 'File key is required' 
+        error: 'File key is required',
+        processingTime: `${Date.now() - startTime}ms`
       });
     }
 
@@ -156,26 +183,34 @@ router.delete('/:key(*)', async (req, res) => {
     
     res.json({ 
       success: true, 
-      message: 'File deleted successfully' 
+      message: 'File deleted successfully',
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
     
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('Delete error:', error);
     res.status(500).json({ 
       success: false, 
-      error: error.message || 'Delete failed'
+      error: error.message || 'Delete failed',
+      processingTime: `${processingTime}ms`
     });
   }
 });
 
 // Get file info endpoint
 router.get('/info/:key(*)', async (req, res) => {
+  const startTime = Date.now();
+
   try {
     const { key } = req.params;
     if (!key) {
       return res.status(400).json({ 
         success: false, 
-        error: 'File key is required' 
+        error: 'File key is required',
+        processingTime: `${Date.now() - startTime}ms`
       });
     }
 
@@ -192,24 +227,46 @@ router.get('/info/:key(*)', async (req, res) => {
         contentType: stat.metaData['content-type'],
         lastModified: stat.lastModified,
         etag: stat.etag
+      },
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
       }
     });
     
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('File info error:', error);
     res.status(404).json({ 
       success: false, 
-      error: 'File not found or inaccessible'
+      error: 'File not found or inaccessible',
+      processingTime: `${processingTime}ms`
     });
   }
 });
 
-// ========== ADVISORY ===========
+// ========== ANNOUNCEMENTS ===========
 
 // GET all active announcements (for mobile app)
 router.get('/announcements', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
-    const result = await req.db.query(
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
+    const [rows] = await conn.execute(
       `SELECT id, title, description, image_url, link_url, is_active, 
               display_order, created_at, updated_at
        FROM announcements 
@@ -219,21 +276,54 @@ router.get('/announcements', async (req, res) => {
     
     res.json({
       success: true,
-      data: result.rows
+      data: rows,
+      meta: {
+        count: rows.length,
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('Error fetching announcements:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch announcements'
+      error: 'Failed to fetch announcements',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
     });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
 // GET all announcements (for admin panel)
 router.get('/admin/announcements', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
-    const result = await req.db.query(
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
+    const [rows] = await conn.execute(
       `SELECT id, title, description, image_url, link_url, is_active, 
               display_order, created_at, updated_at
        FROM announcements 
@@ -242,29 +332,62 @@ router.get('/admin/announcements', async (req, res) => {
     
     res.json({
       success: true,
-      data: result.rows
+      data: rows,
+      meta: {
+        count: rows.length,
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('Error fetching announcements:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch announcements'
+      error: 'Failed to fetch announcements',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
     });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
 // POST create new announcement
 router.post('/admin/announcements', upload.single('image'), async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
     const { title, description, link_url, is_active, display_order } = req.body;
     let image_url = null;
+    
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
     
     // Upload image to DigitalOcean Spaces if provided
     if (req.file) {
       const timestamp = Date.now();
       const fileName = `announcements/${timestamp}-${req.file.originalname}`;
       
-      console.log('📤 Uploading announcement image:', fileName);
+      console.log('?? Uploading announcement image:', fileName);
       
       await minioClient.putObject(
         process.env.SPACES_BUCKET,
@@ -280,14 +403,13 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
       );
       
       image_url = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
-      console.log('✅ Image uploaded:', image_url);
+      console.log('? Image uploaded:', image_url);
     }
     
-    const result = await req.db.query(
+    const [result] = await conn.execute(
       `INSERT INTO announcements 
        (title, description, image_url, link_url, is_active, display_order)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         title,
         description || null,
@@ -298,39 +420,79 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
       ]
     );
     
+    // Fetch the created announcement
+    const [announcement] = await conn.execute(
+      'SELECT * FROM announcements WHERE id = ?',
+      [result.insertId]
+    );
+    
     res.json({
       success: true,
-      data: result.rows[0]
+      data: announcement[0],
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('Error creating announcement:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to create announcement'
+      error: error.message || 'Failed to create announcement',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
     });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
 // PUT update announcement
 router.put('/admin/announcements/:id', upload.single('image'), async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
     const { id } = req.params;
     const { title, description, link_url, is_active, display_order } = req.body;
     
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
     // Get existing announcement
-    const existing = await req.db.query(
-      'SELECT image_url FROM announcements WHERE id = $1',
+    const [existing] = await conn.execute(
+      'SELECT image_url FROM announcements WHERE id = ?',
       [id]
     );
     
-    if (existing.rows.length === 0) {
+    if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Announcement not found'
+        error: 'Announcement not found',
+        code: 'NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
       });
     }
     
-    let image_url = existing.rows[0].image_url;
+    let image_url = existing[0].image_url;
     
     // If new image uploaded, delete old one and upload new
     if (req.file) {
@@ -340,7 +502,7 @@ router.put('/admin/announcements/:id', upload.single('image'), async (req, res) 
           const oldKey = image_url.split('.digitaloceanspaces.com/')[1];
           if (oldKey) {
             await minioClient.removeObject(process.env.SPACES_BUCKET, oldKey);
-            console.log('🗑️ Deleted old image:', oldKey);
+            console.log('??? Deleted old image:', oldKey);
           }
         } catch (err) {
           console.error('Error deleting old image:', err);
@@ -351,7 +513,7 @@ router.put('/admin/announcements/:id', upload.single('image'), async (req, res) 
       const timestamp = Date.now();
       const fileName = `announcements/${timestamp}-${req.file.originalname}`;
       
-      console.log('📤 Uploading new announcement image:', fileName);
+      console.log('?? Uploading new announcement image:', fileName);
       
       await minioClient.putObject(
         process.env.SPACES_BUCKET,
@@ -367,16 +529,15 @@ router.put('/admin/announcements/:id', upload.single('image'), async (req, res) 
       );
       
       image_url = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
-      console.log('✅ New image uploaded:', image_url);
+      console.log('? New image uploaded:', image_url);
     }
     
-    const result = await req.db.query(
+    const [result] = await conn.execute(
       `UPDATE announcements 
-       SET title = $1, description = $2, image_url = $3, 
-           link_url = $4, is_active = $5, display_order = $6, 
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $7
-       RETURNING *`,
+       SET title = ?, description = ?, image_url = ?, 
+           link_url = ?, is_active = ?, display_order = ?, 
+           updated_at = NOW()
+       WHERE id = ?`,
       [
         title,
         description || null,
@@ -387,46 +548,95 @@ router.put('/admin/announcements/:id', upload.single('image'), async (req, res) 
         id
       ]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Announcement not found',
+        code: 'NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+    
+    // Fetch the updated announcement
+    const [announcement] = await conn.execute(
+      'SELECT * FROM announcements WHERE id = ?',
+      [id]
+    );
     
     res.json({
       success: true,
-      data: result.rows[0]
+      data: announcement[0],
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     console.error('Error updating announcement:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to update announcement'
+      error: error.message || 'Failed to update announcement',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
     });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
 // DELETE announcement
 router.delete('/admin/announcements/:id', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
   try {
     const { id } = req.params;
     
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
     // Get image path before deleting
-    const result = await req.db.query(
-      'SELECT image_url FROM announcements WHERE id = $1',
+    const [result] = await conn.execute(
+      'SELECT image_url FROM announcements WHERE id = ?',
       [id]
     );
     
-    if (result.rows.length === 0) {
+    if (result.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Announcement not found'
+        error: 'Announcement not found',
+        code: 'NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
       });
     }
     
     // Delete the image from Spaces if it exists
-    const image_url = result.rows[0].image_url;
+    const image_url = result[0].image_url;
     if (image_url) {
       try {
         const key = image_url.split('.digitaloceanspaces.com/')[1];
         if (key) {
           await minioClient.removeObject(process.env.SPACES_BUCKET, key);
-          console.log('🗑️ Deleted image from Spaces:', key);
+          console.log('??? Deleted image from Spaces:', key);
         }
       } catch (err) {
         console.error('Error deleting image from Spaces:', err);
@@ -434,53 +644,115 @@ router.delete('/admin/announcements/:id', async (req, res) => {
     }
     
     // Delete from database
-    await req.db.query('DELETE FROM announcements WHERE id = $1', [id]);
+    const [deleteResult] = await conn.execute('DELETE FROM announcements WHERE id = ?', [id]);
     
-    res.json({
-      success: true,
-      message: 'Announcement deleted successfully'
-    });
-  } catch (error) {
-    console.error('Error deleting announcement:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to delete announcement'
-    });
-  }
-});
-
-// PATCH toggle active status
-router.patch('/admin/announcements/:id/toggle', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const result = await req.db.query(
-      `UPDATE announcements 
-       SET is_active = NOT is_active, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1
-       RETURNING *`,
-      [id]
-    );
-    
-    if (result.rows.length === 0) {
+    if (deleteResult.affectedRows === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Announcement not found'
+        error: 'Announcement not found',
+        code: 'NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
       });
     }
     
     res.json({
       success: true,
-      data: result.rows[0]
+      message: 'Announcement deleted successfully',
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
     });
   } catch (error) {
-    console.error('Error toggling announcement status:', error);
+    const processingTime = Date.now() - startTime;
+    console.error('Error deleting announcement:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to toggle announcement status'
+      error: error.message || 'Failed to delete announcement',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
     });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
+// PATCH toggle active status
+router.patch('/admin/announcements/:id/toggle', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
+  try {
+    const { id } = req.params;
+    
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
+    const [result] = await conn.execute(
+      `UPDATE announcements 
+       SET is_active = NOT is_active, updated_at = NOW()
+       WHERE id = ?`,
+      [id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Announcement not found',
+        code: 'NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+    
+    // Fetch the updated announcement
+    const [announcement] = await conn.execute(
+      'SELECT * FROM announcements WHERE id = ?',
+      [id]
+    );
+    
+    res.json({
+      success: true,
+      data: announcement[0],
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error('Error toggling announcement status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to toggle announcement status',
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
 
 module.exports = router;

@@ -54,7 +54,7 @@ router.get('/types', async (req, res) => {
   }
 });
 
-// POST - Submit a new form
+// POST - Submit a new form (UPDATING - form_type_id = 5)
 router.post('/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
@@ -84,7 +84,7 @@ router.post('/submit', async (req, res) => {
       abroad_status 
     } = req.body;
 
-    // Set form_type_id to 5
+    // Set form_type_id to 5 for UPDATING
     const form_type_id = 5;
 
     // Validate required fields
@@ -243,6 +243,218 @@ router.post('/submit', async (req, res) => {
     let errorResponse = {
       success: false,
       error: "Form submission failed due to server error",
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
+    };
+
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      errorResponse.error = "Database connection failed. Please try again later.";
+      errorResponse.code = 'DB_CONNECTION_ERROR';
+      return res.status(503).json(errorResponse);
+    }
+
+    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
+      errorResponse.error = "Database access denied. Please contact system administrator.";
+      errorResponse.code = 'DB_ACCESS_ERROR';
+      return res.status(503).json(errorResponse);
+    }
+
+    res.status(500).json(errorResponse);
+
+  } finally {
+    // Always release connection
+    if (conn) {
+      try {
+        conn.release();
+        console.log("Database connection released");
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+// POST - Submit a RESUMPTION form (form_type_id = 2)
+router.post('/submit-resumption', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
+  try {
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const { 
+      user_id, 
+      longitude, 
+      latitude, 
+      requirements, 
+      location_metadata, 
+      late_filing_status 
+    } = req.body;
+
+    // Set form_type_id to 2 for RESUMPTION
+    const form_type_id = 2;
+
+    // Validate required fields
+    if (!user_id || !requirements || !Array.isArray(requirements)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: user_id and requirements array',
+        code: 'MISSING_FIELDS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Convert location values to proper types if they exist
+    let finalLongitude = null;
+    let finalLatitude = null;
+
+    if (longitude !== null && longitude !== undefined && longitude !== '') {
+      finalLongitude = Number(longitude);
+      if (isNaN(finalLongitude)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid longitude value',
+          code: 'INVALID_LONGITUDE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
+    if (latitude !== null && latitude !== undefined && latitude !== '') {
+      finalLatitude = Number(latitude);
+      if (isNaN(finalLatitude)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid latitude value',
+          code: 'INVALID_LATITUDE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
+    // Validate location data if provided
+    if (finalLongitude !== null && finalLatitude !== null) {
+      if (finalLongitude < -180 || finalLongitude > 180) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid longitude value. Must be between -180 and 180',
+          code: 'LONGITUDE_OUT_OF_RANGE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+
+      if (finalLatitude < -90 || finalLatitude > 90) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid latitude value. Must be between -90 and 90',
+          code: 'LATITUDE_OUT_OF_RANGE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
+    // Resumption forms are always 'loc' (local) - pensioners are back in Philippines
+    const locationStatus = 'loc';
+    
+    // Insert form submission with location data and location status
+    const [submissionResult] = await conn.execute(
+      `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p'] // 'p' for pending
+    );
+
+    const formSubmissionId = submissionResult.insertId;
+
+    // Verify the insertion by querying the record
+    const [insertedRecord] = await conn.execute(
+      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
+      [formSubmissionId]
+    );
+    
+    // Insert form requirements into rsm_requirements table
+    for (const requirement of requirements) {
+      const { requirement_type, value, file_url, file_key, file_type } = requirement;
+
+      if (!requirement_type) {
+        throw new Error('requirement_type is required for all requirements');
+      }
+
+      // Insert into rsm_requirements table (specific for resumption forms)
+      await conn.execute(
+        `INSERT INTO rsm_requirements (form_id, requirement_type, value, file_url, file_key, file_type) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          formSubmissionId, 
+          requirement_type, 
+          value || null, 
+          file_url || null, 
+          file_key || null, 
+          file_type || null
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    const processingTime = Date.now() - startTime;
+
+    const responseData = {
+      success: true,
+      message: 'Resumption form submitted successfully',
+      data: {
+        form_id: formSubmissionId,
+        form_type_id: form_type_id,
+        form_type: 'resumption',
+        location_status: locationStatus,
+        late_filing_status: late_filing_status || false,
+        location: {
+          longitude: finalLongitude,
+          latitude: finalLatitude,
+          accuracy: location_metadata?.accuracy,
+          timestamp: location_metadata?.timestamp,
+          was_recorded: finalLongitude !== null && finalLatitude !== null
+        }
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        submissionTime: new Date().toISOString()
+      }
+    };
+
+    res.json(responseData);
+
+  } catch (error) {
+    // Rollback transaction if connection exists
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackError) {
+        console.error("Rollback error:", rollbackError);
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+    console.error('❌ Error submitting resumption form:', error);
+    console.error('❌ Stack trace:', error.stack);
+    console.error(`Processing time: ${processingTime}ms`);
+
+    // Handle specific error types
+    let errorResponse = {
+      success: false,
+      error: "Resumption form submission failed due to server error",
       code: 'SERVER_ERROR',
       processingTime: `${processingTime}ms`
     };

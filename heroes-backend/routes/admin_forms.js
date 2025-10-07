@@ -10,16 +10,54 @@ const SORT_COLUMN_MAP = {
   'user_email': 'u.email',
   'form_type_name': 'ft.name'
 };
+
 router.use(authenticateAdminToken);
 
-const getFormRequirements = async (pool, formId, formTypeId) => {
-  // Form type 2 is Resumption - uses rsm_requirements table
+const FORM_TYPE_3_TABLES = {
+  'principal': 'rst_principal_requirements',
+  'widow': 'rst_widow_requirements',
+  'bi_principal': 'rst_bi_principal_requirements',
+  'bi_bene': 'rst_bi_bene_requirements',
+  're_entitle': 'rst_re_entitle_requirements'
+};
+
+const getFormType3Table = (beneficiaryType) => {
+  const normalizedType = (beneficiaryType || '').toLowerCase().trim();
+  
+  // Map various possible values to table names
+  if (normalizedType.includes('widow')) {
+    return FORM_TYPE_3_TABLES.widow;
+  } else if (normalizedType.includes('bi') && normalizedType.includes('principal')) {
+    return FORM_TYPE_3_TABLES.bi_principal;
+  } else if (normalizedType.includes('bi') && normalizedType.includes('bene')) {
+    return FORM_TYPE_3_TABLES.bi_bene;
+  } else if (normalizedType.includes('re') || normalizedType.includes('entitle')) {
+    return FORM_TYPE_3_TABLES.re_entitle;
+  } else if (normalizedType.includes('principal')) {
+    return FORM_TYPE_3_TABLES.principal;
+  }
+  
+  // Default to principal if unknown
+  return FORM_TYPE_3_TABLES.principal;
+};
+
+const getFormRequirements = async (pool, formId, formTypeId, beneficiaryType = null) => {
   if (formTypeId === 2) {
+    // Resumption form
     const [requirements] = await pool.execute(
       'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
       [formId]
     );
     return requirements;
+  } else if (formTypeId === 3) {
+    // Reinstatement form - determine which table to use
+    const tableName = getFormType3Table(beneficiaryType);
+    
+    const [requirements] = await pool.execute(
+      `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
+      [formId]
+    );
+    return { requirements, tableName };
   } else {
     // All other form types use form_requirements table
     const [requirements] = await pool.execute(
@@ -49,7 +87,6 @@ router.get('/history-logs/stats', async (req, res) => {
       FROM history_logs
     `);
 
-    // Get most active admins
     const [activeAdmins] = await pool.execute(`
       SELECT 
         a.id,
@@ -63,7 +100,6 @@ router.get('/history-logs/stats', async (req, res) => {
       LIMIT 5
     `);
 
-    // Get recent activity trend (last 7 days)
     const [trend] = await pool.execute(`
       SELECT 
         DATE(action_date) as date,
@@ -179,7 +215,6 @@ router.get('/history-logs/admin/:admin_id', async (req, res) => {
       ORDER BY hl.action_date DESC
     `, [adminId]);
 
-    // Get admin info
     const [adminInfo] = await pool.execute(
       'SELECT id, name, email, role FROM admins_tbl WHERE id = ?',
       [adminId]
@@ -229,7 +264,6 @@ router.get('/history-logs', async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
     const offset = (pageNum - 1) * limitNum;
 
-    // Build WHERE clause
     let whereConditions = [];
     let queryParams = [];
 
@@ -262,7 +296,6 @@ router.get('/history-logs', async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-    // Safe sorting
     const sortColumns = {
       'action_date': 'hl.action_date',
       'id': 'hl.id',
@@ -272,7 +305,6 @@ router.get('/history-logs', async (req, res) => {
     const sortColumn = sortColumns[sort_by] || sortColumns['action_date'];
     const sortOrderSafe = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
 
-    // Get total count
     const countQuery = `
       SELECT COUNT(*) as total
       FROM history_logs hl
@@ -286,8 +318,6 @@ router.get('/history-logs', async (req, res) => {
     const [countResult] = await pool.execute(countQuery, queryParams);
     const totalCount = countResult[0].total;
 
-    // Get paginated data - USE DIRECT INTERPOLATION FOR LIMIT/OFFSET
-    // This is safe because we've sanitized these to be integers above
     const dataQuery = `
       SELECT 
         hl.id,
@@ -316,7 +346,6 @@ router.get('/history-logs', async (req, res) => {
       LIMIT ${limitNum} OFFSET ${offset}
     `;
 
-    // Pass only the WHERE clause parameters, not limit/offset
     const [rows] = await pool.execute(dataQuery, queryParams);
 
     const totalPages = Math.ceil(totalCount / limitNum);
@@ -422,7 +451,6 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
 
     const logId = parseInt(log_id);
 
-    // Check if log exists
     const [logExists] = await pool.execute(
       'SELECT id FROM history_logs WHERE id = ?',
       [logId]
@@ -435,7 +463,6 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
       });
     }
 
-    // Delete the log
     await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
 
     console.log(`History log ${logId} deleted by admin ${req.admin.adminId} (${req.admin.email})`);
@@ -681,12 +708,13 @@ router.get('/export/bulk', async (req, res) => {
     }
 
     // Separate forms by type
-    const regularFormIds = forms.filter(f => f.form_type_id !== 2).map(f => f.id);
+    const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
     const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
+    const reinstatementForms = forms.filter(f => f.form_type_id === 3);
 
     const requirementMap = {};
 
-    // Get requirements from form_requirements table (for non-resumption forms)
+    // Get requirements from form_requirements table (for regular forms)
     if (regularFormIds.length > 0) {
       const placeholders = regularFormIds.map(() => '?').join(',');
       const [requirements] = await pool.execute(`
@@ -720,6 +748,29 @@ router.get('/export/bulk', async (req, res) => {
         }
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
+    }
+
+    // Get requirements from form type 3 tables (for reinstatement forms)
+    for (const form of reinstatementForms) {
+      const tableName = getFormType3Table(form.b_type);
+      
+      try {
+        const [type3Requirements] = await pool.execute(`
+          SELECT form_id, requirement_type, value
+          FROM ${tableName}
+          WHERE form_id = ?
+            AND requirement_type IN ('home_address', 'mobile_number')
+        `, [form.id]);
+
+        type3Requirements.forEach(req => {
+          if (!requirementMap[req.form_id]) {
+            requirementMap[req.form_id] = {};
+          }
+          requirementMap[req.form_id][req.requirement_type] = req.value;
+        });
+      } catch (tableError) {
+        console.error(`Error fetching requirements from ${tableName}:`, tableError);
+      }
     }
 
     const exportData = forms.map(form => ({
@@ -963,11 +1014,21 @@ router.get('/:form_id', async (req, res) => {
     const submission = submissionRows[0];
 
     // Get requirements from the appropriate table based on form_type_id
-    const requirementRows = await getFormRequirements(pool, formId, submission.form_type_id);
+    let requirementRows;
+    let requirementTableUsed = null;
+    
+    if (submission.form_type_id === 3) {
+      const result = await getFormRequirements(pool, formId, submission.form_type_id, submission.b_type);
+      requirementRows = result.requirements;
+      requirementTableUsed = result.tableName;
+    } else {
+      requirementRows = await getFormRequirements(pool, formId, submission.form_type_id);
+    }
 
     const formData = {
       ...submission,
       requirements: requirementRows,
+      requirement_table_used: requirementTableUsed,
       location: {
         longitude: submission.longitude,
         latitude: submission.latitude,
@@ -1026,7 +1087,7 @@ router.put('/:form_id/status', async (req, res) => {
     }
 
     const [existingForm] = await pool.execute(
-      'SELECT id, status, form_type_id FROM form_submission WHERE id = ?',
+      'SELECT id, status, form_type_id, user_id FROM form_submission WHERE id = ?',
       [formId]
     );
 
@@ -1035,6 +1096,22 @@ router.put('/:form_id/status', async (req, res) => {
     }
 
     const formTypeId = existingForm[0].form_type_id;
+    const userId = existingForm[0].user_id;
+
+    // Get beneficiary type for form type 3
+    let beneficiaryType = null;
+    if (formTypeId === 3) {
+      const [userInfo] = await pool.execute(`
+        SELECT p.b_type 
+        FROM users_tbl u
+        LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+        WHERE u.id = ?
+      `, [userId]);
+      
+      if (userInfo.length > 0) {
+        beneficiaryType = userInfo[0].b_type;
+      }
+    }
 
     await pool.query('START TRANSACTION');
 
@@ -1053,10 +1130,11 @@ router.put('/:form_id/status', async (req, res) => {
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
         if (formTypeId === 2) {
-          // Resumption form - delete from rsm_requirements
           await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
+        } else if (formTypeId === 3) {
+          const tableName = getFormType3Table(beneficiaryType);
+          await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
         } else {
-          // Other forms - delete from form_requirements
           await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
         }
       }
@@ -1068,6 +1146,7 @@ router.put('/:form_id/status', async (req, res) => {
         message: 'Form status updated successfully',
         requirements_deleted: status === 'd',
         form_type_id: formTypeId,
+        requirement_table: formTypeId === 3 ? getFormType3Table(beneficiaryType) : null,
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1185,11 +1264,14 @@ router.delete('/:form_id', async (req, res) => {
     await pool.execute('START TRANSACTION');
 
     try {
-      // Get form type to determine which requirements table to delete from
-      const [formInfo] = await pool.execute(
-        'SELECT form_type_id FROM form_submission WHERE id = ?',
-        [formId]
-      );
+      // Get form type and beneficiary type to determine which requirements table to delete from
+      const [formInfo] = await pool.execute(`
+        SELECT fs.form_type_id, p.b_type
+        FROM form_submission fs
+        LEFT JOIN users_tbl u ON fs.user_id = u.id
+        LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+        WHERE fs.id = ?
+      `, [formId]);
 
       if (formInfo.length === 0) {
         await pool.execute('ROLLBACK');
@@ -1200,13 +1282,15 @@ router.delete('/:form_id', async (req, res) => {
       }
 
       const formTypeId = formInfo[0].form_type_id;
+      const beneficiaryType = formInfo[0].b_type;
 
       // Delete from appropriate requirements table
       if (formTypeId === 2) {
-        // Resumption form - delete from rsm_requirements
         await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
+      } else if (formTypeId === 3) {
+        const tableName = getFormType3Table(beneficiaryType);
+        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
       } else {
-        // Other forms - delete from form_requirements
         await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
       }
       
@@ -1223,11 +1307,13 @@ router.delete('/:form_id', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      console.log(`Form ${formId} (type ${formTypeId}) deleted successfully`);
+      console.log(`Form ${formId} (type ${formTypeId}, b_type: ${beneficiaryType}) deleted successfully`);
 
       res.json({
         success: true,
-        message: 'Form submission deleted successfully'
+        message: 'Form submission deleted successfully',
+        form_type_id: formTypeId,
+        beneficiary_type: beneficiaryType
       });
 
     } catch (transactionError) {

@@ -97,7 +97,6 @@ router.get('/history-logs/stats', async (req, res) => {
       JOIN admins_tbl a ON hl.action_by = a.id
       GROUP BY a.id, a.name, a.email
       ORDER BY action_count DESC
-      LIMIT 5
     `);
 
     const [trend] = await pool.execute(`
@@ -260,8 +259,8 @@ router.get('/history-logs', async (req, res) => {
       sort_order = 'DESC'
     } = req.query;
 
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, parseInt(limit) || 10);
     const offset = (pageNum - 1) * limitNum;
 
     let whereConditions = [];
@@ -517,7 +516,6 @@ router.get('/', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       ORDER BY fs.submitted_at DESC
-      LIMIT 10
     `);
 
     res.json({ 
@@ -549,7 +547,7 @@ router.get('/paginated', async (req, res) => {
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const limitNum = Math.max(1, parseInt(limit, 10) || 50);
     const offset = (pageNum - 1) * limitNum;
     
     let whereConditions = [];

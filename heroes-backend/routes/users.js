@@ -366,7 +366,7 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 // SIGNUP 
 
 // STEP 1: Validate pensioner type and AFPSN
-router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+router.post("/validate-step1", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -494,7 +494,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
 });
 
 // STEP 2: Validate personal information against heroes database
-router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+router.post("/validate-step2", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -653,7 +653,7 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
 });
 
 // STEP 3: Create account with email and password
-router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+router.post("/create-account", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {

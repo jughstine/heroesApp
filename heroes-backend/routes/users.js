@@ -655,6 +655,7 @@ router.post("/validate-step2", sanitizeInput, validateDatabaseConnection, async 
 // STEP 3: Create account with email and password
 router.post("/create-account", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
+  let connection = null;
 
   try {
     const { step2Token, email, password } = req.body;
@@ -663,10 +664,30 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
     let validationData;
     try {
       validationData = await getValidationToken(step2Token);
-      if (validationData.step !== 2) {
-        throw new Error('Invalid step 2 token');
+      
+      if (!validationData) {
+        throw new Error('Token data is null or undefined');
       }
+      
+      if (validationData.step !== 2) {
+        throw new Error('Invalid step sequence - expected step 2');
+      }
+
+      if (!validationData.hero_ndx) {
+        logger.error('Missing hero_ndx in validation data:', {
+          hasData: !!validationData,
+          step: validationData.step,
+          keys: Object.keys(validationData)
+        });
+        throw new Error('Invalid validation data: missing hero_ndx');
+      }
+
     } catch (error) {
+      logger.error('Step 2 token validation failed:', {
+        message: error.message,
+        tokenProvided: !!step2Token
+      });
+      
       return res.status(400).json({
         success: false,
         error: "Invalid or expired step 2 validation. Please start over.",
@@ -750,25 +771,55 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
       });
     }
 
-    // Create account using transaction
-    const connection = await getConnection();
-    
+    try {
+      connection = await getConnection();
+      
+      if (!connection) {
+        throw new Error('getConnection returned null or undefined');
+      }
+
+      logger.info(`Connection acquired for account creation: ${normalizedEmail}`);
+      
+    } catch (connError) {
+      logger.error('Failed to acquire database connection:', {
+        error: connError.message,
+        code: connError.code,
+        email: normalizedEmail
+      });
+      
+      return res.status(503).json({
+        success: false,
+        error: "Database connection unavailable. Please try again in a moment.",
+        code: 'DB_CONNECTION_FAILED',
+        details: connError.code || 'CONNECTION_ERROR',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Transaction block with safe error handling
     try {
       await connection.beginTransaction();
+      logger.info('Transaction started');
 
       const saltRounds = 12;
       const hashedPassword = await bcrypt.hash(filteredPassword, saltRounds);
       
-      // Create pensioner record
+      // Create pensioner record with explicit null handling
       const pensionerData = {
         hero_ndx: validationData.hero_ndx,
         type: validationData.type,
-        bos: validationData.bos,
-        b_type: validationData.b_type,
-        principal_firstname: validationData.principal_first_name,
-        principal_lastname: validationData.principal_last_name
+        bos: validationData.bos || null,
+        b_type: validationData.b_type || null,
+        principal_firstname: validationData.principal_first_name || null,
+        principal_lastname: validationData.principal_last_name || null
       };
       
+      logger.info('Inserting pensioner record:', {
+        hero_ndx: pensionerData.hero_ndx,
+        type: pensionerData.type,
+        hasBos: !!pensionerData.bos
+      });
+
       const [pensionerResult] = await connection.execute(
         `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -784,7 +835,12 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
       
       const pensionerId = pensionerResult.insertId;
       
-      // Create user record
+      if (!pensionerId) {
+        throw new Error('Pensioner insert failed - no insertId returned');
+      }
+
+      logger.info(`Pensioner record created: ID ${pensionerId}`);
+      
       const [userResult] = await connection.execute(
         `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, created_at) 
          VALUES (?, ?, ?, 'UNV', NOW())`,
@@ -792,10 +848,18 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
       );
       
       const userId = userResult.insertId;
+
+      if (!userId) {
+        throw new Error('User insert failed - no insertId returned');
+      }
+
+      logger.info(`User record created: ID ${userId}`);
+      
       await connection.commit();
+      logger.info('Transaction committed successfully');
 
       const processingTime = Date.now() - startTime;
-      logger.info(`Account creation successful for ${normalizedEmail} (${validationData.firstname} ${validationData.lastname}) in ${processingTime}ms`);
+      logger.info(`Account creation successful for ${normalizedEmail} in ${processingTime}ms`);
 
       res.status(201).json({
         success: true,
@@ -826,16 +890,38 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
         }
       });
 
-    } catch (insertError) {
-      await connection.rollback();
-      throw insertError;
-    } finally {
-      connection.release();
+    } catch (transactionError) {
+      logger.error('Transaction error:', {
+        message: transactionError.message,
+        code: transactionError.code,
+        sqlMessage: transactionError.sqlMessage,
+        errno: transactionError.errno
+      });
+
+      if (connection) {
+        try {
+          await connection.rollback();
+          logger.info('Transaction rolled back successfully');
+        } catch (rollbackError) {
+          logger.error('Rollback error (non-fatal):', {
+            message: rollbackError.message,
+            code: rollbackError.code
+          });
+        }
+      } else {
+        logger.error('Cannot rollback - connection is null');
+      }
+      
+      throw transactionError;
     }
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    logger.error("Account creation error:", error);
+    logger.error("Account creation error:", {
+      message: error.message,
+      code: error.code,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
 
     let errorResponse = {
       success: false,
@@ -847,10 +933,18 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
       errorResponse.error = "Account already exists";
       errorResponse.code = 'DUPLICATE_ENTRY';
       errorResponse.statusCode = 409;
+    } else if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      errorResponse.error = "Invalid reference data. Please start over.";
+      errorResponse.code = 'INVALID_REFERENCE';
+      errorResponse.statusCode = 400;
     } else if (['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED'].includes(error.code)) {
       errorResponse.error = "Database connection issue. Please try again in a moment.";
       errorResponse.code = 'DB_CONNECTION_ERROR';
       errorResponse.statusCode = 503;
+    } else if (error.message && error.message.includes('validation data')) {
+      errorResponse.error = "Invalid validation data. Please start over from Step 1.";
+      errorResponse.code = 'INVALID_VALIDATION_DATA';
+      errorResponse.statusCode = 400;
     } else {
       errorResponse.error = "Account creation failed. Please try again later.";
       errorResponse.code = 'ACCOUNT_CREATION_ERROR';
@@ -858,6 +952,23 @@ router.post("/create-account", sanitizeInput, validateDatabaseConnection, async 
     }
 
     res.status(errorResponse.statusCode).json(errorResponse);
+    
+  } finally {
+    // ⚠️ CRITICAL FIX: Safe connection release
+    if (connection) {
+      try {
+        connection.release();
+        logger.debug('Database connection released');
+      } catch (releaseError) {
+        logger.error('Connection release error (non-fatal):', {
+          message: releaseError.message,
+          code: releaseError.code
+        });
+        // Don't throw - this is cleanup, errors here shouldn't crash the app
+      }
+    } else {
+      logger.debug('No connection to release (was null)');
+    }
   }
 });
 

@@ -545,7 +545,6 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     const { assigned_to } = req.body;
 
     // Check if assigned_to is explicitly provided in the request body
-    // Allow null for unassignment, but reject if the field is missing entirely
     if (!req.body.hasOwnProperty('assigned_to')) {
       return res.status(400).json({
         success: false,
@@ -574,10 +573,9 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     }
 
     // Update assignment (allow null)
-    // Only auto-progress to in_prog if assigning (not unassigning)
     const [result] = await conn.execute(
       assigned_to !== null
-        ? 'UPDATE inquiries SET assigned_to = ?, status = IF(status = "pen", "in_prog", status), updated_at = NOW() WHERE id = ?'
+        ? "UPDATE inquiries SET assigned_to = ?, status = IF(status = 'pen', 'in_prog', status), updated_at = NOW() WHERE id = ?"
         : 'UPDATE inquiries SET assigned_to = NULL, updated_at = NOW() WHERE id = ?',
       assigned_to !== null ? [assigned_to, inquiry_id] : [inquiry_id]
     );
@@ -622,6 +620,8 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     }
   }
 });
+
+
 // GET - Analytics/Statistics for inquiries
 router.get('/analytics/stats', async (req, res) => {
   const startTime = Date.now();

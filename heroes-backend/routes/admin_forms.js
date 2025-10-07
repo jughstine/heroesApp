@@ -13,58 +13,109 @@ const SORT_COLUMN_MAP = {
 
 router.use(authenticateAdminToken);
 
-const FORM_TYPE_3_TABLES = {
-  'principal': 'rst_principal_requirements',
-  'widow': 'rst_widow_requirements',
-  'bi_principal': 'rst_bi_principal_requirements',
-  'bi_bene': 'rst_bi_bene_requirements',
-  're_entitle': 'rst_re_entitle_requirements'
-};
+const FORM_TYPE_3_TABLES = [
+  'rst_widow_requirements',
+  'rst_bi_principal_requirements',
+  'rst_bi_bene_requirements',
+  'rst_re_entitle_requirements',
+  'rst_principal_requirements'
+];
 
-const getFormType3Table = (beneficiaryType) => {
-  const normalizedType = (beneficiaryType || '').toLowerCase().trim();
-  
-  // Map various possible values to table names
-  if (normalizedType.includes('widow')) {
-    return FORM_TYPE_3_TABLES.widow;
-  } else if (normalizedType.includes('bi') && normalizedType.includes('principal')) {
-    return FORM_TYPE_3_TABLES.bi_principal;
-  } else if (normalizedType.includes('bi') && normalizedType.includes('bene')) {
-    return FORM_TYPE_3_TABLES.bi_bene;
-  } else if (normalizedType.includes('re') || normalizedType.includes('entitle')) {
-    return FORM_TYPE_3_TABLES.re_entitle;
-  } else if (normalizedType.includes('principal')) {
-    return FORM_TYPE_3_TABLES.principal;
+// FIXED: Detect which table has requirements for this form_id
+const getFormType3TableForForm = async (pool, formId) => {
+  // Map table names to human-readable subtypes
+  const tableTypeMap = {
+    'rst_widow_requirements': 'widow',
+    'rst_bi_principal_requirements': 'bi_principal',
+    'rst_bi_bene_requirements': 'bi_bene',
+    'rst_re_entitle_requirements': 're_entitle',
+    'rst_principal_requirements': 'principal'
+  };
+
+  // Try each table to find which one has the requirements
+  for (const tableName of FORM_TYPE_3_TABLES) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
+        [formId]
+      );
+      
+      if (rows[0].count > 0) {
+        return {
+          tableName,
+          subtype: tableTypeMap[tableName]
+        };
+      }
+    } catch (error) {
+      console.error(`Error checking table ${tableName}:`, error);
+    }
   }
   
-  // Default to principal if unknown
-  return FORM_TYPE_3_TABLES.principal;
+  // Default to principal if nothing found
+  return {
+    tableName: 'rst_principal_requirements',
+    subtype: 'principal'
+  };
 };
 
-const getFormRequirements = async (pool, formId, formTypeId, beneficiaryType = null) => {
+const getFormRequirements = async (pool, formId, formTypeId) => {
+  console.log(`Getting requirements for formId: ${formId}, formTypeId: ${formTypeId}`);
+  
   if (formTypeId === 2) {
     // Resumption form
     const [requirements] = await pool.execute(
       'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
       [formId]
     );
-    return requirements;
+    console.log(`Resumption requirements found: ${requirements.length}`);
+    return { 
+      requirements, 
+      tableName: 'rsm_requirements',
+      rst_subtype: null
+    };
   } else if (formTypeId === 3) {
-    // Reinstatement form - determine which table to use
-    const tableName = getFormType3Table(beneficiaryType);
+    // Reinstatement form - detect which table has the data
+    const { tableName, subtype } = await getFormType3TableForForm(pool, formId);
+    console.log(`Restoration table detected: ${tableName}, subtype: ${subtype}`);
     
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
       [formId]
     );
-    return { requirements, tableName };
-  } else {
-    // All other form types use form_requirements table
+    console.log(`Restoration requirements found: ${requirements.length}`);
+    return { 
+      requirements, 
+      tableName,
+      rst_subtype: subtype
+    };
+  } else if (formTypeId === 5) {
+    // Form type 5 uses form_requirements table
+    console.log('Using form_requirements table for form type 5');
     const [requirements] = await pool.execute(
       'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [formId]
     );
-    return requirements;
+    console.log(`Form type 5 requirements found: ${requirements.length}`);
+    console.log('Requirements data:', requirements);
+    return { 
+      requirements, 
+      tableName: 'form_requirements',
+      rst_subtype: null
+    };
+  } else {
+    // All other form types use form_requirements table
+    console.log('Using form_requirements table for form type:', formTypeId);
+    const [requirements] = await pool.execute(
+      'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
+      [formId]
+    );
+    console.log(`Regular requirements found: ${requirements.length}`);
+    console.log('Requirements data:', requirements);
+    return { 
+      requirements, 
+      tableName: 'form_requirements',
+      rst_subtype: null
+    };
   }
 };
 
@@ -708,11 +759,11 @@ router.get('/export/bulk', async (req, res) => {
     // Separate forms by type
     const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
     const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
-    const reinstatementForms = forms.filter(f => f.form_type_id === 3);
+    const reinstatementFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
 
     const requirementMap = {};
 
-    // Get requirements from form_requirements table (for regular forms)
+    // Get requirements from form_requirements table (for form types 1, 5, and other regular forms)
     if (regularFormIds.length > 0) {
       const placeholders = regularFormIds.map(() => '?').join(',');
       const [requirements] = await pool.execute(`
@@ -749,8 +800,9 @@ router.get('/export/bulk', async (req, res) => {
     }
 
     // Get requirements from form type 3 tables (for reinstatement forms)
-    for (const form of reinstatementForms) {
-      const tableName = getFormType3Table(form.b_type);
+    for (const formId of reinstatementFormIds) {
+      const result = await getFormType3TableForForm(pool, formId);
+      const tableName = result.tableName;
       
       try {
         const [type3Requirements] = await pool.execute(`
@@ -758,7 +810,7 @@ router.get('/export/bulk', async (req, res) => {
           FROM ${tableName}
           WHERE form_id = ?
             AND requirement_type IN ('home_address', 'mobile_number')
-        `, [form.id]);
+        `, [formId]);
 
         type3Requirements.forEach(req => {
           if (!requirementMap[req.form_id]) {
@@ -1012,27 +1064,28 @@ router.get('/:form_id', async (req, res) => {
     const submission = submissionRows[0];
 
     // Get requirements from the appropriate table based on form_type_id
-    let requirementRows;
-    let requirementTableUsed = null;
+    const result = await getFormRequirements(pool, formId, submission.form_type_id);
     
-    if (submission.form_type_id === 3) {
-      const result = await getFormRequirements(pool, formId, submission.form_type_id, submission.b_type);
-      requirementRows = result.requirements;
-      requirementTableUsed = result.tableName;
-    } else {
-      requirementRows = await getFormRequirements(pool, formId, submission.form_type_id);
-    }
+    console.log('Form ID:', formId);
+    console.log('Form Type ID:', submission.form_type_id);
+    console.log('Requirements result:', result);
+    console.log('Requirements array:', result.requirements);
+    console.log('Requirements count:', result.requirements?.length);
+    console.log('RST Subtype:', result.rst_subtype);
 
     const formData = {
       ...submission,
-      requirements: requirementRows,
-      requirement_table_used: requirementTableUsed,
+      requirements: result.requirements || [],
+      requirement_table_used: result.tableName,
+      rst_subtype: result.rst_subtype, // Add this to response
       location: {
         longitude: submission.longitude,
         latitude: submission.latitude,
         status: submission.location
       }
     };
+
+    console.log('Final formData being sent:', JSON.stringify(formData, null, 2));
 
     res.json({ 
       success: true, 
@@ -1094,22 +1147,6 @@ router.put('/:form_id/status', async (req, res) => {
     }
 
     const formTypeId = existingForm[0].form_type_id;
-    const userId = existingForm[0].user_id;
-
-    // Get beneficiary type for form type 3
-    let beneficiaryType = null;
-    if (formTypeId === 3) {
-      const [userInfo] = await pool.execute(`
-        SELECT p.b_type 
-        FROM users_tbl u
-        LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-        WHERE u.id = ?
-      `, [userId]);
-      
-      if (userInfo.length > 0) {
-        beneficiaryType = userInfo[0].b_type;
-      }
-    }
 
     await pool.query('START TRANSACTION');
 
@@ -1128,11 +1165,15 @@ router.put('/:form_id/status', async (req, res) => {
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
         if (formTypeId === 2) {
+          // Resumption form
           await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
         } else if (formTypeId === 3) {
-          const tableName = getFormType3Table(beneficiaryType);
+          // Restoration form
+          const result = await getFormType3TableForForm(pool, formId);
+          const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
         } else {
+          // Form types 1, 5, and others use form_requirements
           await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
         }
       }
@@ -1144,7 +1185,6 @@ router.put('/:form_id/status', async (req, res) => {
         message: 'Form status updated successfully',
         requirements_deleted: status === 'd',
         form_type_id: formTypeId,
-        requirement_table: formTypeId === 3 ? getFormType3Table(beneficiaryType) : null,
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1262,13 +1302,9 @@ router.delete('/:form_id', async (req, res) => {
     await pool.execute('START TRANSACTION');
 
     try {
-      // Get form type and beneficiary type to determine which requirements table to delete from
+      // Get form type to determine which requirements table to delete from
       const [formInfo] = await pool.execute(`
-        SELECT fs.form_type_id, p.b_type
-        FROM form_submission fs
-        LEFT JOIN users_tbl u ON fs.user_id = u.id
-        LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-        WHERE fs.id = ?
+        SELECT form_type_id FROM form_submission WHERE id = ?
       `, [formId]);
 
       if (formInfo.length === 0) {
@@ -1280,13 +1316,13 @@ router.delete('/:form_id', async (req, res) => {
       }
 
       const formTypeId = formInfo[0].form_type_id;
-      const beneficiaryType = formInfo[0].b_type;
 
       // Delete from appropriate requirements table
       if (formTypeId === 2) {
         await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
       } else if (formTypeId === 3) {
-        const tableName = getFormType3Table(beneficiaryType);
+        const result = await getFormType3TableForForm(pool, formId);
+        const tableName = result.tableName;
         await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
       } else {
         await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
@@ -1305,13 +1341,12 @@ router.delete('/:form_id', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      console.log(`Form ${formId} (type ${formTypeId}, b_type: ${beneficiaryType}) deleted successfully`);
+      console.log(`Form ${formId} (type ${formTypeId}) deleted successfully`);
 
       res.json({
         success: true,
         message: 'Form submission deleted successfully',
-        form_type_id: formTypeId,
-        beneficiary_type: beneficiaryType
+        form_type_id: formTypeId
       });
 
     } catch (transactionError) {

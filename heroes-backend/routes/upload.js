@@ -1,7 +1,18 @@
 const express = require('express');
 const multer = require('multer');
 const { Client } = require('minio');
+<<<<<<< HEAD
 const { getPool } = require('../config/database'); // Import your database config
+=======
+<<<<<<< Updated upstream
+const ffmpeg = require('fluent-ffmpeg');
+const path = require('path');
+const fs = require('fs');
+const { promisify } = require('util');
+=======
+const { getPool } = require('../config/database'); 
+>>>>>>> Stashed changes
+>>>>>>> d8aac58 (updated form submission and form preview)
 const router = express.Router();
 
 const minioClient = new Client({

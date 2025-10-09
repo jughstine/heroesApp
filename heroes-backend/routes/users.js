@@ -85,6 +85,18 @@ router.get("/health", async (req, res) => {
     }
 });
 
+const adminQueryLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 50,
+    message: {
+        success: false,
+        error: 'Too many requests. Please try again later.',
+        code: 'RATE_LIMITED'
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // Rate limiting
 const step1Limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -370,9 +382,26 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
     const startTime = Date.now();
 
     try {
+<<<<<<< HEAD
         const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
 
         // Basic validation
+=======
+<<<<<<< Updated upstream
+      switch (stepNumber) {  
+        case 1:
+          return await handleStep1(req, res, startTime);
+        case 2:
+          return await handleStep2(req, res, startTime);
+        case 3:
+          return await handleStep3(req, res, startTime);
+        default:
+          return res.status(400).json({
+=======
+        const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
+
+        // Basic validation (existing code)
+>>>>>>> d8aac58 (updated form submission and form preview)
         if (!type || !afpsn) {
             return res.status(400).json({
                 success: false,
@@ -413,6 +442,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
         }
 
         const normalizedAfpsn = afpsn.trim().toUpperCase();
+<<<<<<< HEAD
 
         // Check if AFPSN exists in heroes database (basic check)
         const afpsnExists = await executeQuery(`
@@ -422,6 +452,22 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
         );
 
         if (afpsnExists[0].count === 0) {
+=======
+        
+        // Define officer ranks
+        const officerRanks = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COL', 'BGEN', 'MGEN', 'LGEN'];
+
+        // Check if AFPSN exists AND get rank information
+        const afpsnCheck = await executeQuery(`
+            SELECT COUNT(*) as count, PENRANK 
+            FROM test_table 
+            WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
+            GROUP BY PENRANK`,
+            [normalizedAfpsn, type]
+        );
+
+        if (afpsnCheck.length === 0) {
+>>>>>>> d8aac58 (updated form submission and form preview)
             return res.status(401).json({
                 success: false,
                 error: "AFP Serial Number not found in our records",
@@ -430,6 +476,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
+<<<<<<< HEAD
         // Check if account already exists for this AFPSN
         const existingAccount = await executeQuery(`
       SELECT u.id FROM users_tbl u 
@@ -444,6 +491,58 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
                 success: false,
                 error: "An account already exists for this AFP Serial Number",
                 code: 'ACCOUNT_EXISTS',
+=======
+        // Validate officer prefix matches rank
+        const hasOfficerPrefix = normalizedAfpsn.startsWith('O-');
+        const recordRank = afpsnCheck[0].PENRANK?.trim().toUpperCase();
+        const isOfficerRank = recordRank && officerRanks.includes(recordRank);
+
+        if (hasOfficerPrefix && !isOfficerRank) {
+            return res.status(400).json({
+                success: false,
+                error: "Your AFPSN indicates you are an officer, but your rank does not match officer ranks. Please verify your details.",
+                code: 'INVALID_OFFICER_STATUS',
+                details: {
+                    expectedRanks: officerRanks.join(', '),
+                    actualRank: recordRank || 'Unknown'
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (!hasOfficerPrefix && isOfficerRank) {
+            return res.status(400).json({
+                success: false,
+                error: "Your rank indicates you are an officer. Please check the 'I am an officer' box and add the O- prefix.",
+                code: 'MISSING_OFFICER_PREFIX',
+                details: {
+                    detectedRank: recordRank
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const accountCount = await executeQuery(`
+            SELECT COUNT(*) as count FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            JOIN test_table h ON p.hero_ndx = h.NDX 
+            WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
+            [normalizedAfpsn, type]
+        );
+
+        const existingAccounts = accountCount[0].count;
+        const MAX_ACCOUNTS_PER_AFPSN = 5;
+
+        if (existingAccounts >= MAX_ACCOUNTS_PER_AFPSN) {
+            return res.status(409).json({
+                success: false,
+                error: `Maximum number of accounts (${MAX_ACCOUNTS_PER_AFPSN}) already exists for this AFP Serial Number. Please contact support if you believe this is an error.`,
+                code: 'AFPSN_LIMIT_REACHED',
+                details: {
+                    currentAccounts: existingAccounts,
+                    maxAllowed: MAX_ACCOUNTS_PER_AFPSN
+                },
+>>>>>>> d8aac58 (updated form submission and form preview)
                 processingTime: `${Date.now() - startTime}ms`
             });
         }
@@ -463,7 +562,11 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
         const step1Token = await storeValidationToken(token, tokenData);
 
         const processingTime = Date.now() - startTime;
+<<<<<<< HEAD
         logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} in ${processingTime}ms`);
+=======
+        logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} (${existingAccounts}/${MAX_ACCOUNTS_PER_AFPSN} accounts) in ${processingTime}ms`);
+>>>>>>> d8aac58 (updated form submission and form preview)
 
         res.json({
             success: true,
@@ -472,6 +575,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             data: {
                 type,
                 afpsn: normalizedAfpsn,
+<<<<<<< HEAD
                 recordsFound: afpsnExists[0].count
             },
             meta: {
@@ -480,6 +584,32 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             }
         });
 
+=======
+                recordsFound: afpsnCheck[0].count,
+                rank: recordRank,
+                isOfficer: isOfficerRank,
+                existingAccounts: existingAccounts,
+                remainingSlots: MAX_ACCOUNTS_PER_AFPSN - existingAccounts
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                validUntil: new Date(Date.now() + 3600000).toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Step 1 validation error:", error);
+
+        res.status(500).json({
+>>>>>>> Stashed changes
+            success: false,
+            error: "Invalid step. Must be 1, 2, or 3.",
+            code: 'INVALID_STEP',
+            processingTime: `${Date.now() - startTime}ms`
+          });
+      }
+>>>>>>> d8aac58 (updated form submission and form preview)
     } catch (error) {
         const processingTime = Date.now() - startTime;
         logger.error("Step 1 validation error:", error);
@@ -498,6 +628,14 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
     const startTime = Date.now();
 
     try {
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+      await debugTokenStatus(step1Token);
+    } catch (debugError) {
+      logger.warn('Debug token status failed:', debugError.message);
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
         const { step1Token, firstname, lastname, dob } = req.body;
 
         if (!step1Token) {
@@ -566,7 +704,11 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
 
         // Validate against heroes database
         const heroes = await executeQuery(`
+<<<<<<< HEAD
       SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
+=======
+      SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE 
+>>>>>>> d8aac58 (updated form submission and form preview)
       FROM test_table 
       WHERE UPPER(TRIM(FIRSTNAME)) = ? 
         AND UPPER(TRIM(LASTNAME)) = ? 
@@ -606,7 +748,10 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             lastname: normalizedLastname,
             dob,
             hero_ndx: heroData.NDX,
+<<<<<<< HEAD
             hero_ctrl_nr: heroData.CTRLNR,
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
             step: 2,
             validated_at: new Date().toISOString()
         };
@@ -649,14 +794,36 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             code: 'STEP2_VALIDATION_ERROR',
             processingTime: `${processingTime}ms`
         });
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> d8aac58 (updated form submission and form preview)
     }
 });
 
 // STEP 3: Create account with email and password
+<<<<<<< HEAD
 router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
     let connection = null; // ⚠️ CRITICAL: Initialize outside try block
 
+=======
+<<<<<<< Updated upstream
+async function handleStep3(req, res, startTime) {
+  const { step2Token, email, password } = req.body;
+
+  // Verify step 2 token
+  let validationData;
+  try {
+    validationData = await getValidationToken(step2Token);
+    if (validationData.step !== 2) {
+      throw new Error('Invalid step 2 token');
+=======
+router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+    let connection = null;
+
+>>>>>>> d8aac58 (updated form submission and form preview)
     try {
         const { step2Token, email, password } = req.body;
 
@@ -670,7 +837,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
+<<<<<<< HEAD
         // Verify step 2 token with enhanced error handling
+=======
+        // Verify step 2 token
+>>>>>>> d8aac58 (updated form submission and form preview)
         let validationData;
         try {
             validationData = await getValidationToken(step2Token);
@@ -678,7 +849,10 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Invalid step 2 token data');
             }
             
+<<<<<<< HEAD
             // ⚠️ CRITICAL: Verify hero_ndx exists
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
             if (!validationData.hero_ndx) {
                 logger.error('Missing hero_ndx in validation data:', {
                     step: validationData.step,
@@ -724,6 +898,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
+<<<<<<< HEAD
         // Double-check hero record availability
         const existingHeroAccount = await executeQuery(`
             SELECT u.id FROM users_tbl u 
@@ -737,6 +912,28 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 success: false,
                 error: "An account already exists for this military record",
                 code: 'RECORD_ALREADY_CLAIMED',
+=======
+        const MAX_ACCOUNTS_PER_AFPSN = 5;
+        const afpsnAccountCount = await executeQuery(`
+            SELECT COUNT(*) as count, h.AFPSN 
+            FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            JOIN test_table h ON p.hero_ndx = h.NDX 
+            WHERE h.NDX = (SELECT NDX FROM test_table WHERE NDX = ? LIMIT 1)
+            GROUP BY h.AFPSN`,
+            [validationData.hero_ndx]
+        );
+
+        if (afpsnAccountCount.length > 0 && afpsnAccountCount[0].count >= MAX_ACCOUNTS_PER_AFPSN) {
+            return res.status(409).json({
+                success: false,
+                error: `Maximum number of accounts (${MAX_ACCOUNTS_PER_AFPSN}) has been reached for this AFP Serial Number.`,
+                code: 'AFPSN_LIMIT_REACHED',
+                details: {
+                    currentAccounts: afpsnAccountCount[0].count,
+                    maxAllowed: MAX_ACCOUNTS_PER_AFPSN
+                },
+>>>>>>> d8aac58 (updated form submission and form preview)
                 processingTime: `${Date.now() - startTime}ms`
             });
         }
@@ -777,7 +974,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
+<<<<<<< HEAD
         // Transaction block - connection is guaranteed to exist here
+=======
+        // Transaction block
+>>>>>>> d8aac58 (updated form submission and form preview)
         try {
             await connection.beginTransaction();
             logger.info('Transaction started for account creation');
@@ -816,7 +1017,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             // Create user record
             const [userResult] = await connection.execute(
                 `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status) 
+<<<<<<< HEAD
                  VALUES (?, ?, ?, 'ACTIVE')`,
+=======
+                 VALUES (?, ?, ?, 'TAG')`,
+>>>>>>> d8aac58 (updated form submission and form preview)
                 [pensionerId, normalizedEmail, hashedPassword]
             );
 
@@ -828,7 +1033,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             
             logger.info(`User created: ID ${userId}`);
 
+<<<<<<< HEAD
             // Delete used token to prevent reuse
+=======
+            // Delete used token
+>>>>>>> d8aac58 (updated form submission and form preview)
             await connection.execute(
                 'DELETE FROM signup_tokens WHERE token = ?',
                 [step2Token]
@@ -884,7 +1093,10 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
     } catch (error) {
         const processingTime = Date.now() - startTime;
 
+<<<<<<< HEAD
         // Enhanced database error logging
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
         logger.error("Account creation error:", {
             message: error.message,
             code: error.code,
@@ -937,7 +1149,10 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         });
 
     } finally {
+<<<<<<< HEAD
         // ⚠️ CRITICAL FIX: Safe connection release with null check
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
         if (connection) {
             try {
                 connection.release();
@@ -947,11 +1162,18 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                     message: releaseError.message,
                     code: releaseError.code
                 });
+<<<<<<< HEAD
                 // Don't throw - this is cleanup
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
             }
         } else {
             logger.debug('No connection to release');
         }
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> d8aac58 (updated form submission and form preview)
     }
 });
 
@@ -1008,6 +1230,19 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
       LIMIT 1
     `, [normalizedEmail]);
 
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+    if (users.length === 0) {
+      logger.warn(`Login failed - user not found: ${normalizedEmail}`);
+      return res.status(401).json({
+        success: false,
+        error: "Invalid credentials",
+        code: 'INVALID_CREDENTIALS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
         if (users.length === 0) {
             logger.warn(`Login failed - user not found: ${normalizedEmail}`);
             return res.status(401).json({
@@ -1063,7 +1298,10 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
                 validated_hero: {
                     name: `${user.FIRSTNAME} ${user.LASTNAME}`,
                     afpsn: user.AFPSN,
+<<<<<<< HEAD
                     control_number: user.CTRLNR,
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
                     type: user.hero_type
                 },
                 ...(user.type === 'B' && {
@@ -1125,6 +1363,10 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         }
 
         res.status(errorResponse.statusCode).json(errorResponse);
+<<<<<<< HEAD
+=======
+>>>>>>> Stashed changes
+>>>>>>> d8aac58 (updated form submission and form preview)
     }
 });
 
@@ -1148,6 +1390,12 @@ router.post("/logout", async (req, res) => {
     }
 });
 
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+module.exports = router;
+=======
+>>>>>>> d8aac58 (updated form submission and form preview)
 // PROFILE ROUTES
 
 // Rate limiter for profile updates
@@ -1467,6 +1715,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         const { userId } = req.params;
 
         const userProfile = await executeQuery(`
+<<<<<<< HEAD
       SELECT 
         u.id as user_id,
         u.email,
@@ -1489,6 +1738,35 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
       WHERE u.id = ?
       LIMIT 1
     `, [userId]);
+=======
+            SELECT 
+                u.id as user_id,
+                u.email,
+                u.status,
+                u.created_at,
+                u.last_login,
+                u.updated_at,
+                u.profile_picture,
+                u.pensioner_ndx as pensioner_id,
+                p.type,
+                p.bos,
+                p.b_type,
+                p.principal_firstname,
+                p.principal_lastname,
+                h.FIRSTNAME,
+                h.LASTNAME,
+                h.AFPSN,
+                h.DOB,
+                h.MOBILENR,
+                h.CTRLNR,
+                h.ACRANK,
+                h.PENRANK
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            JOIN test_table h ON p.hero_ndx = h.NDX
+            WHERE u.id = ?
+        `, [userId]);
+>>>>>>> d8aac58 (updated form submission and form preview)
 
         if (userProfile.length === 0) {
             return res.status(404).json({
@@ -1502,25 +1780,49 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         const profile = userProfile[0];
         const processingTime = Date.now() - startTime;
 
+<<<<<<< HEAD
         // Return data at top level to match Profile.js expectations
         res.json({
             success: true,
             user_id: profile.user_id,
             EMAIL: profile.email,      // Uppercase to match Profile.js
+=======
+        res.json({
+            success: true,
+            user_id: profile.user_id,
+            EMAIL: profile.email,      
+            profile_picture: profile.profile_picture,
+            pensioner_id: profile.pensioner_id,
+            status: profile.status,
+>>>>>>> d8aac58 (updated form submission and form preview)
             FIRSTNAME: profile.FIRSTNAME,
             LASTNAME: profile.LASTNAME,
             AFPSN: profile.AFPSN,
             DOB: profile.DOB,
+<<<<<<< HEAD
             MOBILE: profile.MOBILENR,  // Map MOBILENR to MOBILE
             BOS: profile.bos,
             TYPE: profile.type,
             CTRLNR: profile.CTRLNR,
+=======
+            MOBILE: profile.MOBILENR, 
+            BOS: profile.bos,
+            TYPE: profile.type,
+            CTRLNR: profile.CTRLNR,
+            ACRANK: profile.ACRANK,
+            PENRANK: profile.PENRANK,
+>>>>>>> d8aac58 (updated form submission and form preview)
             ...(profile.type === 'B' && {
                 B_TYPE: profile.b_type,
                 PRINCIPAL_FIRSTNAME: profile.principal_firstname,
                 PRINCIPAL_LASTNAME: profile.principal_lastname
             }),
             created_at: profile.created_at,
+<<<<<<< HEAD
+=======
+            last_login: profile.last_login,
+            updated_at: profile.updated_at,
+>>>>>>> d8aac58 (updated form submission and form preview)
             meta: {
                 processingTime: `${processingTime}ms`,
                 timestamp: new Date().toISOString()
@@ -1539,4 +1841,71 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         });
     }
 });
+<<<<<<< HEAD
 module.exports = router;
+=======
+
+router.get("/all", adminQueryLimiter, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        logger.info('Fetching all users for admin dashboard');
+
+        const users = await executeQuery(`
+            SELECT 
+                u.id as user_id,
+                u.email,
+                u.status,
+                u.created_at,
+                u.last_login,
+                u.status_updated_at,
+                p.type,
+                p.bos,
+                p.b_type,
+                h.FIRSTNAME as firstname,
+                h.LASTNAME as lastname,
+                h.AFPSN as afpsn,
+                h.MOBILENR as mobile
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            JOIN test_table h ON p.hero_ndx = h.NDX
+            ORDER BY u.created_at DESC
+        `);
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Retrieved ${users.length} users in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            users: users,
+            data: users, // Include both for compatibility
+            count: users.length,
+            meta: {
+                processingTime: `${processingTime}ms`,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Fetch all users error:", {
+            message: error.message,
+            code: error.code,
+            errno: error.errno
+        });
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to fetch users",
+            code: 'USERS_FETCH_ERROR',
+            processingTime: `${processingTime}ms`,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+
+module.exports = router;
+
+>>>>>>> Stashed changes
+>>>>>>> d8aac58 (updated form submission and form preview)

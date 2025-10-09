@@ -1,6 +1,10 @@
 const express = require('express');
 const { getPool } = require('../config/database');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
@@ -15,6 +19,76 @@ const checkDatabaseHealth = async () => {
     return false;
   }
 };
+
+// Health check endpoint
+router.get('/health', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const dbHealthy = await checkDatabaseHealth();
+    const processingTime = Date.now() - startTime;
+    
+    res.json({
+      success: true,
+      status: 'healthy',
+      services: {
+        database: dbHealthy ? 'healthy' : 'degraded',
+        userProfile: 'operational'
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    
+    res.status(500).json({
+      success: false,
+      status: 'unhealthy',
+      error: 'Health check failed',
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+});
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, '../uploads/profile-pictures');
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // Create unique filename: userId_timestamp.ext
+    const uniqueName = `${req.params.userId}_${Date.now()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+// File filter to accept only images
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG and GIF are allowed.'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
+
 
 // User Profile endpoint
 router.get('/profile', async (req, res) => {
@@ -48,11 +122,12 @@ router.get('/profile', async (req, res) => {
         h.MOBILENR,
         u.email,
         u.status,
+        u.status_updated_at,
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.status IN ('ACT', 'UNV')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
       ORDER BY u.created_at DESC
       LIMIT 1
     `);
@@ -79,6 +154,7 @@ router.get('/profile', async (req, res) => {
         DOB: profile.DOB,
         TYPE: profile.TYPE,
         MOBILENR: profile.MOBILENR,
+        status: profile.status,
         AFPSN: profile.AFPSN
       },
       meta: {
@@ -161,11 +237,13 @@ router.get('/profile/:userId', async (req, res) => {
         p.principal_lastname,
         u.email,
         u.status,
+        u.status_updated_at,
+        u.profile_picture,
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV')
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV' , 'TAG', 'DEL')
     `, [userId]);
 
     if (profiles.length === 0) {
@@ -194,7 +272,10 @@ router.get('/profile/:userId', async (req, res) => {
       MOBILENR: profile.MOBILENR,
       CTRLNR: profile.CTRLNR,
       email: profile.email,
+      status: profile.status,
+      profile_picture: profile.profile_picture,
       pensioner_type: profile.pensioner_type,
+      status_updated_at: profile.status_updated_at,
       ...(profile.pensioner_type === 'B' && {
         beneficiary_info: {
           b_type: profile.b_type,
@@ -233,38 +314,104 @@ router.get('/profile/:userId', async (req, res) => {
   }
 });
 
-// Health check endpoint
-router.get('/health', async (req, res) => {
+router.put('/profile/:userId/picture', async (req, res) => {
   const startTime = Date.now();
-  
+  const poolInstance = getPool();
+  let conn = null;
+
   try {
+    const userId = req.params.userId;
+    const { profile_picture } = req.body;
+
+    // Validate userId
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID provided",
+        code: 'INVALID_USER_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    if (!profile_picture || typeof profile_picture !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: "Valid profile picture URL is required",
+        code: 'INVALID_URL',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Database health check
     const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    conn = await poolInstance.getConnection();
+
+    // Verify user exists
+    const [users] = await conn.query(
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV','TAG', 'DEL')",
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Update user profile with new picture URL
+    await conn.query(
+      'UPDATE users_tbl SET profile_picture = ? WHERE id = ?',
+      [profile_picture, userId]
+    );
+
     const processingTime = Date.now() - startTime;
-    
+
+    console.log(`✅ Profile picture updated for user ${userId}: ${profile_picture}`);
+
     res.json({
       success: true,
-      status: 'healthy',
-      services: {
-        database: dbHealthy ? 'healthy' : 'degraded',
-        userProfile: 'operational'
+      data: {
+        profile_picture: profile_picture
       },
+      message: 'Profile picture updated successfully',
       meta: {
         processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
+        updated: new Date().toISOString()
       }
     });
+
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    
+    console.error("=== PROFILE PICTURE UPDATE ERROR ===");
+    console.error("Error details:", error);
+
     res.status(500).json({
       success: false,
-      status: 'unhealthy',
-      error: 'Health check failed',
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
+      error: "Failed to update profile picture",
+      code: 'UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
     });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
   }
 });
 
@@ -301,8 +448,8 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV')
-      AND fs.status IN ('p', 'a') -- Only pending or approved submissions
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
+      AND fs.status IN ('p') 
       ORDER BY fs.submitted_at DESC
     `);
 
@@ -385,7 +532,7 @@ router.get('/submissions/:userId', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       WHERE fs.user_id = ?
-      AND fs.status IN ('p', 'a') -- Only pending or approved
+      AND fs.status IN ('p')
       ORDER BY fs.submitted_at DESC
     `, [userId]);
 

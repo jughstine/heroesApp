@@ -182,7 +182,7 @@ router.post('/submit', async (req, res) => {
       }
 
       await conn.execute(
-        `INSERT INTO form_requirements (form_id, requirement_type, value, file_url, file_key, file_type, applies_to_location) 
+        `INSERT INTO upd_requirements (form_id, requirement_type, value, file_url, file_key, file_type, applies_to_location) 
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           formSubmissionId, 
@@ -1961,7 +1961,7 @@ router.get('/:form_id', async (req, res) => {
 
     // Get form requirements with applies_to_location
     const [requirementRows] = await conn.execute(
-      'SELECT * FROM form_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
+      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [form_id]
     );
 
@@ -2246,7 +2246,7 @@ router.get('/analytics/location-stats', async (req, res) => {
         fr.applies_to_location,
         fr.requirement_type,
         COUNT(*) as count
-      FROM form_requirements fr
+      FROM upd_requirements fr
       JOIN form_submission fs ON fr.form_id = fs.id
       GROUP BY fr.applies_to_location, fr.requirement_type
       ORDER BY fr.applies_to_location, fr.requirement_type

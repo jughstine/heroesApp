@@ -13,11 +13,6 @@ const SORT_COLUMN_MAP = {
 
 router.use(authenticateAdminToken);
 
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
 const FORM_TYPE_3_TABLES = [
   'rst_widow_requirements',
   'rst_bi_principal_requirements',
@@ -26,10 +21,7 @@ const FORM_TYPE_3_TABLES = [
   'rst_principal_requirements'
 ];
 
-<<<<<<< HEAD
 // FIXED: Detect which table has requirements for this form_id
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
 const getFormType3TableForForm = async (pool, formId) => {
   // Map table names to human-readable subtypes
   const tableTypeMap = {
@@ -66,23 +58,16 @@ const getFormType3TableForForm = async (pool, formId) => {
   };
 };
 
-<<<<<<< HEAD
 const getFormRequirements = async (pool, formId, formTypeId) => {
   console.log(`Getting requirements for formId: ${formId}, formTypeId: ${formTypeId}`);
   
-=======
-const getFormRequirements = async (pool, formId, formTypeId) => {  
->>>>>>> d8aac58 (updated form submission and form preview)
   if (formTypeId === 2) {
     // Resumption form
     const [requirements] = await pool.execute(
       'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
       [formId]
     );
-<<<<<<< HEAD
     console.log(`Resumption requirements found: ${requirements.length}`);
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     return { 
       requirements, 
       tableName: 'rsm_requirements',
@@ -91,26 +76,19 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
   } else if (formTypeId === 3) {
     // Reinstatement form - detect which table has the data
     const { tableName, subtype } = await getFormType3TableForForm(pool, formId);
-<<<<<<< HEAD
     console.log(`Restoration table detected: ${tableName}, subtype: ${subtype}`);
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
       [formId]
     );
-<<<<<<< HEAD
     console.log(`Restoration requirements found: ${requirements.length}`);
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     return { 
       requirements, 
       tableName,
       rst_subtype: subtype
     };
   } else if (formTypeId === 5) {
-<<<<<<< HEAD
     // Form type 5 uses form_requirements table
     console.log('Using form_requirements table for form type 5');
     const [requirements] = await pool.execute(
@@ -136,26 +114,6 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
     return { 
       requirements, 
       tableName: 'form_requirements',
-=======
-    // Form type 5 uses upd_requirements table
-    const [requirements] = await pool.execute(
-      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
-      [formId]
-    );
-    return { 
-      requirements, 
-      tableName: 'upd_requirements',
-      rst_subtype: null
-    };
-  } else {
-    const [requirements] = await pool.execute(
-      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
-      [formId]
-    );
-    return { 
-      requirements, 
-      tableName: 'upd_requirements',
->>>>>>> d8aac58 (updated form submission and form preview)
       rst_subtype: null
     };
   }
@@ -557,11 +515,8 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
 
     await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
 
-<<<<<<< HEAD
     console.log(`History log ${logId} deleted by admin ${req.admin.adminId} (${req.admin.email})`);
 
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     res.json({
       success: true,
       message: 'History log deleted successfully'
@@ -578,10 +533,6 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
 
 // ==================== FORM SUBMISSION ROUTES ====================
 
-<<<<<<< HEAD
-=======
->>>>>>> Stashed changes
->>>>>>> d8aac58 (updated form submission and form preview)
 router.get('/', async (req, res) => {
   try {
     const pool = getPool();
@@ -599,18 +550,8 @@ router.get('/', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
-<<<<<<< HEAD
         u.pensioner_ndx,
         t.NDX as test_table_ndx,
-=======
-<<<<<<< Updated upstream
-=======
-        u.profile_picture,
-        u.pensioner_ndx,
-        u.status_updated_at,
-        t.NDX as test_table_ndx,
->>>>>>> Stashed changes
->>>>>>> d8aac58 (updated form submission and form preview)
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -715,8 +656,6 @@ router.get('/paginated', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
-        u.profile_picture,
-        u.status_updated_at,
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -813,15 +752,6 @@ router.get('/export/bulk', async (req, res) => {
       ORDER BY fs.submitted_at DESC
     `, queryParams);
 
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-    if (submissionRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Form submission not found' 
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     if (forms.length === 0) {
       return res.json({ success: true, data: [] });
     }
@@ -833,20 +763,12 @@ router.get('/export/bulk', async (req, res) => {
 
     const requirementMap = {};
 
-<<<<<<< HEAD
     // Get requirements from form_requirements table (for form types 1, 5, and other regular forms)
-=======
-    // Get requirements from upd_requirements table (for form types 1, 5, and other regular forms)
->>>>>>> d8aac58 (updated form submission and form preview)
     if (regularFormIds.length > 0) {
       const placeholders = regularFormIds.map(() => '?').join(',');
       const [requirements] = await pool.execute(`
         SELECT form_id, requirement_type, value
-<<<<<<< HEAD
         FROM form_requirements
-=======
-        FROM upd_requirements
->>>>>>> d8aac58 (updated form submission and form preview)
         WHERE form_id IN (${placeholders})
           AND requirement_type IN ('home_address', 'mobile_number')
       `, regularFormIds);
@@ -856,10 +778,6 @@ router.get('/export/bulk', async (req, res) => {
           requirementMap[req.form_id] = {};
         }
         requirementMap[req.form_id][req.requirement_type] = req.value;
-<<<<<<< HEAD
-=======
->>>>>>> Stashed changes
->>>>>>> d8aac58 (updated form submission and form preview)
       });
     }
 
@@ -1003,8 +921,6 @@ router.get('/status/:status', async (req, res) => {
         fs.*,
         ft.name as form_type_name,
         u.email as user_email,
-        u.profile_picture,
-        u.status_updated_at,
         t.FIRSTNAME,    
         t.LASTNAME,      
         t.MIDDLENAME,    
@@ -1100,12 +1016,6 @@ router.get('/location/:location_status', async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-// POST - Add admin notes to a form
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
 router.get('/:form_id', async (req, res) => {
   try {
     const pool = getPool();
@@ -1126,11 +1036,6 @@ router.get('/:form_id', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
-<<<<<<< HEAD
-=======
-        u.profile_picture,
-        u.status_updated_at,
->>>>>>> d8aac58 (updated form submission and form preview)
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -1161,7 +1066,6 @@ router.get('/:form_id', async (req, res) => {
     // Get requirements from the appropriate table based on form_type_id
     const result = await getFormRequirements(pool, formId, submission.form_type_id);
     
-<<<<<<< HEAD
     console.log('Form ID:', formId);
     console.log('Form Type ID:', submission.form_type_id);
     console.log('Requirements result:', result);
@@ -1169,8 +1073,6 @@ router.get('/:form_id', async (req, res) => {
     console.log('Requirements count:', result.requirements?.length);
     console.log('RST Subtype:', result.rst_subtype);
 
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     const formData = {
       ...submission,
       requirements: result.requirements || [],
@@ -1183,11 +1085,8 @@ router.get('/:form_id', async (req, res) => {
       }
     };
 
-<<<<<<< HEAD
     console.log('Final formData being sent:', JSON.stringify(formData, null, 2));
 
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
     res.json({ 
       success: true, 
       data: formData 
@@ -1248,18 +1147,10 @@ router.put('/:form_id/status', async (req, res) => {
     }
 
     const formTypeId = existingForm[0].form_type_id;
-<<<<<<< HEAD
-=======
-    const userId = existingForm[0].user_id;
->>>>>>> d8aac58 (updated form submission and form preview)
 
     await pool.query('START TRANSACTION');
 
     try {
-<<<<<<< HEAD
-=======
-      // Update form submission status
->>>>>>> d8aac58 (updated form submission and form preview)
       const updateQuery = admin_notes !== undefined
         ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
         : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
@@ -1271,48 +1162,6 @@ router.put('/:form_id/status', async (req, res) => {
       await pool.execute('SET @current_admin_id = ?', [adminId]);
       await pool.execute(updateQuery, updateParams);
 
-<<<<<<< HEAD
-=======
-      // ✨ FIXED: Handle form type 3 (Restoration) approval - set to TAG
-      if (formTypeId === 3 && status === 'a') {
-        await pool.execute(
-          `UPDATE users_tbl 
-           SET status = 'TAG', 
-               tagged_at = NOW(),
-           WHERE id = ?`,
-          [userId]
-        );
-        
-        console.log(`✓ Form Type 3 approved: User ${userId} status set to TAG`);
-      }
-
-      // ✨ FIXED: Handle form type 5 (Update) approval - set to ACT
-      if (formTypeId === 5 && status === 'a') {
-        const [updateResult] = await pool.execute(
-          `UPDATE users_tbl 
-           SET status = 'ACT', 
-               status_updated_at = NOW()
-           WHERE id = ?`,
-          [userId]
-        );
-        
-        console.log(`✓ Form Type 5 approved: User ${userId} status set to ACT (Rows affected: ${updateResult.affectedRows})`);
-        
-        // Verify the update
-        const [verifyUser] = await pool.execute(
-          'SELECT status, status_updated_at FROM users_tbl WHERE id = ?',
-          [userId]
-        );
-        
-        if (verifyUser.length > 0) {
-          console.log(`✓ Verified user ${userId}:`, {
-            status: verifyUser[0].status,
-            status_updated_at: verifyUser[0].status_updated_at
-          });
-        }
-      }
-
->>>>>>> d8aac58 (updated form submission and form preview)
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
         if (formTypeId === 2) {
@@ -1324,23 +1173,14 @@ router.put('/:form_id/status', async (req, res) => {
           const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
         } else {
-<<<<<<< HEAD
           // Form types 1, 5, and others use form_requirements
           await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
-=======
-          // Form types 1, 5, and others use upd_requirements
-          await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
->>>>>>> d8aac58 (updated form submission and form preview)
         }
       }
 
       await pool.execute('COMMIT');
 
-<<<<<<< HEAD
       res.json({ 
-=======
-      const response = { 
->>>>>>> d8aac58 (updated form submission and form preview)
         success: true, 
         message: 'Form status updated successfully',
         requirements_deleted: status === 'd',
@@ -1350,50 +1190,17 @@ router.put('/:form_id/status', async (req, res) => {
           admin_email: req.admin.email,
           admin_name: req.admin.name
         }
-<<<<<<< HEAD
       });
     } catch (transactionError) {
       await pool.execute('ROLLBACK');
-=======
-      };
-
-      // Add user status update info based on form type
-      if (status === 'a') {
-        if (formTypeId === 3) {
-          response.user_status_updated = true;
-          response.new_user_status = 'TAG';
-        } else if (formTypeId === 5) {
-          response.user_status_updated = true;
-          response.new_user_status = 'ACT';
-          response.status_updated_at = new Date().toISOString();
-        }
-      }
-
-      res.json(response);
-    } catch (transactionError) {
-      await pool.execute('ROLLBACK');
-      console.error('Transaction error:', transactionError);
->>>>>>> d8aac58 (updated form submission and form preview)
       throw transactionError;
     }
   } catch (error) {
     console.error('Error updating form status:', error);
-<<<<<<< HEAD
     res.status(500).json({ success: false, error: 'Failed to update form status' });
   }
 });
 
-=======
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update form status',
-      details: error.message 
-    });
-  }
-});
-
->>>>>>> Stashed changes
->>>>>>> d8aac58 (updated form submission and form preview)
 router.post('/:form_id/notes', async (req, res) => {
   try {
     const pool = getPool();
@@ -1453,6 +1260,8 @@ router.post('/:form_id/notes', async (req, res) => {
 
       await pool.execute('COMMIT');
 
+      console.log(`Admin notes added to form ${formId} by admin ${adminId} (${req.admin.email})`);
+
       res.json({ 
         success: true, 
         message: 'Admin notes added and logged successfully',
@@ -1493,13 +1302,6 @@ router.delete('/:form_id', async (req, res) => {
     await pool.execute('START TRANSACTION');
 
     try {
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-      // First delete related requirements
-      await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
-=======
->>>>>>> d8aac58 (updated form submission and form preview)
       // Get form type to determine which requirements table to delete from
       const [formInfo] = await pool.execute(`
         SELECT form_type_id FROM form_submission WHERE id = ?
@@ -1523,14 +1325,8 @@ router.delete('/:form_id', async (req, res) => {
         const tableName = result.tableName;
         await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
       } else {
-<<<<<<< HEAD
         await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
       }
-=======
-        await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
-      }
->>>>>>> Stashed changes
->>>>>>> d8aac58 (updated form submission and form preview)
       
       // Delete the form submission
       const [result] = await pool.execute('DELETE FROM form_submission WHERE id = ?', [formId]);

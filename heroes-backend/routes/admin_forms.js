@@ -12,6 +12,514 @@ const SORT_COLUMN_MAP = {
 };
 router.use(authenticateAdminToken);
 
+<<<<<<< Updated upstream
+=======
+const FORM_TYPE_3_TABLES = [
+  'rst_widow_requirements',
+  'rst_bi_principal_requirements',
+  'rst_bi_bene_requirements',
+  'rst_re_entitle_requirements',
+  'rst_principal_requirements'
+];
+
+const getFormType3TableForForm = async (pool, formId) => {
+  // Map table names to human-readable subtypes
+  const tableTypeMap = {
+    'rst_widow_requirements': 'widow',
+    'rst_bi_principal_requirements': 'bi_principal',
+    'rst_bi_bene_requirements': 'bi_bene',
+    'rst_re_entitle_requirements': 're_entitle',
+    'rst_principal_requirements': 'principal'
+  };
+
+  // Try each table to find which one has the requirements
+  for (const tableName of FORM_TYPE_3_TABLES) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
+        [formId]
+      );
+      
+      if (rows[0].count > 0) {
+        return {
+          tableName,
+          subtype: tableTypeMap[tableName]
+        };
+      }
+    } catch (error) {
+      console.error(`Error checking table ${tableName}:`, error);
+    }
+  }
+  
+  // Default to principal if nothing found
+  return {
+    tableName: 'rst_principal_requirements',
+    subtype: 'principal'
+  };
+};
+
+const getFormRequirements = async (pool, formId, formTypeId) => {  
+  if (formTypeId === 2) {
+    // Resumption form
+    const [requirements] = await pool.execute(
+      'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName: 'rsm_requirements',
+      rst_subtype: null
+    };
+  } else if (formTypeId === 3) {
+    // Reinstatement form - detect which table has the data
+    const { tableName, subtype } = await getFormType3TableForForm(pool, formId);
+    
+    const [requirements] = await pool.execute(
+      `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName,
+      rst_subtype: subtype
+    };
+  } else if (formTypeId === 5) {
+    // Form type 5 uses upd_requirements table
+    const [requirements] = await pool.execute(
+      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName: 'upd_requirements',
+      rst_subtype: null
+    };
+  } else {
+    const [requirements] = await pool.execute(
+      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName: 'upd_requirements',
+      rst_subtype: null
+    };
+  }
+};
+
+// ==================== HISTORY LOGS ROUTES ====================
+
+// GET history logs statistics
+router.get('/history-logs/stats', async (req, res) => {
+  try {
+    const pool = getPool();
+
+    const [stats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as totalLogs,
+        COUNT(CASE WHEN status = 'p' THEN 1 END) as pendingActions,
+        COUNT(CASE WHEN status = 'a' THEN 1 END) as approvedActions,
+        COUNT(CASE WHEN status = 'd' THEN 1 END) as deniedActions,
+        COUNT(CASE WHEN status = 'n' THEN 1 END) as noteActions,
+        COUNT(CASE WHEN action_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 END) as recentActions,
+        COUNT(CASE WHEN action_date >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as weekActions
+      FROM history_logs
+    `);
+
+    const [activeAdmins] = await pool.execute(`
+      SELECT 
+        a.id,
+        a.name,
+        a.email,
+        COUNT(hl.id) as action_count
+      FROM history_logs hl
+      JOIN admins_tbl a ON hl.action_by = a.id
+      GROUP BY a.id, a.name, a.email
+      ORDER BY action_count DESC
+    `);
+
+    const [trend] = await pool.execute(`
+      SELECT 
+        DATE(action_date) as date,
+        COUNT(*) as count,
+        COUNT(CASE WHEN status = 'a' THEN 1 END) as approved,
+        COUNT(CASE WHEN status = 'd' THEN 1 END) as denied,
+        COUNT(CASE WHEN status = 'n' THEN 1 END) as notes
+      FROM history_logs
+      WHERE action_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(action_date)
+      ORDER BY date DESC
+    `);
+
+    res.json({
+      success: true,
+      stats: {
+        ...stats[0],
+        activeAdmins: activeAdmins,
+        weeklyTrend: trend
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching history log stats:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history log statistics' 
+    });
+  }
+});
+
+// GET history logs for a specific form
+router.get('/history-logs/form/:form_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid form ID' 
+      });
+    }
+
+    const formId = parseInt(form_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      WHERE hl.form_submission_id = ?
+      ORDER BY hl.action_date DESC
+    `, [formId]);
+
+    res.json({
+      success: true,
+      data: {
+        form_id: formId,
+        log_count: logs.length,
+        logs: logs
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching form history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch form history logs' 
+    });
+  }
+});
+
+// GET history logs by a specific admin
+router.get('/history-logs/admin/:admin_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { admin_id } = req.params;
+
+    if (!admin_id || isNaN(parseInt(admin_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid admin ID' 
+      });
+    }
+
+    const adminId = parseInt(admin_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status
+      FROM history_logs hl
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      WHERE hl.action_by = ?
+      ORDER BY hl.action_date DESC
+    `, [adminId]);
+
+    const [adminInfo] = await pool.execute(
+      'SELECT id, name, email, role FROM admins_tbl WHERE id = ?',
+      [adminId]
+    );
+
+    if (adminInfo.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Admin not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        admin: adminInfo[0],
+        log_count: logs.length,
+        logs: logs
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching admin history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch admin history logs' 
+    });
+  }
+});
+
+// GET all history logs with pagination and filtering
+router.get('/history-logs', async (req, res) => {
+  try {
+    const pool = getPool();
+    const {
+      page = 1,
+      limit = 50,
+      status,
+      search,
+      form_id,
+      admin_id,
+      sort_by = 'action_date',
+      sort_order = 'DESC'
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, parseInt(limit) || 10);
+    const offset = (pageNum - 1) * limitNum;
+
+    let whereConditions = [];
+    let queryParams = [];
+
+    if (status && ['p', 'a', 'd', 'n'].includes(status)) {
+      whereConditions.push('hl.status = ?');
+      queryParams.push(status);
+    }
+
+    if (form_id && !isNaN(parseInt(form_id, 10))) {
+      whereConditions.push('hl.form_submission_id = ?');
+      queryParams.push(parseInt(form_id, 10));
+    }
+
+    if (admin_id && !isNaN(parseInt(admin_id, 10))) {
+      whereConditions.push('hl.action_by = ?');
+      queryParams.push(parseInt(admin_id, 10));
+    }
+
+    if (search && search.trim()) {
+      whereConditions.push(`(
+        hl.remarks LIKE ? OR 
+        a.name LIKE ? OR 
+        a.email LIKE ? OR 
+        CAST(hl.id AS CHAR) LIKE ? OR
+        CAST(hl.form_submission_id AS CHAR) LIKE ?
+      )`);
+      const searchParam = `%${search.trim()}%`;
+      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    const sortColumns = {
+      'action_date': 'hl.action_date',
+      'id': 'hl.id',
+      'form_id': 'hl.form_submission_id',
+      'status': 'hl.status'
+    };
+    const sortColumn = sortColumns[sort_by] || sortColumns['action_date'];
+    const sortOrderSafe = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
+
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      ${whereClause}
+    `;
+
+    const [countResult] = await pool.execute(countQuery, queryParams);
+    const totalCount = countResult[0].total;
+
+    const dataQuery = `
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status,
+        t.FIRSTNAME as pensioner_firstname,
+        t.LASTNAME as pensioner_lastname
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      ${whereClause}
+      ORDER BY ${sortColumn} ${sortOrderSafe}
+      LIMIT ${limitNum} OFFSET ${offset}
+    `;
+
+    const [rows] = await pool.execute(dataQuery, queryParams);
+
+    const totalPages = Math.ceil(totalCount / limitNum);
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        current_page: pageNum,
+        total_pages: totalPages,
+        total_count: totalCount,
+        per_page: limitNum,
+        has_next: pageNum < totalPages,
+        has_prev: pageNum > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching history logs:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history logs' 
+    });
+  }
+});
+
+// GET specific history log details
+router.get('/history-logs/:log_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { log_id } = req.params;
+
+    if (!log_id || isNaN(parseInt(log_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid log ID' 
+      });
+    }
+
+    const logId = parseInt(log_id);
+
+    const [logs] = await pool.execute(`
+      SELECT 
+        hl.id,
+        hl.form_submission_id,
+        hl.action_by,
+        hl.status,
+        hl.remarks,
+        hl.action_date,
+        a.name as admin_name,
+        a.email as admin_email,
+        a.role as admin_role,
+        ft.name as form_type_name,
+        u.email as user_email,
+        fs.status as current_form_status,
+        fs.submitted_at,
+        t.FIRSTNAME as pensioner_firstname,
+        t.LASTNAME as pensioner_lastname,
+        t.AFPSN
+      FROM history_logs hl
+      LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
+      LEFT JOIN form_type ft ON fs.form_type_id = ft.id
+      LEFT JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      WHERE hl.id = ?
+    `, [logId]);
+
+    if (logs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'History log not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: logs[0]
+    });
+
+  } catch (error) {
+    console.error('Error fetching history log details:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch history log details' 
+    });
+  }
+});
+
+// DELETE - Delete a history log (Super Admin only)
+router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
+  try {
+    const pool = getPool();
+    const { log_id } = req.params;
+
+    if (!log_id || isNaN(parseInt(log_id))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid log ID'
+      });
+    }
+
+    const logId = parseInt(log_id);
+
+    const [logExists] = await pool.execute(
+      'SELECT id FROM history_logs WHERE id = ?',
+      [logId]
+    );
+
+    if (logExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'History log not found'
+      });
+    }
+
+    await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
+
+    res.json({
+      success: true,
+      message: 'History log deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting history log:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete history log' 
+    });
+  }
+});
+
+// ==================== FORM SUBMISSION ROUTES ====================
+
+>>>>>>> Stashed changes
 router.get('/', async (req, res) => {
   try {
     const pool = getPool();
@@ -27,6 +535,13 @@ router.get('/', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
+<<<<<<< Updated upstream
+=======
+        u.profile_picture,
+        u.pensioner_ndx,
+        u.status_updated_at,
+        t.NDX as test_table_ndx,
+>>>>>>> Stashed changes
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -127,6 +642,8 @@ router.get('/paginated', async (req, res) => {
         fs.location as location_status,
         ft.name as form_type_name,
         u.email as user_email,
+        u.profile_picture,
+        u.status_updated_at,
         t.FIRSTNAME,
         t.LASTNAME,
         t.MIDDLENAME,    
@@ -203,10 +720,39 @@ router.get('/:form_id', async (req, res) => {
       WHERE fs.id = ?
     `, [formId]);
 
+<<<<<<< Updated upstream
     if (submissionRows.length === 0) {
       return res.status(404).json({ 
         success: false, 
         error: 'Form submission not found' 
+=======
+    if (forms.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Separate forms by type
+    const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
+    const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
+    const reinstatementFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
+
+    const requirementMap = {};
+
+    // Get requirements from upd_requirements table (for form types 1, 5, and other regular forms)
+    if (regularFormIds.length > 0) {
+      const placeholders = regularFormIds.map(() => '?').join(',');
+      const [requirements] = await pool.execute(`
+        SELECT form_id, requirement_type, value
+        FROM upd_requirements
+        WHERE form_id IN (${placeholders})
+          AND requirement_type IN ('home_address', 'mobile_number')
+      `, regularFormIds);
+
+      requirements.forEach(req => {
+        if (!requirementMap[req.form_id]) {
+          requirementMap[req.form_id] = {};
+        }
+        requirementMap[req.form_id][req.requirement_type] = req.value;
+>>>>>>> Stashed changes
       });
     }
 
@@ -412,6 +958,8 @@ router.get('/status/:status', async (req, res) => {
         fs.*,
         ft.name as form_type_name,
         u.email as user_email,
+        u.profile_picture,
+        u.status_updated_at,
         t.FIRSTNAME,    
         t.LASTNAME,      
         t.MIDDLENAME,    
@@ -502,7 +1050,248 @@ router.get('/location/:location_status', async (req, res) => {
   }
 });
 
+<<<<<<< Updated upstream
 // POST - Add admin notes to a form
+=======
+router.get('/:form_id', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid form ID' 
+      });
+    }
+
+    const formId = parseInt(form_id);
+
+    const [submissionRows] = await pool.execute(`
+      SELECT 
+        fs.*,
+        fs.location as location_status,
+        ft.name as form_type_name,
+        u.email as user_email,
+        u.profile_picture,
+        u.status_updated_at,
+        t.FIRSTNAME,
+        t.LASTNAME,
+        t.MIDDLENAME,    
+        t.SUFFIX,
+        t.AFPSN,
+        t.DOB, 
+        t.TYPE,         
+        p.type,      
+        p.b_type,     
+        u.created_at as user_created_at
+      FROM form_submission fs
+      JOIN form_type ft ON fs.form_type_id = ft.id
+      JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      LEFT JOIN test_table t ON p.hero_ndx = t.NDX
+      WHERE fs.id = ?
+    `, [formId]);
+
+    if (submissionRows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Form submission not found' 
+      });
+    }
+
+    const submission = submissionRows[0];
+
+    // Get requirements from the appropriate table based on form_type_id
+    const result = await getFormRequirements(pool, formId, submission.form_type_id);
+    
+    const formData = {
+      ...submission,
+      requirements: result.requirements || [],
+      requirement_table_used: result.tableName,
+      rst_subtype: result.rst_subtype, // Add this to response
+      location: {
+        longitude: submission.longitude,
+        latitude: submission.latitude,
+        status: submission.location
+      }
+    };
+
+    res.json({ 
+      success: true, 
+      data: formData 
+    });
+
+  } catch (error) {
+    console.error('Error fetching admin form details:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch form details' 
+    });
+  }
+});
+
+router.put('/:form_id/status', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { form_id } = req.params;
+    const { status, admin_notes } = req.body;
+
+    if (!form_id || isNaN(parseInt(form_id))) {
+      return res.status(400).json({ success: false, error: 'Invalid form ID' });
+    }
+
+    const adminId = req.admin.adminId;
+
+    if (!adminId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Admin authentication required'
+      });
+    }
+
+    const formId = parseInt(form_id);
+    const validStatuses = ['p', 'a', 'd'];
+
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)'
+      });
+    }
+
+    if (admin_notes && admin_notes.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Admin notes cannot exceed 1000 characters'
+      });
+    }
+
+    const [existingForm] = await pool.execute(
+      'SELECT id, status, form_type_id, user_id FROM form_submission WHERE id = ?',
+      [formId]
+    );
+
+    if (existingForm.length === 0) {
+      return res.status(404).json({ success: false, error: 'Form submission not found' });
+    }
+
+    const formTypeId = existingForm[0].form_type_id;
+    const userId = existingForm[0].user_id;
+
+    await pool.query('START TRANSACTION');
+
+    try {
+      // Update form submission status
+      const updateQuery = admin_notes !== undefined
+        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
+        : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
+
+      const updateParams = admin_notes !== undefined
+        ? [status, admin_notes, formId]
+        : [status, formId];
+
+      await pool.execute('SET @current_admin_id = ?', [adminId]);
+      await pool.execute(updateQuery, updateParams);
+
+      // ✨ FIXED: Handle form type 3 (Restoration) approval - set to TAG
+      if (formTypeId === 3 && status === 'a') {
+        await pool.execute(
+          `UPDATE users_tbl 
+           SET status = 'TAG', 
+               tagged_at = NOW(),
+           WHERE id = ?`,
+          [userId]
+        );
+        
+        console.log(`✓ Form Type 3 approved: User ${userId} status set to TAG`);
+      }
+
+      // ✨ FIXED: Handle form type 5 (Update) approval - set to ACT
+      if (formTypeId === 5 && status === 'a') {
+        const [updateResult] = await pool.execute(
+          `UPDATE users_tbl 
+           SET status = 'ACT', 
+               status_updated_at = NOW()
+           WHERE id = ?`,
+          [userId]
+        );
+        
+        console.log(`✓ Form Type 5 approved: User ${userId} status set to ACT (Rows affected: ${updateResult.affectedRows})`);
+        
+        // Verify the update
+        const [verifyUser] = await pool.execute(
+          'SELECT status, status_updated_at FROM users_tbl WHERE id = ?',
+          [userId]
+        );
+        
+        if (verifyUser.length > 0) {
+          console.log(`✓ Verified user ${userId}:`, {
+            status: verifyUser[0].status,
+            status_updated_at: verifyUser[0].status_updated_at
+          });
+        }
+      }
+
+      // Delete requirements from appropriate table if status is denied
+      if (status === 'd') {
+        if (formTypeId === 2) {
+          // Resumption form
+          await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
+        } else if (formTypeId === 3) {
+          // Restoration form
+          const result = await getFormType3TableForForm(pool, formId);
+          const tableName = result.tableName;
+          await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
+        } else {
+          // Form types 1, 5, and others use upd_requirements
+          await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
+        }
+      }
+
+      await pool.execute('COMMIT');
+
+      const response = { 
+        success: true, 
+        message: 'Form status updated successfully',
+        requirements_deleted: status === 'd',
+        form_type_id: formTypeId,
+        updated_by: {
+          admin_id: adminId,
+          admin_email: req.admin.email,
+          admin_name: req.admin.name
+        }
+      };
+
+      // Add user status update info based on form type
+      if (status === 'a') {
+        if (formTypeId === 3) {
+          response.user_status_updated = true;
+          response.new_user_status = 'TAG';
+        } else if (formTypeId === 5) {
+          response.user_status_updated = true;
+          response.new_user_status = 'ACT';
+          response.status_updated_at = new Date().toISOString();
+        }
+      }
+
+      res.json(response);
+    } catch (transactionError) {
+      await pool.execute('ROLLBACK');
+      console.error('Transaction error:', transactionError);
+      throw transactionError;
+    }
+  } catch (error) {
+    console.error('Error updating form status:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update form status',
+      details: error.message 
+    });
+  }
+});
+
+>>>>>>> Stashed changes
 router.post('/:form_id/notes', async (req, res) => {
   try {
     const pool = getPool();
@@ -568,8 +1357,6 @@ router.post('/:form_id/notes', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      console.log(`Admin notes added to form ${formId} by admin ${adminId} (${req.admin.email})`);
-
       res.json({ 
         success: true, 
         message: 'Admin notes added and logged successfully',
@@ -613,8 +1400,36 @@ router.delete('/:form_id', async (req, res) => {
     await pool.execute('START TRANSACTION');
 
     try {
+<<<<<<< Updated upstream
       // First delete related requirements
       await pool.execute('DELETE FROM form_requirements WHERE form_id = ?', [formId]);
+=======
+      // Get form type to determine which requirements table to delete from
+      const [formInfo] = await pool.execute(`
+        SELECT form_type_id FROM form_submission WHERE id = ?
+      `, [formId]);
+
+      if (formInfo.length === 0) {
+        await pool.execute('ROLLBACK');
+        return res.status(404).json({
+          success: false,
+          error: 'Form submission not found'
+        });
+      }
+
+      const formTypeId = formInfo[0].form_type_id;
+
+      // Delete from appropriate requirements table
+      if (formTypeId === 2) {
+        await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
+      } else if (formTypeId === 3) {
+        const result = await getFormType3TableForForm(pool, formId);
+        const tableName = result.tableName;
+        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
+      } else {
+        await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
+      }
+>>>>>>> Stashed changes
       
       // Then delete the form submission
       const [result] = await pool.execute('DELETE FROM form_submission WHERE id = ?', [formId]);

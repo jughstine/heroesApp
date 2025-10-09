@@ -81,6 +81,18 @@ router.get("/health", async (req, res) => {
   }
 });
 
+const adminQueryLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 50,
+    message: {
+        success: false,
+        error: 'Too many requests. Please try again later.',
+        code: 'RATE_LIMITED'
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // Rate limiting
 const step1Limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -379,6 +391,7 @@ router.post("/signup", (req, res, next) => {
     const stepNumber = parseInt(step, 10) || 1;
 
     try {
+<<<<<<< Updated upstream
       switch (stepNumber) {  
         case 1:
           return await handleStep1(req, res, startTime);
@@ -388,6 +401,168 @@ router.post("/signup", (req, res, next) => {
           return await handleStep3(req, res, startTime);
         default:
           return res.status(400).json({
+=======
+        const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
+
+        // Basic validation (existing code)
+        if (!type || !afpsn) {
+            return res.status(400).json({
+                success: false,
+                error: "Pensioner type and AFP Serial Number are required",
+                code: 'MISSING_REQUIRED_FIELDS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (!['P', 'B'].includes(type)) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid pensioner type",
+                code: 'INVALID_TYPE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Type-specific validation
+        if (type === 'P' && !bos) {
+            return res.status(400).json({
+                success: false,
+                error: "Branch of service is required for principal pensioners",
+                code: 'MISSING_BOS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (type === 'B') {
+            if (!b_type || !principal_first_name || !principal_last_name) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Beneficiary type and principal information are required",
+                    code: 'MISSING_BENEFICIARY_INFO',
+                    processingTime: `${Date.now() - startTime}ms`
+                });
+            }
+        }
+
+        const normalizedAfpsn = afpsn.trim().toUpperCase();
+        
+        // Define officer ranks
+        const officerRanks = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COL', 'BGEN', 'MGEN', 'LGEN'];
+
+        // Check if AFPSN exists AND get rank information
+        const afpsnCheck = await executeQuery(`
+            SELECT COUNT(*) as count, PENRANK 
+            FROM test_table 
+            WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
+            GROUP BY PENRANK`,
+            [normalizedAfpsn, type]
+        );
+
+        if (afpsnCheck.length === 0) {
+            return res.status(401).json({
+                success: false,
+                error: "AFP Serial Number not found in our records",
+                code: 'AFPSN_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Validate officer prefix matches rank
+        const hasOfficerPrefix = normalizedAfpsn.startsWith('O-');
+        const recordRank = afpsnCheck[0].PENRANK?.trim().toUpperCase();
+        const isOfficerRank = recordRank && officerRanks.includes(recordRank);
+
+        if (hasOfficerPrefix && !isOfficerRank) {
+            return res.status(400).json({
+                success: false,
+                error: "Your AFPSN indicates you are an officer, but your rank does not match officer ranks. Please verify your details.",
+                code: 'INVALID_OFFICER_STATUS',
+                details: {
+                    expectedRanks: officerRanks.join(', '),
+                    actualRank: recordRank || 'Unknown'
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (!hasOfficerPrefix && isOfficerRank) {
+            return res.status(400).json({
+                success: false,
+                error: "Your rank indicates you are an officer. Please check the 'I am an officer' box and add the O- prefix.",
+                code: 'MISSING_OFFICER_PREFIX',
+                details: {
+                    detectedRank: recordRank
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const accountCount = await executeQuery(`
+            SELECT COUNT(*) as count FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            JOIN test_table h ON p.hero_ndx = h.NDX 
+            WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
+            [normalizedAfpsn, type]
+        );
+
+        const existingAccounts = accountCount[0].count;
+        const MAX_ACCOUNTS_PER_AFPSN = 5;
+
+        if (existingAccounts >= MAX_ACCOUNTS_PER_AFPSN) {
+            return res.status(409).json({
+                success: false,
+                error: `Maximum number of accounts (${MAX_ACCOUNTS_PER_AFPSN}) already exists for this AFP Serial Number. Please contact support if you believe this is an error.`,
+                code: 'AFPSN_LIMIT_REACHED',
+                details: {
+                    currentAccounts: existingAccounts,
+                    maxAllowed: MAX_ACCOUNTS_PER_AFPSN
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Generate step 1 validation token
+        const tokenData = {
+            type,
+            afpsn: normalizedAfpsn,
+            bos: type === 'P' ? bos?.trim().toUpperCase() : null,
+            b_type: b_type || null,
+            principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
+            principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
+            step: 1,
+        };
+
+        const { token } = generateValidationToken(tokenData);
+        const step1Token = await storeValidationToken(token, tokenData);
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} (${existingAccounts}/${MAX_ACCOUNTS_PER_AFPSN} accounts) in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            message: "Step 1 validation completed",
+            step1Token,
+            data: {
+                type,
+                afpsn: normalizedAfpsn,
+                recordsFound: afpsnCheck[0].count,
+                rank: recordRank,
+                isOfficer: isOfficerRank,
+                existingAccounts: existingAccounts,
+                remainingSlots: MAX_ACCOUNTS_PER_AFPSN - existingAccounts
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                validUntil: new Date(Date.now() + 3600000).toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Step 1 validation error:", error);
+
+        res.status(500).json({
+>>>>>>> Stashed changes
             success: false,
             error: "Invalid step. Must be 1, 2, or 3.",
             code: 'INVALID_STEP',
@@ -543,9 +718,162 @@ async function handleStep2(req, res, startTime) {
   // Debug token in development only
   if (process.env.NODE_ENV === 'development') {
     try {
+<<<<<<< Updated upstream
       await debugTokenStatus(step1Token);
     } catch (debugError) {
       logger.warn('Debug token status failed:', debugError.message);
+=======
+        const { step1Token, firstname, lastname, dob } = req.body;
+
+        if (!step1Token) {
+            return res.status(400).json({
+                success: false,
+                error: "Step 1 validation token is required",
+                code: 'MISSING_STEP1_TOKEN',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Debug token in development only
+        if (process.env.NODE_ENV === 'development') {
+            try {
+                await debugTokenStatus(step1Token);
+            } catch (debugError) {
+                logger.warn('Debug token status failed:', debugError.message);
+            }
+        }
+
+        // Verify step 1 token
+        let step1Data;
+        try {
+            step1Data = await getValidationToken(step1Token);
+
+            if (!step1Data || step1Data.step !== 1) {
+                throw new Error('Invalid step sequence - expected step 1 data');
+            }
+
+            logger.info(`Step 1 data retrieved for validation: type=${step1Data.type}, afpsn=${step1Data.afpsn}`);
+
+        } catch (error) {
+            logger.warn(`Step 2 token validation failed: ${error.message}`);
+
+            let errorCode = 'INVALID_STEP1_TOKEN';
+            let errorMessage = "Invalid validation token. Please start over from Step 1.";
+
+            if (error.message.includes('expired')) {
+                errorCode = 'TOKEN_EXPIRED';
+                errorMessage = "Your validation has expired. Please start over from Step 1.";
+            } else if (error.message.includes('token data')) {
+                errorCode = 'TOKEN_DATA_ERROR';
+                errorMessage = "Token data is corrupted. Please start over from Step 1.";
+            }
+
+            return res.status(400).json({
+                success: false,
+                error: errorMessage,
+                code: errorCode,
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Basic validation
+        if (!firstname || !lastname || !dob) {
+            return res.status(400).json({
+                success: false,
+                error: "First name, last name, and date of birth are required",
+                code: 'MISSING_PERSONAL_INFO',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const normalizedFirstname = firstname.trim().toUpperCase();
+        const normalizedLastname = lastname.trim().toUpperCase();
+
+        // Validate against heroes database
+        const heroes = await executeQuery(`
+      SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE 
+      FROM test_table 
+      WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+        AND UPPER(TRIM(LASTNAME)) = ? 
+        AND DATE(DOB) = DATE(?) 
+        AND UPPER(TRIM(AFPSN)) = ? 
+        AND TYPE = ?`,
+            [normalizedFirstname, normalizedLastname, dob, step1Data.afpsn, step1Data.type]
+        );
+
+        if (heroes.length === 0) {
+            logger.warn(`No matching hero found for: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${step1Data.afpsn}`);
+            return res.status(401).json({
+                success: false,
+                error: "Personal information does not match our records. Please verify your details.",
+                code: 'PERSONAL_INFO_MISMATCH',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (heroes.length > 1) {
+            logger.warn(`Multiple heroes found for: ${normalizedFirstname} ${normalizedLastname}`);
+            return res.status(409).json({
+                success: false,
+                error: "Multiple matching records found. Please contact support.",
+                code: 'DUPLICATE_RECORDS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const heroData = heroes[0];
+        logger.info(`Hero matched: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN})`);
+
+        // Create step 2 token data
+        const step2TokenData = {
+            ...step1Data, // Include all step 1 data
+            firstname: normalizedFirstname,
+            lastname: normalizedLastname,
+            dob,
+            hero_ndx: heroData.NDX,
+            step: 2,
+            validated_at: new Date().toISOString()
+        };
+
+        // Generate and store step 2 token
+        const { token } = generateValidationToken(step2TokenData);
+        const step2Token = await storeValidationToken(token, step2TokenData, 2); // 2 hours
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Step 2 validation successful for: ${normalizedFirstname} ${normalizedLastname} in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            message: "Step 2 validation completed - Record matched!",
+            step2Token,
+            heroData: {
+                name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
+                afpsn: heroData.AFPSN,
+                controlNumber: heroData.CTRLNR,
+                type: heroData.TYPE,
+                dob: heroData.DOB
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                validUntil: new Date(Date.now() + 7200000).toISOString() // 2 hours
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Step 2 validation error:", {
+            message: error.message,
+            stack: error.stack,
+            processingTime
+        });
+
+        res.status(500).json({
+            success: false,
+            error: "Step 2 validation failed. Please try again.",
+            code: 'STEP2_VALIDATION_ERROR',
+            processingTime: `${processingTime}ms`
+        });
+>>>>>>> Stashed changes
     }
   }
 
@@ -673,6 +1001,7 @@ async function handleStep2(req, res, startTime) {
 }
 
 // STEP 3: Create account with email and password
+<<<<<<< Updated upstream
 async function handleStep3(req, res, startTime) {
   const { step2Token, email, password } = req.body;
 
@@ -682,6 +1011,310 @@ async function handleStep3(req, res, startTime) {
     validationData = await getValidationToken(step2Token);
     if (validationData.step !== 2) {
       throw new Error('Invalid step 2 token');
+=======
+router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+    let connection = null;
+
+    try {
+        const { step2Token, email, password } = req.body;
+
+        // Enhanced validation
+        if (!step2Token || !email || !password) {
+            return res.status(400).json({
+                success: false,
+                error: "Step 2 token, email, and password are required",
+                code: 'MISSING_REQUIRED_FIELDS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Verify step 2 token
+        let validationData;
+        try {
+            validationData = await getValidationToken(step2Token);
+            if (!validationData || validationData.step !== 2) {
+                throw new Error('Invalid step 2 token data');
+            }
+            
+            if (!validationData.hero_ndx) {
+                logger.error('Missing hero_ndx in validation data:', {
+                    step: validationData.step,
+                    hasData: !!validationData
+                });
+                throw new Error('Invalid validation data: missing hero_ndx');
+            }
+            
+        } catch (error) {
+            logger.warn(`Step 2 token validation failed: ${error.message}`);
+            return res.status(400).json({
+                success: false,
+                error: "Invalid or expired validation. Please restart the signup process.",
+                code: 'INVALID_VALIDATION_TOKEN',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Validate email format
+        if (!validator.isEmail(email)) {
+            return res.status(400).json({
+                success: false,
+                error: "Please enter a valid email address",
+                code: 'INVALID_EMAIL_FORMAT',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // Check for existing email
+        const existingUsers = await executeQuery(
+            'SELECT id FROM users_tbl WHERE email = ? LIMIT 1',
+            [normalizedEmail]
+        );
+
+        if (existingUsers.length > 0) {
+            return res.status(409).json({
+                success: false,
+                error: "An account with this email already exists",
+                code: 'EMAIL_ALREADY_EXISTS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const MAX_ACCOUNTS_PER_AFPSN = 5;
+        const afpsnAccountCount = await executeQuery(`
+            SELECT COUNT(*) as count, h.AFPSN 
+            FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            JOIN test_table h ON p.hero_ndx = h.NDX 
+            WHERE h.NDX = (SELECT NDX FROM test_table WHERE NDX = ? LIMIT 1)
+            GROUP BY h.AFPSN`,
+            [validationData.hero_ndx]
+        );
+
+        if (afpsnAccountCount.length > 0 && afpsnAccountCount[0].count >= MAX_ACCOUNTS_PER_AFPSN) {
+            return res.status(409).json({
+                success: false,
+                error: `Maximum number of accounts (${MAX_ACCOUNTS_PER_AFPSN}) has been reached for this AFP Serial Number.`,
+                code: 'AFPSN_LIMIT_REACHED',
+                details: {
+                    currentAccounts: afpsnAccountCount[0].count,
+                    maxAllowed: MAX_ACCOUNTS_PER_AFPSN
+                },
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Validate password strength
+        const passwordValidation = validatePasswordStrength(password);
+        if (!passwordValidation.isValid) {
+            return res.status(400).json({
+                success: false,
+                error: "Password does not meet security requirements",
+                details: passwordValidation.errors,
+                code: 'PASSWORD_TOO_WEAK',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        try {
+            connection = await getConnection();
+            
+            if (!connection) {
+                throw new Error('Database connection returned null');
+            }
+            
+            logger.info(`DB connection acquired for: ${normalizedEmail}`);
+            
+        } catch (connError) {
+            logger.error('Failed to get database connection:', {
+                error: connError.message,
+                code: connError.code,
+                email: normalizedEmail
+            });
+            
+            return res.status(503).json({
+                success: false,
+                error: "Database connection unavailable. Please try again.",
+                code: 'DB_CONNECTION_UNAVAILABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Transaction block
+        try {
+            await connection.beginTransaction();
+            logger.info('Transaction started for account creation');
+
+            // Hash password
+            const saltRounds = 12;
+            const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+            // Create pensioner record
+            logger.info('Creating pensioner record', {
+                hero_ndx: validationData.hero_ndx,
+                type: validationData.type
+            });
+
+            const [pensionerResult] = await connection.execute(
+                `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    validationData.hero_ndx,
+                    validationData.type,
+                    validationData.bos || null,
+                    validationData.b_type || null,
+                    validationData.principal_first_name || null,
+                    validationData.principal_last_name || null
+                ]
+            );
+
+            const pensionerId = pensionerResult.insertId;
+            
+            if (!pensionerId) {
+                throw new Error('Failed to create pensioner - no insertId');
+            }
+            
+            logger.info(`Pensioner created: ID ${pensionerId}`);
+
+            // Create user record
+            const [userResult] = await connection.execute(
+                `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status) 
+                 VALUES (?, ?, ?, 'TAG')`,
+                [pensionerId, normalizedEmail, hashedPassword]
+            );
+
+            const userId = userResult.insertId;
+            
+            if (!userId) {
+                throw new Error('Failed to create user - no insertId');
+            }
+            
+            logger.info(`User created: ID ${userId}`);
+
+            // Delete used token
+            await connection.execute(
+                'DELETE FROM signup_tokens WHERE token = ?',
+                [step2Token]
+            );
+
+            await connection.commit();
+            logger.info('Transaction committed successfully');
+
+            const processingTime = Date.now() - startTime;
+            logger.info(`Account created: ${normalizedEmail} (User: ${userId}) in ${processingTime}ms`);
+
+            res.status(201).json({
+                success: true,
+                message: "Account created successfully",
+                data: {
+                    userId,
+                    email: normalizedEmail,
+                    pensionerId,
+                    type: validationData.type,
+                    status: 'ACTIVE'
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (transactionError) {
+            logger.error('Transaction error:', {
+                message: transactionError.message,
+                code: transactionError.code,
+                sqlMessage: transactionError.sqlMessage,
+                errno: transactionError.errno
+            });
+
+            if (connection) {
+                try {
+                    await connection.rollback();
+                    logger.info('Transaction rolled back');
+                } catch (rollbackError) {
+                    logger.error('Rollback failed (non-fatal):', {
+                        message: rollbackError.message,
+                        code: rollbackError.code
+                    });
+                }
+            } else {
+                logger.error('Cannot rollback - connection is null');
+            }
+
+            throw transactionError;
+        }
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+
+        logger.error("Account creation error:", {
+            message: error.message,
+            code: error.code,
+            sqlMessage: error.sqlMessage,
+            sqlState: error.sqlState,
+            errno: error.errno,
+            email: req.body?.email
+        });
+
+        let statusCode = 500;
+        let errorCode = 'ACCOUNT_CREATION_FAILED';
+        let errorMessage = "Account creation failed. Please try again.";
+
+        if (error.code === 'ER_DUP_ENTRY') {
+            statusCode = 409;
+            errorCode = 'DUPLICATE_ENTRY';
+            errorMessage = "Account already exists for this record.";
+        } else if (error.code === 'ER_NO_REFERENCED_ROW' || error.code === 'ER_NO_REFERENCED_ROW_2') {
+            statusCode = 400;
+            errorCode = 'INVALID_HERO_RECORD';
+            errorMessage = "Invalid military record reference. The hero record does not exist.";
+        } else if (error.code === 'ER_DATA_TOO_LONG') {
+            statusCode = 400;
+            errorCode = 'DATA_TOO_LONG';
+            errorMessage = "One of the fields exceeds the maximum allowed length.";
+        } else if (error.code === 'ER_BAD_NULL_ERROR') {
+            statusCode = 400;
+            errorCode = 'NULL_VALUE_ERROR';
+            errorMessage = "Required fields cannot be null.";
+        } else if (error.code === 'ER_TRUNCATED_WRONG_VALUE') {
+            statusCode = 400;
+            errorCode = 'INVALID_DATA_FORMAT';
+            errorMessage = "Invalid data format for one of the fields.";
+        } else if (error.message && error.message.includes('validation data')) {
+            statusCode = 400;
+            errorCode = 'INVALID_VALIDATION_DATA';
+            errorMessage = "Invalid validation data. Please restart signup.";
+        } else if (['PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'ETIMEDOUT'].includes(error.code)) {
+            statusCode = 503;
+            errorCode = 'DB_CONNECTION_ERROR';
+            errorMessage = "Database connection issue. Please try again.";
+        }
+
+        res.status(statusCode).json({
+            success: false,
+            error: errorMessage,
+            code: errorCode,
+            processingTime: `${processingTime}ms`,
+            timestamp: new Date().toISOString()
+        });
+
+    } finally {
+        if (connection) {
+            try {
+                connection.release();
+                logger.debug('Database connection released');
+            } catch (releaseError) {
+                logger.error('Connection release failed (non-fatal):', {
+                    message: releaseError.message,
+                    code: releaseError.code
+                });
+            }
+        } else {
+            logger.debug('No connection to release');
+        }
+>>>>>>> Stashed changes
     }
   } catch (error) {
     return res.status(400).json({
@@ -913,6 +1546,7 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
       LIMIT 1
     `, [normalizedEmail]);
 
+<<<<<<< Updated upstream
     if (users.length === 0) {
       logger.warn(`Login failed - user not found: ${normalizedEmail}`);
       return res.status(401).json({
@@ -921,6 +1555,124 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         code: 'INVALID_CREDENTIALS',
         processingTime: `${Date.now() - startTime}ms`
       });
+=======
+        if (users.length === 0) {
+            logger.warn(`Login failed - user not found: ${normalizedEmail}`);
+            return res.status(401).json({
+                success: false,
+                error: "Invalid credentials",
+                code: 'INVALID_CREDENTIALS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const user = users[0];
+        logger.info(`User found: ${user.email}, Status: ${user.user_status}`);
+
+        if (user.user_status === 'SUS') {
+            return res.status(403).json({
+                success: false,
+                error: "Account suspended. Please contact support.",
+                code: 'ACCOUNT_SUSPENDED',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Verify password
+        const passwordMatch = await bcrypt.compare(password, user.password_hash);
+
+        if (!passwordMatch) {
+            logger.warn(`Login failed - invalid password: ${normalizedEmail}`);
+            return res.status(401).json({
+                success: false,
+                error: "Invalid credentials",
+                code: 'INVALID_CREDENTIALS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Update last login (non-blocking)
+        executeQuery('UPDATE users_tbl SET last_login = NOW() WHERE id = ?', [user.user_id])
+            .catch(error => logger.warn('Failed to update last_login:', error.message));
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Login successful for ${normalizedEmail} in ${processingTime}ms`);
+
+        const loginResponse = {
+            success: true,
+            message: "Login successful",
+            user: {
+                id: user.user_id,
+                email: user.email,
+                pensioner_id: user.pensioner_id,
+                type: user.type,
+                bos: user.bos,
+                status: 'ACTIVE',
+                validated_hero: {
+                    name: `${user.FIRSTNAME} ${user.LASTNAME}`,
+                    afpsn: user.AFPSN,
+                    type: user.hero_type
+                },
+                ...(user.type === 'B' && {
+                    principal_info: {
+                        firstname: user.principal_firstname,
+                        lastname: user.principal_lastname,
+                        relationship: user.b_type
+                    }
+                })
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                loginTime: new Date().toISOString()
+            }
+        };
+
+        res.json(loginResponse);
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Login error:", {
+            message: error.message,
+            code: error.code,
+            errno: error.errno,
+            processingTime
+        });
+
+        // Enhanced error categorization
+        let errorResponse = {
+            success: false,
+            processingTime: `${processingTime}ms`,
+            timestamp: new Date().toISOString()
+        };
+
+        if (error.code === 'PROTOCOL_CONNECTION_LOST') {
+            errorResponse.error = "Database connection lost. Please try again.";
+            errorResponse.code = 'CONNECTION_LOST';
+            errorResponse.statusCode = 503;
+        } else if (error.code === 'ECONNRESET') {
+            errorResponse.error = "Database connection reset. Please try again.";
+            errorResponse.code = 'CONNECTION_RESET';
+            errorResponse.statusCode = 503;
+        } else if (error.code === 'ETIMEDOUT') {
+            errorResponse.error = "Database request timed out. Please try again.";
+            errorResponse.code = 'TIMEOUT_ERROR';
+            errorResponse.statusCode = 503;
+        } else if (error.code === 'ECONNREFUSED') {
+            errorResponse.error = "Unable to connect to database. Please try again later.";
+            errorResponse.code = 'CONNECTION_REFUSED';
+            errorResponse.statusCode = 503;
+        } else if (error.code === 'ENOTFOUND') {
+            errorResponse.error = "Database server not found. Please contact support.";
+            errorResponse.code = 'SERVER_NOT_FOUND';
+            errorResponse.statusCode = 503;
+        } else {
+            errorResponse.error = "Service temporarily unavailable. Please try again later.";
+            errorResponse.code = 'SERVICE_ERROR';
+            errorResponse.statusCode = 500;
+        }
+
+        res.status(errorResponse.statusCode).json(errorResponse);
+>>>>>>> Stashed changes
     }
 
     const user = users[0];
@@ -1053,4 +1805,472 @@ router.post("/logout", async (req, res) => {
   }
 });
 
+<<<<<<< Updated upstream
 module.exports = router;
+=======
+// PROFILE ROUTES
+
+// Rate limiter for profile updates
+const profileUpdateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5,
+    message: {
+        success: false,
+        error: 'Too many update attempts. Please try again later.',
+        code: 'RATE_LIMITED'
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Update Email Endpoint
+router.put("/update-email/:userId", profileUpdateLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { userId } = req.params;
+        const { email } = req.body;
+
+        // Validation
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                error: "Email is required",
+                code: 'MISSING_EMAIL',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (!validator.isEmail(email)) {
+            return res.status(400).json({
+                success: false,
+                error: "Please enter a valid email address",
+                code: 'INVALID_EMAIL',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // Check if user exists
+        const userCheck = await executeQuery(
+            'SELECT id, email FROM users_tbl WHERE id = ? LIMIT 1',
+            [userId]
+        );
+
+        if (userCheck.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User not found",
+                code: 'USER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Check if new email already exists (excluding current user)
+        const emailExists = await executeQuery(
+            'SELECT id FROM users_tbl WHERE email = ? AND id != ? LIMIT 1',
+            [normalizedEmail, userId]
+        );
+
+        if (emailExists.length > 0) {
+            return res.status(409).json({
+                success: false,
+                error: "This email is already in use by another account",
+                code: 'EMAIL_EXISTS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Update email
+        await executeQuery(
+            'UPDATE users_tbl SET email = ?, updated_at = NOW() WHERE id = ?',
+            [normalizedEmail, userId]
+        );
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Email updated successfully for user ${userId}: ${normalizedEmail} in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            message: "Email updated successfully",
+            data: {
+                email: normalizedEmail
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                updatedAt: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Email update error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to update email. Please try again.",
+            code: 'EMAIL_UPDATE_ERROR',
+            processingTime: `${processingTime}ms`
+        });
+    }
+});
+
+// Update Password Endpoint
+router.put("/update-password/:userId", profileUpdateLimiter, validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { userId } = req.params;
+        const { currentPassword, newPassword } = req.body;
+
+        // Validation
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                error: "Current password and new password are required",
+                code: 'MISSING_PASSWORDS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Filter and validate new password
+        const filteredNewPassword = filterPassword(newPassword);
+
+        if (filteredNewPassword !== newPassword) {
+            return res.status(400).json({
+                success: false,
+                error: "New password contains invalid characters",
+                code: 'INVALID_PASSWORD_CHARS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const passwordValidation = validatePasswordStrength(filteredNewPassword);
+        if (!passwordValidation.isValid) {
+            return res.status(400).json({
+                success: false,
+                error: "New password does not meet security requirements",
+                details: passwordValidation.errors,
+                code: 'WEAK_PASSWORD',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Get user with current password hash
+        const users = await executeQuery(
+            'SELECT id, email, password_hash FROM users_tbl WHERE id = ? LIMIT 1',
+            [userId]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User not found",
+                code: 'USER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const user = users[0];
+
+        // Verify current password
+        const passwordMatch = await bcrypt.compare(currentPassword, user.password_hash);
+
+        if (!passwordMatch) {
+            logger.warn(`Password change failed - incorrect current password for user ${userId}`);
+            return res.status(401).json({
+                success: false,
+                error: "Current password is incorrect",
+                code: 'INCORRECT_PASSWORD',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Hash new password
+        const saltRounds = 12;
+        const hashedNewPassword = await bcrypt.hash(filteredNewPassword, saltRounds);
+
+        // Update password
+        await executeQuery(
+            'UPDATE users_tbl SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+            [hashedNewPassword, userId]
+        );
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Password updated successfully for user ${userId} (${user.email}) in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            message: "Password updated successfully",
+            meta: {
+                processingTime: `${processingTime}ms`,
+                updatedAt: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Password update error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to update password. Please try again.",
+            code: 'PASSWORD_UPDATE_ERROR',
+            processingTime: `${processingTime}ms`
+        });
+    }
+});
+
+// Update Mobile Number Endpoint
+router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { userId } = req.params;
+        const { mobile } = req.body;
+
+        // Validation
+        if (!mobile) {
+            return res.status(400).json({
+                success: false,
+                error: "Mobile number is required",
+                code: 'MISSING_MOBILE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const normalizedMobile = mobile.trim();
+        const mobileRegex = /^[0-9+\-\s()]{10,15}$/;
+
+        if (!mobileRegex.test(normalizedMobile)) {
+            return res.status(400).json({
+                success: false,
+                error: "Please enter a valid mobile number (10-15 digits)",
+                code: 'INVALID_MOBILE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const userCheck = await executeQuery(
+            'SELECT id FROM users_tbl WHERE id = ? LIMIT 1',
+            [userId]
+        );
+
+        if (userCheck.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User not found",
+                code: 'USER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const pensionerData = await executeQuery(`
+      SELECT p.hero_ndx 
+      FROM pensioners_tbl p
+      JOIN users_tbl u ON u.pensioner_ndx = p.id
+      WHERE u.id = ?
+      LIMIT 1`,
+            [userId]
+        );
+
+        if (pensionerData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Pensioner record not found",
+                code: 'PENSIONER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const heroNdx = pensionerData[0].hero_ndx;
+
+        // Update mobile in test_table (heroes table)
+        await executeQuery(
+            'UPDATE test_table SET MOBILENR = ? WHERE NDX = ?',
+            [normalizedMobile, heroNdx]
+        );
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Mobile number updated successfully for user ${userId} (hero_ndx: ${heroNdx}) in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            message: "Mobile number updated successfully",
+            data: {
+                mobile: normalizedMobile
+            },
+            meta: {
+                processingTime: `${processingTime}ms`,
+                updatedAt: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Mobile update error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to update mobile number. Please try again.",
+            code: 'MOBILE_UPDATE_ERROR',
+            processingTime: `${processingTime}ms`
+        });
+    }
+});
+
+router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { userId } = req.params;
+
+        const userProfile = await executeQuery(`
+            SELECT 
+                u.id as user_id,
+                u.email,
+                u.status,
+                u.created_at,
+                u.last_login,
+                u.updated_at,
+                u.profile_picture,
+                u.pensioner_ndx as pensioner_id,
+                p.type,
+                p.bos,
+                p.b_type,
+                p.principal_firstname,
+                p.principal_lastname,
+                h.FIRSTNAME,
+                h.LASTNAME,
+                h.AFPSN,
+                h.DOB,
+                h.MOBILENR,
+                h.CTRLNR,
+                h.ACRANK,
+                h.PENRANK
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            JOIN test_table h ON p.hero_ndx = h.NDX
+            WHERE u.id = ?
+        `, [userId]);
+
+        if (userProfile.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User profile not found",
+                code: 'PROFILE_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const profile = userProfile[0];
+        const processingTime = Date.now() - startTime;
+
+        res.json({
+            success: true,
+            user_id: profile.user_id,
+            EMAIL: profile.email,      
+            profile_picture: profile.profile_picture,
+            pensioner_id: profile.pensioner_id,
+            status: profile.status,
+            FIRSTNAME: profile.FIRSTNAME,
+            LASTNAME: profile.LASTNAME,
+            AFPSN: profile.AFPSN,
+            DOB: profile.DOB,
+            MOBILE: profile.MOBILENR, 
+            BOS: profile.bos,
+            TYPE: profile.type,
+            CTRLNR: profile.CTRLNR,
+            ACRANK: profile.ACRANK,
+            PENRANK: profile.PENRANK,
+            ...(profile.type === 'B' && {
+                B_TYPE: profile.b_type,
+                PRINCIPAL_FIRSTNAME: profile.principal_firstname,
+                PRINCIPAL_LASTNAME: profile.principal_lastname
+            }),
+            created_at: profile.created_at,
+            last_login: profile.last_login,
+            updated_at: profile.updated_at,
+            meta: {
+                processingTime: `${processingTime}ms`,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Profile fetch error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to fetch profile",
+            code: 'PROFILE_FETCH_ERROR',
+            processingTime: `${processingTime}ms`
+        });
+    }
+});
+
+router.get("/all", adminQueryLimiter, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        logger.info('Fetching all users for admin dashboard');
+
+        const users = await executeQuery(`
+            SELECT 
+                u.id as user_id,
+                u.email,
+                u.status,
+                u.created_at,
+                u.last_login,
+                u.status_updated_at,
+                p.type,
+                p.bos,
+                p.b_type,
+                h.FIRSTNAME as firstname,
+                h.LASTNAME as lastname,
+                h.AFPSN as afpsn,
+                h.MOBILENR as mobile
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            JOIN test_table h ON p.hero_ndx = h.NDX
+            ORDER BY u.created_at DESC
+        `);
+
+        const processingTime = Date.now() - startTime;
+        logger.info(`Retrieved ${users.length} users in ${processingTime}ms`);
+
+        res.json({
+            success: true,
+            users: users,
+            data: users, // Include both for compatibility
+            count: users.length,
+            meta: {
+                processingTime: `${processingTime}ms`,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        logger.error("Fetch all users error:", {
+            message: error.message,
+            code: error.code,
+            errno: error.errno
+        });
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to fetch users",
+            code: 'USERS_FETCH_ERROR',
+            processingTime: `${processingTime}ms`,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+
+module.exports = router;
+
+>>>>>>> Stashed changes

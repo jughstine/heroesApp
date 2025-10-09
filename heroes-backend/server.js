@@ -8,6 +8,22 @@ const {
   closePool 
 } = require('./config/database');
 
+<<<<<<< Updated upstream
+=======
+const { 
+  scheduleStatusUpdates, 
+  createManualTriggerRoute 
+} = require('./services/autoStatusChange');
+
+const heroesRoutes = require('./routes/heroes');
+const uploadRoutes = require('./routes/upload');
+const usersRoutes = require('./routes/users');
+const formsRoutes = require('./routes/forms');
+const adminForms = require('./routes/admin_forms');
+const { router: adminAuthRoutes } = require('./routes/admin');
+const inquiriesRouter = require('./routes/inquiries');
+
+>>>>>>> Stashed changes
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -89,6 +105,41 @@ app.use('/api/forms', formsRoutes);
 app.use('/api/admin', adminAuthRoutes);
 app.use('/api/admin_forms', adminForms);
 
+<<<<<<< Updated upstream
+=======
+createManualTriggerRoute(app);
+
+app.get('/api/test-inquiries', (req, res) => {
+  res.json({
+    message: 'Tama ang routes mo',
+    inquiriesRouter: typeof inquiriesRouter,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// mag chek muna ng mga routes
+app.get('/api/check-routes', (req, res) => {
+  res.json({
+    success: true,
+    routes: [
+      '/api/heroes',
+      '/api/upload',
+      '/api/users',
+      '/api/forms', 
+      '/api/inquiries',
+      '/api/admin',
+      '/api/admin_forms',
+      '/api/health',
+      '/api/test-inquiries',
+      '/admin/trigger-status-update', 
+      '/admin/users-at-risk' 
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
+
+
+>>>>>>> Stashed changes
 // Enhanced health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
@@ -118,6 +169,7 @@ app.get('/api/health', async (req, res) => {
       },
       services: {
         database: dbStatus,
+        autoStatusChange: 'active',
         ...(dbError && { databaseError: dbError })
       },
       headers: {
@@ -161,7 +213,6 @@ const shutdown = async () => {
     await closePool();
     process.exit(0);
   } catch (error) {
-    console.error('Error during shutdown:', error);
     process.exit(1);
   }
 };
@@ -175,12 +226,11 @@ const startServer = async () => {
     await initializeDatabase();
     await testConnection();
     
+    scheduleStatusUpdates();
+    
     app.listen(PORT, '0.0.0.0', () => {
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error.message);
-    console.error('Full error:', error);
-    process.exit(1);
   }
 };
 

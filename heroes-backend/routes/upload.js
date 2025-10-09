@@ -1,10 +1,14 @@
 const express = require('express');
 const multer = require('multer');
 const { Client } = require('minio');
+<<<<<<< Updated upstream
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs');
 const { promisify } = require('util');
+=======
+const { getPool } = require('../config/database'); 
+>>>>>>> Stashed changes
 const router = express.Router();
 
 // Set FFmpeg path using the npm package

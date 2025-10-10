@@ -1,11 +1,16 @@
 const express = require('express');
-const { pool } = require('../config/database');
+const { getPool } = require('../config/database');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
   try {
-    const conn = await pool.getConnection();
+    const poolInstance = getPool(); 
+    const conn = await poolInstance.getConnection();
     await conn.ping();
     conn.release();
     return true;
@@ -14,225 +19,6 @@ const checkDatabaseHealth = async () => {
     return false;
   }
 };
-
-// User Profile endpoint - gets the user profile
-router.get('/profile', async (req, res) => {
-  const startTime = Date.now();
-  let conn;
-
-  try {
-    console.log("=== USER PROFILE REQUEST ===");
-    
-    // Database health check
-    const dbHealthy = await checkDatabaseHealth();
-    if (!dbHealthy) {
-      return res.status(503).json({
-        success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Get database connection
-    conn = await pool.getConnection();
-    
-    // Updated query to include DOB and TYPE
-    const [profiles] = await conn.query(`
-      SELECT 
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.DOB,
-        h.TYPE,
-        h.AFPSN,
-        h.MOBILENR,
-        u.email,
-        u.status,
-        u.created_at
-      FROM users_tbl u
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.status IN ('ACT', 'UNV')
-      ORDER BY u.created_at DESC
-      LIMIT 1
-    `);
-
-    if (profiles.length === 0) {
-      console.log("No user profile found");
-      return res.status(404).json({
-        success: false,
-        error: "User profile not found",
-        code: 'PROFILE_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const profile = profiles[0];
-    
-    const processingTime = Date.now() - startTime;
-    console.log(`Profile retrieved successfully (${processingTime}ms)`);
-
-    // Updated response to include DOB and TYPE
-    const profileResponse = {
-      success: true,
-      data: {
-        FIRSTNAME: profile.FIRSTNAME,
-        LASTNAME: profile.LASTNAME,
-        DOB: profile.DOB,
-        TYPE: profile.TYPE,
-        MOBILENR: profile.MOBILENR,
-        AFPSN: profile.AFPSN
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
-    };
-
-    res.json(profileResponse);
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    console.error("=== PROFILE ERROR ===");
-    console.error("Error details:", error);
-
-    res.status(500).json({
-      success: false,
-      error: "Failed to retrieve user profile",
-      code: 'PROFILE_ERROR',
-      processingTime: `${processingTime}ms`
-    });
-
-  } finally {
-    if (conn) {
-      try {
-        conn.release();
-        console.log("Database connection released");
-      } catch (releaseError) {
-        console.error("Connection release error:", releaseError);
-      }
-    }
-  }
-});
-
-// Profile endpoint with user ID parameter (for when you implement authentication)
-router.get('/profile/:userId', async (req, res) => {
-  const startTime = Date.now();
-  let conn;
-
-  try {
-    const userId = req.params.userId;
-    console.log(`=== USER PROFILE REQUEST FOR ID: ${userId} ===`);
-    
-    // Validate userId is a number
-    if (isNaN(userId) || userId <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-    
-    // Database health check
-    const dbHealthy = await checkDatabaseHealth();
-    if (!dbHealthy) {
-      return res.status(503).json({
-        success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    // Get database connection
-    conn = await pool.getConnection();
-    
-    // Query to get specific user profile
-    const [profiles] = await conn.query(`
-      SELECT 
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.DOB,
-        h.AFPSN,
-        h.TYPE,
-        h.CTRLNR,
-        p.type as pensioner_type,
-        p.b_type,
-        p.principal_firstname,
-        p.principal_lastname,
-        u.email,
-        u.status,
-        u.created_at
-      FROM users_tbl u
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV')
-    `, [userId]);
-
-    if (profiles.length === 0) {
-      console.log(`No profile found for user ID: ${userId}`);
-      return res.status(404).json({
-        success: false,
-        error: "User profile not found",
-        code: 'PROFILE_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
-      });
-    }
-
-    const profile = profiles[0];
-    
-    const processingTime = Date.now() - startTime;
-    console.log(`Profile retrieved for user ${userId} (${processingTime}ms)`);
-
-    // Format the response
-    const profileResponse = {
-      success: true,
-      FIRSTNAME: profile.FIRSTNAME,
-      TYPE: profile.TYPE,
-      DOB: profile.DOB,
-      LASTNAME: profile.LASTNAME,
-      AFPSN: profile.AFPSN,
-      CTRLNR: profile.CTRLNR,
-      email: profile.email,
-      pensioner_type: profile.pensioner_type,
-      ...(profile.pensioner_type === 'B' && {
-        beneficiary_info: {
-          b_type: profile.b_type,
-          principal_firstname: profile.principal_firstname,
-          principal_lastname: profile.principal_lastname
-        }
-      }),
-      meta: {
-        processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
-    };
-
-    res.json(profileResponse);
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    console.error("=== PROFILE ERROR ===");
-    console.error("Error details:", error);
-
-    res.status(500).json({
-      success: false,
-      error: "Failed to retrieve user profile",
-      code: 'PROFILE_ERROR',
-      processingTime: `${processingTime}ms`
-    });
-
-  } finally {
-    if (conn) {
-      try {
-        conn.release();
-      } catch (releaseError) {
-        console.error("Connection release error:", releaseError);
-      }
-    }
-  }
-});
 
 // Health check endpoint
 router.get('/health', async (req, res) => {
@@ -269,30 +55,155 @@ router.get('/health', async (req, res) => {
   }
 });
 
-// Legacy heroes endpoint (keeping for backward compatibility if needed)
-router.get('/', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM test_table ORDER BY LASTNAME DESC LIMIT 5'
-    );
-    res.json({ 
-      success: true, 
-      data: rows,
-      message: 'This endpoint is deprecated. Use /profile for user profile data.'
-    });
-  } catch (error) {
-    console.error('Error fetching heroes:', error);
-    res.status(500).json({ success: false, error: error.message });
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, '../uploads/profile-pictures');
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // Create unique filename: userId_timestamp.ext
+    const uniqueName = `${req.params.userId}_${Date.now()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
   }
 });
 
-// Form submissions endpoint - gets user's form submissions
-router.get('/submissions', async (req, res) => {
+// File filter to accept only images
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG and GIF are allowed.'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
+
+
+// User Profile endpoint
+router.get('/profile', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); 
+  let conn = null;
+
+  try {    
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Get database connection
+    conn = await poolInstance.getConnection();
+    
+    // Updated query to include DOB and TYPE
+    const [profiles] = await conn.query(`
+      SELECT 
+        h.FIRSTNAME,
+        h.LASTNAME,
+        h.DOB,
+        h.TYPE,
+        h.AFPSN,
+        h.MOBILENR,
+        u.email,
+        u.status,
+        u.created_at
+      FROM users_tbl u
+      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      JOIN test_table h ON p.hero_ndx = h.NDX
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
+      ORDER BY u.created_at DESC
+      LIMIT 1
+    `);
+
+    if (profiles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+        code: 'PROFILE_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const profile = profiles[0];
+    
+    const processingTime = Date.now() - startTime;
+
+    // Updated response to include DOB and TYPE
+    const profileResponse = {
+      success: true,
+      data: {
+        FIRSTNAME: profile.FIRSTNAME,
+        LASTNAME: profile.LASTNAME,
+        DOB: profile.DOB,
+        TYPE: profile.TYPE,
+        MOBILENR: profile.MOBILENR,
+        status: profile.status,
+        AFPSN: profile.AFPSN
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        retrieved: new Date().toISOString()
+      }
+    };
+
+    res.json(profileResponse);
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error("=== PROFILE ERROR ==="); 
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to retrieve user profile",
+      code: 'PROFILE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+// Profile endpoint with user ID parameter
+router.get('/profile/:userId', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool(); 
+  let conn = null;
 
   try {
-    console.log("=== FORM SUBMISSIONS REQUEST ===");
+    const userId = req.params.userId;
+    // Validate userId is a number
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID provided",
+        code: 'INVALID_USER_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
     
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
@@ -306,7 +217,224 @@ router.get('/submissions', async (req, res) => {
     }
 
     // Get database connection
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
+    
+    // Query to get specific user profile
+    const [profiles] = await conn.query(`
+      SELECT 
+        h.FIRSTNAME,
+        h.LASTNAME,
+        h.DOB,
+        h.AFPSN,
+        h.TYPE,
+        h.CTRLNR,
+        h.MOBILENR,
+        p.type as pensioner_type,
+        p.bos,  
+        p.b_type,
+        p.principal_firstname,
+        p.principal_lastname,
+        u.email,
+        u.status,
+        u.status_updated_at,
+        u.profile_picture,
+        u.created_at
+      FROM users_tbl u
+      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      JOIN test_table h ON p.hero_ndx = h.NDX
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV' , 'TAG', 'DEL')
+    `, [userId]);
+
+    if (profiles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User profile not found",
+        code: 'PROFILE_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const profile = profiles[0];
+    
+    const processingTime = Date.now() - startTime;
+
+    // Format the response
+    const profileResponse = {
+      success: true,
+      FIRSTNAME: profile.FIRSTNAME,
+      TYPE: profile.TYPE,
+      DOB: profile.DOB,
+      LASTNAME: profile.LASTNAME,
+      AFPSN: profile.AFPSN,
+      BOS: profile.bos,
+      EMAIL: profile.email,
+      MOBILENR: profile.MOBILENR,
+      CTRLNR: profile.CTRLNR,
+      email: profile.email,
+      status: profile.status,
+      status_updated_at: profile.status_updated_at,
+      profile_picture: profile.profile_picture,
+      pensioner_type: profile.pensioner_type,
+      ...(profile.pensioner_type === 'B' && {
+        beneficiary_info: {
+          b_type: profile.b_type,
+          principal_firstname: profile.principal_firstname,
+          principal_lastname: profile.principal_lastname
+        }
+      }),
+      meta: {
+        processingTime: `${processingTime}ms`,
+        retrieved: new Date().toISOString()
+      }
+    };
+
+    res.json(profileResponse);
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error("=== PROFILE ERROR ===");
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to retrieve user profile",
+      code: 'PROFILE_ERROR',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+router.put('/profile/:userId/picture', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool();
+  let conn = null;
+
+  try {
+    const userId = req.params.userId;
+    const { profile_picture } = req.body;
+
+    // Validate userId
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID provided",
+        code: 'INVALID_USER_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    if (!profile_picture || typeof profile_picture !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: "Valid profile picture URL is required",
+        code: 'INVALID_URL',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    conn = await poolInstance.getConnection();
+
+    // Verify user exists
+    const [users] = await conn.query(
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV','TAG', 'DEL')",
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Update user profile with new picture URL
+    await conn.query(
+      'UPDATE users_tbl SET profile_picture = ? WHERE id = ?',
+      [profile_picture, userId]
+    );
+
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ Profile picture updated for user ${userId}: ${profile_picture}`);
+
+    res.json({
+      success: true,
+      data: {
+        profile_picture: profile_picture
+      },
+      message: 'Profile picture updated successfully',
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updated: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error("=== PROFILE PICTURE UPDATE ERROR ===");
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to update profile picture",
+      code: 'UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+// Form submissions endpoint
+router.get('/submissions', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool(); 
+  let conn = null; 
+
+  try {
+    
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Get database connection
+    conn = await poolInstance.getConnection();
     
     // This gets submissions for the most recent userr
     const [submissions] = await conn.query(`
@@ -319,14 +447,12 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV')
-      AND fs.status IN ('p', 'a') -- Only pending or approved submissions
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
+      AND fs.status IN ('p') 
       ORDER BY fs.submitted_at DESC
     `);
 
     const processingTime = Date.now() - startTime;
-    console.log(`Form submissions retrieved successfully (${processingTime}ms)`);
-    console.log(`Found ${submissions.length} active submissions`);
 
     const submissionsResponse = {
       success: true,
@@ -349,14 +475,13 @@ router.get('/submissions', async (req, res) => {
       success: false,
       error: "Failed to retrieve form submissions",
       code: 'SUBMISSIONS_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
 
   } finally {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -364,14 +489,13 @@ router.get('/submissions', async (req, res) => {
   }
 });
 
-// Alternative endpoint for specific user (when you implement authentication)
 router.get('/submissions/:userId', async (req, res) => {
   const startTime = Date.now();
-  let conn;
+  const poolInstance = getPool(); 
+  let conn = null; 
 
   try {
     const userId = req.params.userId;
-    console.log(`=== FORM SUBMISSIONS REQUEST FOR USER: ${userId} ===`);
     
     // Validate userId
     if (isNaN(userId) || userId <= 0) {
@@ -394,7 +518,7 @@ router.get('/submissions/:userId', async (req, res) => {
       });
     }
 
-    conn = await pool.getConnection();
+    conn = await poolInstance.getConnection();
     
     // Query for specific user's submissions
     const [submissions] = await conn.query(`
@@ -407,12 +531,11 @@ router.get('/submissions/:userId', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       WHERE fs.user_id = ?
-      AND fs.status IN ('p', 'a') -- Only pending or approved
+      AND fs.status IN ('p')
       ORDER BY fs.submitted_at DESC
     `, [userId]);
 
     const processingTime = Date.now() - startTime;
-    console.log(`Submissions retrieved for user ${userId}: ${submissions.length} found (${processingTime}ms)`);
 
     res.json({
       success: true,
@@ -434,7 +557,7 @@ router.get('/submissions/:userId', async (req, res) => {
       success: false,
       error: "Failed to retrieve user submissions",
       code: 'USER_SUBMISSIONS_ERROR',
-      processingTime: `${processingTime}ms`
+      processingTime: `${Date.now() - startTime}ms`
     });
 
   } finally {
@@ -448,7 +571,7 @@ router.get('/submissions/:userId', async (req, res) => {
   }
 });
 
-// Form types reference endpoint (helpful for debugging)
+// Form types reference endpoint
 router.get('/form-types', async (req, res) => {
   try {
     res.json({

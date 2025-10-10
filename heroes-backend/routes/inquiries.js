@@ -47,7 +47,6 @@ router.get('/categories', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -238,7 +237,6 @@ router.post('/submit', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -304,7 +302,6 @@ router.get('/', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -359,7 +356,6 @@ router.get('/:inquiry_id', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -407,7 +403,6 @@ router.get('/email/:email', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -455,7 +450,6 @@ router.get('/mobile/:mobilenr', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -524,7 +518,6 @@ router.put('/:inquiry_id/status', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -613,7 +606,6 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }
@@ -696,7 +688,6 @@ router.get('/analytics/stats', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("Database connection released");
       } catch (releaseError) {
         console.error("Connection release error:", releaseError);
       }

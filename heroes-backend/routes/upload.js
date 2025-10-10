@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const { Client } = require('minio');
-const { getPool } = require('../config/database'); // Import your database config
+const { getPool } = require('../config/database');
 const router = express.Router();
 
 const minioClient = new Client({

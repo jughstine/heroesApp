@@ -27,8 +27,17 @@ const PORT = process.env.PORT || 3000;
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Reflect the requesting origin back (allows all origins with credentials)
-    callback(null, origin || '*');
+    // Use env variable if set, otherwise allow all
+    if (process.env.CORS_ORIGIN === '*') {
+      callback(null, origin || true);
+    } else {
+      const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || [];
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, origin || true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],

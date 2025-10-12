@@ -641,6 +641,64 @@ router.get("/verify", authenticateAdminToken, (req, res) => {
   });
 });
 
+router.get('/admins/same-role', authenticateAdminToken, async (req, res) => {
+  try {
+    const currentUserRole = req.admin.role;
+    const currentUserId = req.admin.adminId || req.admin.id;
+
+    if (!currentUserRole) {
+      return res.status(400).json({
+        success: false,
+        error: 'User role not found',
+        code: 'MISSING_ROLE'
+      });
+    }
+
+    let query;
+    let params;
+
+    if (currentUserRole === 'S_ADMIN' || currentUserRole === 'CARES') {
+      query = `
+        SELECT id, email, name, mobile_number as mobileNumber, role, created_at as createdAt
+        FROM admins_tbl 
+        WHERE id != ?
+        ORDER BY role ASC, name ASC
+      `;
+      params = [currentUserId];
+    } else {
+      query = `
+        SELECT id, email, name, mobile_number as mobileNumber, role, created_at as createdAt
+        FROM admins_tbl 
+        WHERE (role = ? OR role = 'CARES') AND id != ?
+        ORDER BY role ASC, name ASC
+      `;
+      params = [currentUserRole, currentUserId];
+    }
+
+    const results = await executeQuery(query, params);
+
+    res.json({
+      success: true,
+      data: results || [],
+      meta: {
+        count: (results || []).length,
+        current_user_role: currentUserRole,
+        current_user_id: currentUserId,
+        is_super_admin: currentUserRole === 'S_ADMIN',
+        can_assign_to_all: currentUserRole === 'S_ADMIN' || currentUserRole === 'CARES'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching same-role admins:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch admins',
+      code: 'SERVER_ERROR'
+    });
+  }
+});
+
 module.exports = {
   router,
   authenticateAdminToken,

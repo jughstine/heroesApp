@@ -1148,6 +1148,12 @@ router.put('/:form_id/status', async (req, res) => {
     const formTypeId = existingForm[0].form_type_id;
     const userId = existingForm[0].user_id;
 
+    // Get user's push token
+    const [userInfo] = await pool.execute(
+      'SELECT push_token FROM users_tbl WHERE id = ?',
+      [userId]
+    );
+
     await pool.query('START TRANSACTION');
 
     try {
@@ -1181,30 +1187,44 @@ router.put('/:form_id/status', async (req, res) => {
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
         if (formTypeId === 2) {
-          // Resumption form
           await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
         } else if (formTypeId === 3) {
-          // Restoration form
           const result = await getFormType3TableForForm(pool, formId);
           const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
         } else if (formTypeId === 5) {
-          // Updating Form
           await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
-        }
-        else {
-          // Form types 1, 5, and others use upd_requirements
+        } else {
           await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
         }
       }
 
       await pool.execute('COMMIT');
 
+      // Send push notification after successful database update
+      if (userInfo[0]?.push_token) {
+        const formDetails = {
+          form_id: formId,
+          form_type_id: formTypeId
+        };
+
+        if (status === 'a') {
+          await sendFormApprovalNotification(userInfo[0].push_token, formDetails);
+          console.log(`✅ Push notification sent for form approval: ${formId}`);
+        } else if (status === 'd') {
+          await sendFormDenialNotification(userInfo[0].push_token, formDetails);
+          console.log(`❌ Push notification sent for form denial: ${formId}`);
+        }
+      } else {
+        console.log(`⚠️ No push token found for user ${userId}`);
+      }
+
       const response = { 
         success: true, 
         message: 'Form status updated successfully',
         requirements_deleted: status === 'd',
         form_type_id: formTypeId,
+        notification_sent: !!userInfo[0]?.push_token,
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1212,7 +1232,6 @@ router.put('/:form_id/status', async (req, res) => {
         }
       };
 
-      // Add user status update info if restoration form was approved
       if (formTypeId === 3 && status === 'a') {
         response.user_status_updated = true;
         response.new_user_status = 'TAG';
@@ -1242,7 +1261,6 @@ router.post('/:form_id/notes', async (req, res) => {
       });
     }
     const formId = parseInt(form_id);
-
     const adminId = req.admin.adminId;
 
     if (!notes || typeof notes !== 'string' || notes.trim().length === 0) {
@@ -1260,7 +1278,7 @@ router.post('/:form_id/notes', async (req, res) => {
     }
 
     const [existingForm] = await pool.execute(
-      'SELECT id FROM form_submission WHERE id = ?',
+      'SELECT id, user_id, form_type_id FROM form_submission WHERE id = ?',
       [formId]
     );
 
@@ -1270,6 +1288,15 @@ router.post('/:form_id/notes', async (req, res) => {
         error: 'Form submission not found' 
       });
     }
+
+    const userId = existingForm[0].user_id;
+    const formTypeId = existingForm[0].form_type_id;
+
+    // Get user's push token
+    const [userInfo] = await pool.execute(
+      'SELECT push_token FROM users_tbl WHERE id = ?',
+      [userId]
+    );
 
     await pool.query('START TRANSACTION');
 
@@ -1288,11 +1315,21 @@ router.post('/:form_id/notes', async (req, res) => {
 
       await pool.execute('COMMIT');
 
+      // Send push notification for admin notes
+      if (userInfo[0]?.push_token) {
+        await sendAdminNotesNotification(userInfo[0].push_token, {
+          form_id: formId,
+          form_type_id: formTypeId
+        });
+        console.log(`📝 Push notification sent for admin note on form: ${formId}`);
+      }
+
       console.log(`Admin notes added to form ${formId} by admin ${adminId} (${req.admin.email})`);
 
       res.json({ 
         success: true, 
         message: 'Admin notes added and logged successfully',
+        notification_sent: !!userInfo[0]?.push_token,
         added_by: {
           admin_id: adminId,
           admin_email: req.admin.email,

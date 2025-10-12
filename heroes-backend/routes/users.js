@@ -365,7 +365,6 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
 
-// STEP 1: Validate pensioner type and AFPSN
 router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
@@ -655,7 +654,7 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
 // STEP 3: Create account with email and password
 router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
-    let connection = null; // ⚠️ CRITICAL: Initialize outside try block
+    let connection = null; 
 
     try {
         const { step2Token, email, password } = req.body;
@@ -678,7 +677,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Invalid step 2 token data');
             }
             
-            // ⚠️ CRITICAL: Verify hero_ndx exists
             if (!validationData.hero_ndx) {
                 logger.error('Missing hero_ndx in validation data:', {
                     step: validationData.step,
@@ -937,7 +935,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         });
 
     } finally {
-        // ⚠️ CRITICAL FIX: Safe connection release with null check
         if (connection) {
             try {
                 connection.release();
@@ -1565,6 +1562,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 u.status,
                 u.created_at,
                 u.last_login,
+                u.status_updated_at,
                 p.type,
                 p.bos,
                 p.b_type,

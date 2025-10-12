@@ -25,55 +25,21 @@ const inquiriesRouter = require('./routes/inquiries');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS configuration
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
-    
-    // In development, be more permissive
-    if (process.env.NODE_ENV === 'development') {
-      return callback(null, true);
-    }
-    
-    // Production - specific origins only
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'https://www.afppgmc.com',
-      'https://afppgmc.com',
-      process.env.CORS_ORIGIN
-    ].filter(Boolean); 
-    
-    // React Native specific origins
-    const reactNativeOrigins = [
-      'file://',
-      'capacitor://localhost',
-      'ionic://localhost',
-      'http://localhost',
-      'http://192.168.',
-      'http://10.0.',
-      'http://172.16.'
-    ];
-    
-    // Check if origin matches React Native patterns
-    const isReactNative = reactNativeOrigins.some(pattern => 
-      origin.startsWith(pattern)
-    );
-    
-    if (allowedOrigins.includes(origin) || isReactNative) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+  origin: function (origin, callback) {    
+    callback(null, true);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  optionsSuccessStatus: 200
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  optionsSuccessStatus: 200,
+  maxAge: 86400 
 };
 
 app.use(cors(corsOptions));
+
+app.options('*', cors(corsOptions));
 
 // Add logging middleware to debug requests
 app.use((req, res, next) => {
@@ -101,6 +67,7 @@ app.use('/api/inquiries', inquiriesRouter);
 app.use('/api/admin', adminAuthRoutes);
 app.use('/api/admin_forms', adminForms);
 
+// Auto status change routes (Calendar Cycle-based)
 createManualTriggerRoute(app);
 
 app.get('/api/test-inquiries', (req, res) => {
@@ -111,7 +78,7 @@ app.get('/api/test-inquiries', (req, res) => {
   });
 });
 
-// mag chek muna ng mga routes
+// Check all available routes
 app.get('/api/check-routes', (req, res) => {
   res.json({
     success: true,
@@ -125,15 +92,17 @@ app.get('/api/check-routes', (req, res) => {
       '/api/admin_forms',
       '/api/health',
       '/api/test-inquiries',
-      '/admin/trigger-status-update', // 
-      '/admin/users-at-risk' // 
+      '/admin/trigger-status-update', 
+      '/admin/users-at-risk',
+      '/admin/cycle-statistics',
+      '/admin/current-cycle'
     ],
     timestamp: new Date().toISOString()
   });
 });
 
 
-// Enhanced health check endpoint
+// health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     let dbStatus = 'unknown';
@@ -145,6 +114,23 @@ app.get('/api/health', async (req, res) => {
     } catch (error) {
       dbStatus = 'disconnected';
       dbError = error.message;
+    }
+
+    // Get current cycle info
+    let cycleInfo = null;
+    try {
+      const { autoStatusChangeService } = require('./services/autoStatusChange');
+      const currentCycle = autoStatusChangeService.getCurrentCycle();
+      const dayOfYear = autoStatusChangeService.getDayOfYear();
+      
+      cycleInfo = {
+        currentCycle: currentCycle?.cycle || null,
+        cycleName: currentCycle?.name || 'Unknown',
+        dayOfYear: dayOfYear,
+        daysLeftInCycle: currentCycle ? currentCycle.endDay - dayOfYear : null
+      };
+    } catch (error) {
+      cycleInfo = { error: 'Could not fetch cycle info' };
     }
 
     const healthData = {
@@ -162,7 +148,8 @@ app.get('/api/health', async (req, res) => {
       },
       services: {
         database: dbStatus,
-        autoStatusChange: 'active', 
+        autoStatusChange: 'active (Calendar Cycle-based)', 
+        cycleInfo: cycleInfo,
         ...(dbError && { databaseError: dbError })
       },
       headers: {
@@ -200,9 +187,11 @@ const startServer = async () => {
     await initializeDatabase();
     await testConnection();
     
+    // Schedule automatic status updates (Calendar Cycle-based)
     scheduleStatusUpdates();
-    
+        
     app.listen(PORT, '0.0.0.0', () => {
+      console.log(`✓ Server running on port ${PORT}`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);

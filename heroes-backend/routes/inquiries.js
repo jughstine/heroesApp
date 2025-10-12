@@ -695,39 +695,4 @@ router.get('/analytics/stats', async (req, res) => {
   }
 });
 
-// Health check endpoint
-router.get("/health", async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    const dbHealthy = await checkDatabaseHealth();
-    const processingTime = Date.now() - startTime;
-    
-    res.json({
-      success: true,
-      status: 'healthy',
-      services: {
-        database: dbHealthy ? 'healthy' : 'degraded',
-        inquiries: 'operational'
-      },
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
-    });
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    
-    res.status(500).json({
-      success: false,
-      status: 'unhealthy',
-      error: 'Health check failed',
-      meta: {
-        processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-});
-
 module.exports = router;

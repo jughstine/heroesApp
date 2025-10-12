@@ -593,4 +593,164 @@ router.get('/form-types', async (req, res) => {
   }
 });
 
+// Update user's push token
+router.put('/push-token/:userId', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool();
+  let conn = null;
+
+  try {
+    const userId = req.params.userId;
+    const { push_token } = req.body;
+
+    // Validate userId
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID provided",
+        code: 'INVALID_USER_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    if (!push_token || typeof push_token !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: "Valid push token is required",
+        code: 'INVALID_TOKEN',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Database health check
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    conn = await poolInstance.getConnection();
+
+    // Verify user exists
+    const [users] = await conn.query(
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL')",
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Update user's push token
+    await conn.query(
+      'UPDATE users_tbl SET push_token = ? WHERE id = ?',
+      [push_token, userId]
+    );
+
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ Push token updated for user ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'Push token saved successfully',
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updated: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error("=== PUSH TOKEN UPDATE ERROR ===");
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to save push token",
+      code: 'UPDATE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+// Delete user's push token (for logout)
+router.delete('/push-token/:userId', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool();
+  let conn = null;
+
+  try {
+    const userId = req.params.userId;
+
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID provided",
+        code: 'INVALID_USER_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    conn = await poolInstance.getConnection();
+
+    await conn.query(
+      'UPDATE users_tbl SET push_token = NULL WHERE id = ?',
+      [userId]
+    );
+
+    const processingTime = Date.now() - startTime;
+
+    console.log(`✅ Push token removed for user ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'Push token removed successfully',
+      meta: {
+        processingTime: `${processingTime}ms`,
+        updated: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error("=== PUSH TOKEN DELETE ERROR ===");
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to remove push token",
+      code: 'DELETE_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
 module.exports = router;

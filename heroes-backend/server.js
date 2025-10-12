@@ -26,8 +26,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const corsOptions = {
-  origin: function (origin, callback) {    
-    callback(null, true);
+  origin: function (origin, callback) {
+    // Reflect the requesting origin back (allows all origins with credentials)
+    callback(null, origin || '*');
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],

@@ -27,24 +27,48 @@ const PORT = process.env.PORT || 3000;
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Use env variable if set, otherwise allow all
-    if (process.env.CORS_ORIGIN === '*') {
-      callback(null, origin || true);
-    } else {
-      const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || [];
+    const allowedOrigins = [
+      // Production
+      'https://afppgmc.com',
+      'https://www.afppgmc.com',
+      
+      // Development
+      'http://localhost:3000',
+      'http://localhost:5173', 
+      'http://192.168.264.108:5173',
+      'http://127.0.0.1:5173'
+    ];
+    // Development
+    if (process.env.NODE_ENV === 'development') {
+      console.log('CORS [DEV]: Checking origin:', origin);
       if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, origin || true);
+        callback(null, true);
       } else {
-        callback(new Error('Not allowed by CORS'));
+        // In development
+        console.warn('CORS [DEV]: Unexpected origin allowed:', origin);
+        callback(null, true);
+      }
+    } 
+    // Production: Strict
+    else {
+      if (!origin) {
+        return callback(null, true);
+      }
+      // production
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.error('CORS [PROD]: BLOCKED origin:', origin);
+        callback(new Error('Not allowed by CORS policy'), false);
       }
     }
   },
-  credentials: true,
+  credentials: true, 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   optionsSuccessStatus: 200,
-  maxAge: 86400 
+  maxAge: 86400
 };
 
 app.use(cors(corsOptions));

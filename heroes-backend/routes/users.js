@@ -814,7 +814,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             // Create user record
             const [userResult] = await connection.execute(
                 `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status) 
-                 VALUES (?, ?, ?, 'ACTIVE')`,
+                 VALUES (?, ?, ?, 'TAG')`,
                 [pensionerId, normalizedEmail, hashedPassword]
             );
 

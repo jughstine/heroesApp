@@ -365,6 +365,8 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
 
+const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COL', 'BGEN', 'MGEN', 'LGEN'];
+
 router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
@@ -413,14 +415,15 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
 
         const normalizedAfpsn = afpsn.trim().toUpperCase();
 
-        // Check if AFPSN exists in heroes database (basic check)
+        // Check if AFPSN exists in heroes database and retrieve rank info
         const afpsnExists = await executeQuery(`
-      SELECT COUNT(*) as count FROM test_table 
-      WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?`,
+      SELECT COUNT(*) as count, PENRANK FROM test_table 
+      WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
+      GROUP BY PENRANK`,
             [normalizedAfpsn, type]
         );
 
-        if (afpsnExists[0].count === 0) {
+        if (afpsnExists.length === 0) {
             return res.status(401).json({
                 success: false,
                 error: "AFP Serial Number not found in our records",
@@ -428,6 +431,10 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
                 processingTime: `${Date.now() - startTime}ms`
             });
         }
+
+        // Extract the rank from the first result
+        const penRank = afpsnExists[0].PENRANK?.trim().toUpperCase();
+        const isOfficer = OFFICER_RANKS.includes(penRank);
 
         // Check if account already exists for this AFPSN
         const existingAccount = await executeQuery(`
@@ -455,6 +462,8 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             b_type: b_type || null,
             principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
             principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
+            penRank: penRank || null,
+            isOfficer: isOfficer,
             step: 1,
         };
 
@@ -462,7 +471,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
         const step1Token = await storeValidationToken(token, tokenData);
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn} in ${processingTime}ms`);
+        logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn}, Rank: ${penRank}, IsOfficer: ${isOfficer} in ${processingTime}ms`);
 
         res.json({
             success: true,
@@ -471,6 +480,8 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             data: {
                 type,
                 afpsn: normalizedAfpsn,
+                rank: penRank,
+                isOfficer: isOfficer,
                 recordsFound: afpsnExists[0].count
             },
             meta: {

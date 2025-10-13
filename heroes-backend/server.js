@@ -35,7 +35,7 @@ const corsOptions = {
       // Development
       'http://localhost:3000',
       'http://localhost:5173', 
-      'http://192.168.264.108:5173',
+      'http://192.168.254.108:5173',
       'http://127.0.0.1:5173'
     ];
     // Development

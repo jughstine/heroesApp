@@ -448,7 +448,7 @@ router.get('/submissions', async (req, res) => {
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
       WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
-      AND fs.status IN ('p') 
+      AND fs.status IN ('p', 'a', 'd') 
       ORDER BY fs.submitted_at DESC
     `);
 
@@ -527,11 +527,13 @@ router.get('/submissions/:userId', async (req, res) => {
         fs.form_type_id,
         fs.status,
         fs.submitted_at,
+        fs.reviewed_at,
+        fs.admin_notes,
         fs.latitude,
         fs.longitude
       FROM form_submission fs
       WHERE fs.user_id = ?
-      AND fs.status IN ('p')
+      AND fs.status IN ('p', 'a', 'd')
       ORDER BY fs.submitted_at DESC
     `, [userId]);
 

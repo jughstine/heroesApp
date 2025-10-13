@@ -1177,12 +1177,30 @@ router.put('/:form_id/status', async (req, res) => {
       }
 
       // Conditional approval: UPDATING
-      if (formTypeId === 5 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
-          ['ACT', userId]
-        );
-      }
+if (formTypeId === 5 && status === 'a') {
+  const [updateFormData] = await pool.execute(
+    `SELECT value 
+     FROM upd_requirements 
+     WHERE form_id = ? AND requirement_type = 'home_address'`,
+    [formId]
+  );
+
+  const homeAddress = updateFormData[0]?.value; // use 'value' instead of 'home_address'
+
+  // Update status
+  await pool.execute(
+    'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
+    ['ACT', userId]
+  );
+
+  // Update home address if found
+  if (homeAddress) {
+    await pool.execute(
+      'UPDATE users_tbl SET home_address = ? WHERE id = ?',
+      [homeAddress, userId]
+    );
+  }
+}
 
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {

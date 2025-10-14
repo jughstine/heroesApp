@@ -25,11 +25,16 @@ const validateConfig = () => {
   if (missing.length) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
-
 };
 
 //  database config
 const createDbConfig = () => {
+  // Get connection limit from env with default fallback
+  const connectionLimit = parseInt(process.env.DB_CONNECTION_LIMIT) || 10;
+  
+  // Calculate maxIdle based on connection limit (50% of total connections)
+  const maxIdle = Math.max(Math.floor(connectionLimit * 0.5), 2);
+  
   const config = {
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT) || 3306,
@@ -37,14 +42,14 @@ const createDbConfig = () => {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     
-    // Connection Pool Settings - Conservative for stability
-    connectionLimit: 10,
+    // Connection Pool Settings - Now configurable
+    connectionLimit: connectionLimit,
     queueLimit: 0,
 
     // Timeout settings
     waitForConnections: true,
     idleTimeout: 300000,        // 5 minutes
-    maxIdle: 5,
+    maxIdle: maxIdle,
     connectTimeout: 10000,      // 10 seconds
     
     // Character Set and Timezone
@@ -67,6 +72,8 @@ const createDbConfig = () => {
     ssl: false
   };
 
+  logger.info(`Database pool configuration: ${connectionLimit} connections, ${maxIdle} max idle`);
+  
   return config;
 };
 
@@ -115,7 +122,10 @@ const initializeDatabase = async (retries = 3) => {
       });
 
       poolStats.created = new Date();
-      logger.info('Database pool initialized successfully', { attempt });
+      logger.info('Database pool initialized successfully', { 
+        attempt,
+        connectionLimit: dbConfig.connectionLimit 
+      });
       return pool;
     } catch (error) {
       logger.error(`Database init attempt ${attempt}/${retries} failed:`, {
@@ -252,6 +262,7 @@ const getPoolStats = () => {
   }
 
   const poolInfo = pool.pool || pool;
+  const connectionLimit = parseInt(process.env.DB_CONNECTION_LIMIT) || 10;
   
   return {
     ...poolStats,
@@ -260,7 +271,7 @@ const getPoolStats = () => {
       total: poolInfo._allConnections?.length || 0,
       free: poolInfo._freeConnections?.length || 0,
       used: (poolInfo._allConnections?.length || 0) - (poolInfo._freeConnections?.length || 0),
-      limit: 10
+      limit: connectionLimit
     },
     config: {
       host: process.env.DB_HOST,
@@ -288,7 +299,8 @@ const healthCheck = async () => {
         totalConnections: stats.connections.total,
         freeConnections: stats.connections.free,
         usedConnections: stats.connections.used,
-        utilization: Math.round((stats.connections.used / 10) * 100)
+        limit: stats.connections.limit,
+        utilization: Math.round((stats.connections.used / stats.connections.limit) * 100)
       },
       metrics: {
         totalQueries: stats.totalQueries,
@@ -341,7 +353,8 @@ const getConnectionInfo = async () => {
         timezone: rows[0].timezone,
         host: process.env.DB_HOST,
         port: parseInt(process.env.DB_PORT) || 3306,
-        ssl: false
+        ssl: false,
+        connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10
       };
     } finally {
       connection.release();

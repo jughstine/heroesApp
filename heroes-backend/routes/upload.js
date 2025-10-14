@@ -596,7 +596,6 @@ router.patch('/admin/announcements/:id/toggle', async (req, res) => {
   }
 });
 
-
 // ===================
 
 // Upload file to DigitalOcean Spaces

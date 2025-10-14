@@ -87,7 +87,7 @@ router.get("/health", async (req, res) => {
 
 // Rate limiting
 const step1Limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
+    windowMs: 15 * 60 * 1000,
     max: 10,
     message: {
         success: false,
@@ -112,7 +112,7 @@ const step2Limiter = rateLimit({
 
 const createAccountLimiter = rateLimit({
     windowMs: 30 * 60 * 1000,
-    max: 5, // signup attempts
+    max: 10,
     message: {
         success: false,
         error: 'Too many account creation attempts. Please try again later.',
@@ -121,6 +121,7 @@ const createAccountLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
 });
+
 
 const signupLimiter = rateLimit({
     windowMs: 30 * 60 * 1000,
@@ -193,7 +194,6 @@ const validatePasswordStrength = (password) => {
     };
 };
 
-// Database connection validation middleware
 const validateDatabaseConnection = async (req, res, next) => {
     try {
         await testConnection();
@@ -215,6 +215,7 @@ const validateDatabaseConnection = async (req, res, next) => {
     }
 };
 
+
 const generateValidationToken = (data) => {
     const token = crypto.randomBytes(32).toString('hex');
     return { token, data };
@@ -223,8 +224,6 @@ const generateValidationToken = (data) => {
 const storeValidationToken = async (token, data, expiresInHours = 2) => {
     try {
         const expiresAt = new Date(Date.now() + (expiresInHours * 60 * 60 * 1000));
-
-        // Ensure data is properly stringified
         const jsonData = typeof data === 'string' ? data : JSON.stringify(data);
 
         await executeQuery(
@@ -245,7 +244,6 @@ const storeValidationToken = async (token, data, expiresInHours = 2) => {
     }
 };
 
-
 const getValidationToken = async (token) => {
     try {
         const results = await executeQuery(
@@ -255,7 +253,6 @@ const getValidationToken = async (token) => {
         );
 
         if (results.length === 0) {
-            // Check if token exists but expired
             const expiredResults = await executeQuery(
                 'SELECT expires_at, created_at FROM signup_tokens WHERE token = ?',
                 [token]
@@ -272,7 +269,6 @@ const getValidationToken = async (token) => {
 
         const tokenData = results[0].data;
 
-        // Handle both string and object data
         let parsedData;
         if (typeof tokenData === 'string') {
             try {
@@ -300,18 +296,16 @@ const getValidationToken = async (token) => {
         return parsedData;
     } catch (error) {
         if (error.message.includes('expired') || error.message.includes('Invalid') || error.message.includes('token data')) {
-            throw error; // Re-throw validation errors
+            throw error;
         }
         logger.error('Database error in getValidationToken:', error);
         throw new Error('Token validation failed due to database error');
     }
 };
 
-
 const cleanupExpiredTokens = async () => {
     try {
         const nowTimestamp = Math.floor(Date.now() / 1000);
-
         const result = await executeQuery(
             'DELETE FROM signup_tokens WHERE UNIX_TIMESTAMP(expires_at) <= ?',
             [nowTimestamp]
@@ -373,7 +367,6 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
     try {
         const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
 
-        // Basic validation
         if (!type || !afpsn) {
             return res.status(400).json({
                 success: false,
@@ -392,7 +385,6 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        // Type-specific validation
         if (type === 'P' && !bos) {
             return res.status(400).json({
                 success: false,
@@ -415,7 +407,6 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
 
         const normalizedAfpsn = afpsn.trim().toUpperCase();
 
-        // Check if AFPSN exists in heroes database and retrieve rank info
         const afpsnExists = await executeQuery(`
       SELECT COUNT(*) as count, PENRANK FROM test_table 
       WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
@@ -432,11 +423,9 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        // Extract the rank from the first result
         const penRank = afpsnExists[0].PENRANK?.trim().toUpperCase();
         const isOfficer = OFFICER_RANKS.includes(penRank);
 
-        // Check if account already exists for this AFPSN
         const existingAccount = await executeQuery(`
       SELECT u.id FROM users_tbl u 
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
@@ -454,7 +443,6 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        // Generate step 1 validation token
         const tokenData = {
             type,
             afpsn: normalizedAfpsn,
@@ -486,7 +474,7 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             },
             meta: {
                 processingTime: `${processingTime}ms`,
-                validUntil: new Date(Date.now() + 3600000).toISOString() // 1 hour
+                validUntil: new Date(Date.now() + 3600000).toISOString()
             }
         });
 
@@ -503,7 +491,6 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
     }
 });
 
-// STEP 2: Validate personal information against heroes database
 router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
@@ -519,7 +506,6 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        // Debug token in development only
         if (process.env.NODE_ENV === 'development') {
             try {
                 await debugTokenStatus(step1Token);
@@ -528,7 +514,6 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             }
         }
 
-        // Verify step 1 token
         let step1Data;
         try {
             step1Data = await getValidationToken(step1Token);
@@ -561,7 +546,6 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        // Basic validation
         if (!firstname || !lastname || !dob) {
             return res.status(400).json({
                 success: false,
@@ -574,7 +558,6 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
         const normalizedFirstname = firstname.trim().toUpperCase();
         const normalizedLastname = lastname.trim().toUpperCase();
 
-        // Validate against heroes database
         const heroes = await executeQuery(`
       SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
       FROM test_table 
@@ -609,9 +592,8 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
         const heroData = heroes[0];
         logger.info(`Hero matched: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN})`);
 
-        // Create step 2 token data
         const step2TokenData = {
-            ...step1Data, // Include all step 1 data
+            ...step1Data,
             firstname: normalizedFirstname,
             lastname: normalizedLastname,
             dob,
@@ -621,9 +603,8 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             validated_at: new Date().toISOString()
         };
 
-        // Generate and store step 2 token
         const { token } = generateValidationToken(step2TokenData);
-        const step2Token = await storeValidationToken(token, step2TokenData, 2); // 2 hours
+        const step2Token = await storeValidationToken(token, step2TokenData, 2);
 
         const processingTime = Date.now() - startTime;
         logger.info(`Step 2 validation successful for: ${normalizedFirstname} ${normalizedLastname} in ${processingTime}ms`);
@@ -641,7 +622,7 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             },
             meta: {
                 processingTime: `${processingTime}ms`,
-                validUntil: new Date(Date.now() + 7200000).toISOString() // 2 hours
+                validUntil: new Date(Date.now() + 7200000).toISOString()
             }
         });
 
@@ -662,15 +643,13 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
     }
 });
 
-// STEP 3: Create account with email and password
 router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
-    let connection = null; 
+    let connection = null;
 
     try {
         const { step2Token, email, password } = req.body;
 
-        // Enhanced validation
         if (!step2Token || !email || !password) {
             return res.status(400).json({
                 success: false,
@@ -680,14 +659,14 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Verify step 2 token with enhanced error handling
+        // Verify step 2 token
         let validationData;
         try {
             validationData = await getValidationToken(step2Token);
             if (!validationData || validationData.step !== 2) {
                 throw new Error('Invalid step 2 token data');
             }
-            
+
             if (!validationData.hero_ndx) {
                 logger.error('Missing hero_ndx in validation data:', {
                     step: validationData.step,
@@ -695,7 +674,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 });
                 throw new Error('Invalid validation data: missing hero_ndx');
             }
-            
+
         } catch (error) {
             logger.warn(`Step 2 token validation failed: ${error.message}`);
             return res.status(400).json({
@@ -706,7 +685,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Validate email format
+        // Validate email
         if (!validator.isEmail(email)) {
             return res.status(400).json({
                 success: false,
@@ -718,7 +697,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
         const normalizedEmail = email.toLowerCase().trim();
 
-        // Check for existing email
+        // Check for existing email (using executeQuery - no connection held)
         const existingUsers = await executeQuery(
             'SELECT id FROM users_tbl WHERE email = ? LIMIT 1',
             [normalizedEmail]
@@ -733,7 +712,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Double-check hero record availability
+        // Check hero record availability (no connection held)
         const existingHeroAccount = await executeQuery(`
             SELECT u.id FROM users_tbl u 
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
@@ -762,22 +741,29 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
+        // Hash password BEFORE acquiring connection
+        logger.info('Hashing password before transaction...');
+        const saltRounds = 12;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        logger.info('Password hashed successfully');
+
+        // Now acquire connection for transaction
         try {
             connection = await getConnection();
-            
+
             if (!connection) {
                 throw new Error('Database connection returned null');
             }
-            
+
             logger.info(`DB connection acquired for: ${normalizedEmail}`);
-            
+
         } catch (connError) {
             logger.error('Failed to get database connection:', {
                 error: connError.message,
                 code: connError.code,
                 email: normalizedEmail
             });
-            
+
             return res.status(503).json({
                 success: false,
                 error: "Database connection unavailable. Please try again.",
@@ -786,14 +772,10 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Transaction block - connection is guaranteed to exist here
+        // Transaction - now fast because password is already hashed
         try {
             await connection.beginTransaction();
             logger.info('Transaction started for account creation');
-
-            // Hash password
-            const saltRounds = 12;
-            const hashedPassword = await bcrypt.hash(password, saltRounds);
 
             // Create pensioner record
             logger.info('Creating pensioner record', {
@@ -815,14 +797,14 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             );
 
             const pensionerId = pensionerResult.insertId;
-            
+
             if (!pensionerId) {
                 throw new Error('Failed to create pensioner - no insertId');
             }
-            
+
             logger.info(`Pensioner created: ID ${pensionerId}`);
 
-            // Create user record
+            // Create user record with pre-hashed password
             const [userResult] = await connection.execute(
                 `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status) 
                  VALUES (?, ?, ?, 'TAG')`,
@@ -830,11 +812,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             );
 
             const userId = userResult.insertId;
-            
+
             if (!userId) {
                 throw new Error('Failed to create user - no insertId');
             }
-            
+
             logger.info(`User created: ID ${userId}`);
 
             // Delete used token to prevent reuse
@@ -883,8 +865,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         code: rollbackError.code
                     });
                 }
-            } else {
-                logger.error('Cannot rollback - connection is null');
             }
 
             throw transactionError;
@@ -893,7 +873,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
     } catch (error) {
         const processingTime = Date.now() - startTime;
 
-        // Enhanced database error logging
         logger.error("Account creation error:", {
             message: error.message,
             code: error.code,
@@ -955,13 +934,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                     message: releaseError.message,
                     code: releaseError.code
                 });
-                // Don't throw - this is cleanup
             }
-        } else {
-            logger.debug('No connection to release');
         }
     }
 });
+
 
 //  login 
 router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {

@@ -119,34 +119,36 @@ router.post('/submit', async (req, res) => {
 
     // Check if email already has a submission
     const [existingEmail] = await conn.execute(
-      'SELECT id, created_at FROM inquiries WHERE email = ? LIMIT 1',
-      [email]
+      'SELECT id, created_at, status FROM inquiries WHERE email = ? AND status IN (?, ?) LIMIT 1',
+      [email, 'pen', 'in_prog']
     );
 
     if (existingEmail.length > 0) {
       return res.status(409).json({
         success: false,
-        error: 'An inquiry with this email address has already been submitted',
+        error: 'You have an active inquiry with this email address. Please wait for it to be resolved before submitting a new one.',
         code: 'DUPLICATE_EMAIL',
         existing_inquiry_id: existingEmail[0].id,
         submitted_at: existingEmail[0].created_at,
+        current_status: existingEmail[0].status,
         processingTime: `${Date.now() - startTime}ms`
       });
     }
 
     // Check if mobile number already has a submission
     const [existingMobile] = await conn.execute(
-      'SELECT id, created_at FROM inquiries WHERE mobilenr = ? LIMIT 1',
-      [mobilenr]
+      'SELECT id, created_at, status FROM inquiries WHERE mobilenr = ? AND status IN (?, ?) LIMIT 1',
+      [mobilenr, 'pen', 'in_prog']
     );
 
     if (existingMobile.length > 0) {
       return res.status(409).json({
         success: false,
-        error: 'An inquiry with this mobile number has already been submitted',
+        error: 'You have an active inquiry with this mobile number. Please wait for it to be resolved before submitting a new one.',
         code: 'DUPLICATE_MOBILE',
         existing_inquiry_id: existingMobile[0].id,
         submitted_at: existingMobile[0].created_at,
+        current_status: existingMobile[0].status,
         processingTime: `${Date.now() - startTime}ms`
       });
     }

@@ -11,8 +11,7 @@ router.get("/", async (req, res) => {
         success: true,
         message: "Users API endpoint",
         availableEndpoints: [
-            "POST /api/users/validate-step1",
-            "POST /api/users/validate-step2",
+            "POST /api/users/validate-identity",
             "POST /api/users/create-account",
             "POST /api/users/login",
             "GET /api/users/health",
@@ -86,24 +85,13 @@ router.get("/health", async (req, res) => {
 });
 
 // Rate limiting
-const step1Limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    message: {
-        success: false,
-        error: 'Too many validation attempts. Please try again later.',
-        code: 'RATE_LIMITED'
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-});
 
-const step2Limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 10,
+const identityLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10, // 10 attempts per window
     message: {
         success: false,
-        error: 'Too many validation attempts. Please try again later.',
+        error: 'Too many identity validation attempts. Please try again later.',
         code: 'RATE_LIMITED'
     },
     standardHeaders: true,
@@ -116,20 +104,6 @@ const createAccountLimiter = rateLimit({
     message: {
         success: false,
         error: 'Too many account creation attempts. Please try again later.',
-        code: 'RATE_LIMITED'
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-});
-
-
-const signupLimiter = rateLimit({
-    windowMs: 30 * 60 * 1000,
-    max: 20,
-    message: {
-        success: false,
-        error: 'Too many signup attempts from this IP, please try again after 30 minutes.',
-        retryAfter: 1800,
         code: 'RATE_LIMITED'
     },
     standardHeaders: true,
@@ -359,18 +333,33 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
 
-const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COL', 'BGEN', 'MGEN', 'LGEN'];
+// OPTIMIZED 2-STEP SIGNUP BACKEND
 
-router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
+const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN'];
+
+//  Identity Verification (AFP Details + Personal Info)
+router.post("/validate-identity", identityLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
     try {
-        const { type, afpsn, bos, b_type, principal_first_name, principal_last_name } = req.body;
+        const { 
+            type, 
+            afpsn, 
+            bos, 
+            b_type, 
+            principal_first_name, 
+            principal_last_name,
+            firstname,
+            lastname,
+            dob,
+            claims_officer
+        } = req.body;
 
-        if (!type || !afpsn) {
+        // ===== VALIDATION: Required Fields =====
+        if (!type || !afpsn || !firstname || !lastname || !dob) {
             return res.status(400).json({
                 success: false,
-                error: "Pensioner type and AFP Serial Number are required",
+                error: "Type, AFP Serial Number, name, and date of birth are required",
                 code: 'MISSING_REQUIRED_FIELDS',
                 processingTime: `${Date.now() - startTime}ms`
             });
@@ -405,16 +394,21 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             }
         }
 
+        // ===== NORMALIZE DATA =====
         const normalizedAfpsn = afpsn.trim().toUpperCase();
+        const normalizedFirstname = firstname.trim().toUpperCase();
+        const normalizedLastname = lastname.trim().toUpperCase();
 
-        const afpsnExists = await executeQuery(`
-      SELECT COUNT(*) as count, PENRANK FROM test_table 
-      WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
-      GROUP BY PENRANK`,
+        // ===== STEP 1A: Verify AFP Serial Number EXISTS =====
+        const afpsnRecords = await executeQuery(`
+            SELECT COUNT(*) as count, PENRANK 
+            FROM test_table 
+            WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
+            GROUP BY PENRANK`,
             [normalizedAfpsn, type]
         );
 
-        if (afpsnExists.length === 0) {
+        if (afpsnRecords.length === 0) {
             return res.status(401).json({
                 success: false,
                 error: "AFP Serial Number not found in our records",
@@ -423,14 +417,38 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        const penRank = afpsnExists[0].PENRANK?.trim().toUpperCase();
+        // ===== CHECK OFFICER STATUS =====
+        const penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
         const isOfficer = OFFICER_RANKS.includes(penRank);
 
+        // Validate officer claim matches database
+        if (claims_officer && !isOfficer) {
+            return res.status(400).json({
+                success: false,
+                error: `You claimed to be an officer, but our records show rank: ${penRank}`,
+                code: 'INVALID_OFFICER_CLAIM',
+                rank: penRank,
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        if (!claims_officer && isOfficer) {
+            return res.status(400).json({
+                success: false,
+                error: `Our records show you are an officer (${penRank}). Please check the officer box.`,
+                code: 'MISSING_OFFICER_CLAIM',
+                rank: penRank,
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // ===== CHECK IF ACCOUNT ALREADY EXISTS =====
         const existingAccount = await executeQuery(`
-      SELECT u.id FROM users_tbl u 
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-      JOIN test_table h ON p.hero_ndx = h.NDX 
-      WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
+            SELECT u.id 
+            FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            JOIN test_table h ON p.hero_ndx = h.NDX 
+            WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
             [normalizedAfpsn, type]
         );
 
@@ -443,134 +461,20 @@ router.post("/validate-step1", step1Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
-        const tokenData = {
-            type,
-            afpsn: normalizedAfpsn,
-            bos: type === 'P' ? bos?.trim().toUpperCase() : null,
-            b_type: b_type || null,
-            principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
-            principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
-            penRank: penRank || null,
-            isOfficer: isOfficer,
-            step: 1,
-        };
-
-        const { token } = generateValidationToken(tokenData);
-        const step1Token = await storeValidationToken(token, tokenData);
-
-        const processingTime = Date.now() - startTime;
-        logger.info(`Step 1 validation successful for AFPSN: ${normalizedAfpsn}, Rank: ${penRank}, IsOfficer: ${isOfficer} in ${processingTime}ms`);
-
-        res.json({
-            success: true,
-            message: "Step 1 validation completed",
-            step1Token,
-            data: {
-                type,
-                afpsn: normalizedAfpsn,
-                rank: penRank,
-                isOfficer: isOfficer,
-                recordsFound: afpsnExists[0].count
-            },
-            meta: {
-                processingTime: `${processingTime}ms`,
-                validUntil: new Date(Date.now() + 3600000).toISOString()
-            }
-        });
-
-    } catch (error) {
-        const processingTime = Date.now() - startTime;
-        logger.error("Step 1 validation error:", error);
-
-        res.status(500).json({
-            success: false,
-            error: "Step 1 validation failed. Please try again.",
-            code: 'STEP1_VALIDATION_ERROR',
-            processingTime: `${processingTime}ms`
-        });
-    }
-});
-
-router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
-    const startTime = Date.now();
-
-    try {
-        const { step1Token, firstname, lastname, dob } = req.body;
-
-        if (!step1Token) {
-            return res.status(400).json({
-                success: false,
-                error: "Step 1 validation token is required",
-                code: 'MISSING_STEP1_TOKEN',
-                processingTime: `${Date.now() - startTime}ms`
-            });
-        }
-
-        if (process.env.NODE_ENV === 'development') {
-            try {
-                await debugTokenStatus(step1Token);
-            } catch (debugError) {
-                logger.warn('Debug token status failed:', debugError.message);
-            }
-        }
-
-        let step1Data;
-        try {
-            step1Data = await getValidationToken(step1Token);
-
-            if (!step1Data || step1Data.step !== 1) {
-                throw new Error('Invalid step sequence - expected step 1 data');
-            }
-
-            logger.info(`Step 1 data retrieved for validation: type=${step1Data.type}, afpsn=${step1Data.afpsn}`);
-
-        } catch (error) {
-            logger.warn(`Step 2 token validation failed: ${error.message}`);
-
-            let errorCode = 'INVALID_STEP1_TOKEN';
-            let errorMessage = "Invalid validation token. Please start over from Step 1.";
-
-            if (error.message.includes('expired')) {
-                errorCode = 'TOKEN_EXPIRED';
-                errorMessage = "Your validation has expired. Please start over from Step 1.";
-            } else if (error.message.includes('token data')) {
-                errorCode = 'TOKEN_DATA_ERROR';
-                errorMessage = "Token data is corrupted. Please start over from Step 1.";
-            }
-
-            return res.status(400).json({
-                success: false,
-                error: errorMessage,
-                code: errorCode,
-                processingTime: `${Date.now() - startTime}ms`
-            });
-        }
-
-        if (!firstname || !lastname || !dob) {
-            return res.status(400).json({
-                success: false,
-                error: "First name, last name, and date of birth are required",
-                code: 'MISSING_PERSONAL_INFO',
-                processingTime: `${Date.now() - startTime}ms`
-            });
-        }
-
-        const normalizedFirstname = firstname.trim().toUpperCase();
-        const normalizedLastname = lastname.trim().toUpperCase();
-
+        // ===== STEP 1B: Verify Personal Information MATCHES =====
         const heroes = await executeQuery(`
-      SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR 
-      FROM test_table 
-      WHERE UPPER(TRIM(FIRSTNAME)) = ? 
-        AND UPPER(TRIM(LASTNAME)) = ? 
-        AND DATE(DOB) = DATE(?) 
-        AND UPPER(TRIM(AFPSN)) = ? 
-        AND TYPE = ?`,
-            [normalizedFirstname, normalizedLastname, dob, step1Data.afpsn, step1Data.type]
+            SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK
+            FROM test_table 
+            WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+              AND UPPER(TRIM(LASTNAME)) = ? 
+              AND DATE(DOB) = DATE(?) 
+              AND UPPER(TRIM(AFPSN)) = ? 
+              AND TYPE = ?`,
+            [normalizedFirstname, normalizedLastname, dob, normalizedAfpsn, type]
         );
 
         if (heroes.length === 0) {
-            logger.warn(`No matching hero found for: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${step1Data.afpsn}`);
+            logger.warn(`Identity mismatch: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${normalizedAfpsn}`);
             return res.status(401).json({
                 success: false,
                 error: "Personal information does not match our records. Please verify your details.",
@@ -580,7 +484,7 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
         }
 
         if (heroes.length > 1) {
-            logger.warn(`Multiple heroes found for: ${normalizedFirstname} ${normalizedLastname}`);
+            logger.warn(`Multiple heroes found: ${normalizedFirstname} ${normalizedLastname}`);
             return res.status(409).json({
                 success: false,
                 error: "Multiple matching records found. Please contact support.",
@@ -589,30 +493,38 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
             });
         }
 
+        // ===== SUCCESS: All Validations Passed =====
         const heroData = heroes[0];
-        logger.info(`Hero matched: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN})`);
+        logger.info(`Identity verified: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN}), Rank: ${penRank}`);
 
-        const step2TokenData = {
-            ...step1Data,
+        // Create comprehensive token with all validated data
+        const tokenData = {
+            type,
+            afpsn: normalizedAfpsn,
+            bos: type === 'P' ? bos?.trim().toUpperCase() : null,
+            b_type: b_type || null,
+            principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
+            principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
             firstname: normalizedFirstname,
             lastname: normalizedLastname,
             dob,
             hero_ndx: heroData.NDX,
             hero_ctrl_nr: heroData.CTRLNR,
-            step: 2,
+            penRank: penRank || null,
+            isOfficer: isOfficer,
             validated_at: new Date().toISOString()
         };
 
-        const { token } = generateValidationToken(step2TokenData);
-        const step2Token = await storeValidationToken(token, step2TokenData, 2);
+        const { token } = generateValidationToken(tokenData);
+        const identityToken = await storeValidationToken(token, tokenData);
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Step 2 validation successful for: ${normalizedFirstname} ${normalizedLastname} in ${processingTime}ms`);
+        logger.info(`Identity validation successful for ${normalizedAfpsn} in ${processingTime}ms`);
 
         res.json({
             success: true,
-            message: "Step 2 validation completed - Record matched!",
-            step2Token,
+            message: "Identity verified successfully",
+            identityToken,
             heroData: {
                 name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
                 afpsn: heroData.AFPSN,
@@ -620,72 +532,72 @@ router.post("/validate-step2", step2Limiter, sanitizeInput, validateDatabaseConn
                 type: heroData.TYPE,
                 dob: heroData.DOB
             },
+            data: {
+                type,
+                afpsn: normalizedAfpsn,
+                rank: penRank,
+                isOfficer: isOfficer,
+                recordsFound: afpsnRecords[0].count
+            },
             meta: {
                 processingTime: `${processingTime}ms`,
-                validUntil: new Date(Date.now() + 7200000).toISOString()
+                validUntil: new Date(Date.now() + 7200000).toISOString() // 2 hours
             }
         });
 
     } catch (error) {
         const processingTime = Date.now() - startTime;
-        logger.error("Step 2 validation error:", {
-            message: error.message,
-            stack: error.stack,
-            processingTime
-        });
+        logger.error("Identity validation error:", error);
 
         res.status(500).json({
             success: false,
-            error: "Step 2 validation failed. Please try again.",
-            code: 'STEP2_VALIDATION_ERROR',
+            error: "Identity validation failed. Please try again.",
+            code: 'IDENTITY_VALIDATION_ERROR',
             processingTime: `${processingTime}ms`
         });
     }
 });
 
+// Create Account (Email + Password)
 router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
     let connection = null;
 
     try {
-        const { step2Token, email, password } = req.body;
+        const { identityToken, email, password } = req.body;
 
-        if (!step2Token || !email || !password) {
+        // ===== VALIDATION: Required Fields =====
+        if (!identityToken || !email || !password) {
             return res.status(400).json({
                 success: false,
-                error: "Step 2 token, email, and password are required",
+                error: "Identity token, email, and password are required",
                 code: 'MISSING_REQUIRED_FIELDS',
                 processingTime: `${Date.now() - startTime}ms`
             });
         }
 
-        // Verify step 2 token
+        // ===== VERIFY IDENTITY TOKEN =====
         let validationData;
         try {
-            validationData = await getValidationToken(step2Token);
-            if (!validationData || validationData.step !== 2) {
-                throw new Error('Invalid step 2 token data');
-            }
-
-            if (!validationData.hero_ndx) {
-                logger.error('Missing hero_ndx in validation data:', {
-                    step: validationData.step,
-                    hasData: !!validationData
-                });
+            validationData = await getValidationToken(identityToken);
+            
+            if (!validationData || !validationData.hero_ndx) {
                 throw new Error('Invalid validation data: missing hero_ndx');
             }
 
+            logger.info(`Identity token validated for: ${validationData.firstname} ${validationData.lastname}`);
+
         } catch (error) {
-            logger.warn(`Step 2 token validation failed: ${error.message}`);
+            logger.warn(`Identity token validation failed: ${error.message}`);
             return res.status(400).json({
                 success: false,
                 error: "Invalid or expired validation. Please restart the signup process.",
-                code: 'INVALID_VALIDATION_TOKEN',
+                code: 'INVALID_IDENTITY_TOKEN',
                 processingTime: `${Date.now() - startTime}ms`
             });
         }
 
-        // Validate email
+        // ===== VALIDATE EMAIL =====
         if (!validator.isEmail(email)) {
             return res.status(400).json({
                 success: false,
@@ -697,7 +609,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
         const normalizedEmail = email.toLowerCase().trim();
 
-        // Check for existing email (using executeQuery - no connection held)
+        // ===== CHECK FOR EXISTING EMAIL =====
         const existingUsers = await executeQuery(
             'SELECT id FROM users_tbl WHERE email = ? LIMIT 1',
             [normalizedEmail]
@@ -712,9 +624,10 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Check hero record availability (no connection held)
+        // ===== DOUBLE-CHECK HERO RECORD AVAILABILITY =====
         const existingHeroAccount = await executeQuery(`
-            SELECT u.id FROM users_tbl u 
+            SELECT u.id 
+            FROM users_tbl u 
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
             WHERE p.hero_ndx = ?`,
             [validationData.hero_ndx]
@@ -729,7 +642,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Validate password strength
+        // ===== VALIDATE PASSWORD STRENGTH =====
         const passwordValidation = validatePasswordStrength(password);
         if (!passwordValidation.isValid) {
             return res.status(400).json({
@@ -741,13 +654,13 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Hash password BEFORE acquiring connection
-        logger.info('Hashing password before transaction...');
+        // ===== HASH PASSWORD (BEFORE CONNECTION) =====
+        logger.info('Hashing password...');
         const saltRounds = 12;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
         logger.info('Password hashed successfully');
 
-        // Now acquire connection for transaction
+        // ===== ACQUIRE CONNECTION FOR TRANSACTION =====
         try {
             connection = await getConnection();
 
@@ -772,7 +685,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // Transaction - now fast because password is already hashed
+        // ===== TRANSACTION: CREATE ACCOUNT =====
         try {
             await connection.beginTransaction();
             logger.info('Transaction started for account creation');
@@ -822,7 +735,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             // Delete used token to prevent reuse
             await connection.execute(
                 'DELETE FROM signup_tokens WHERE token = ?',
-                [step2Token]
+                [identityToken]
             );
 
             await connection.commit();
@@ -938,7 +851,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         }
     }
 });
-
 
 //  login 
 router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {

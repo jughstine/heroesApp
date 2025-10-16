@@ -225,7 +225,12 @@ router.get('/profile/:userId', async (req, res) => {
         h.FIRSTNAME,
         h.LASTNAME,
         h.DOB,
-        h.AFPSN,
+        CASE 
+            WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+            THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
+            ELSE h.AFPSN
+        END AS afpsn,
+        h.PENRANK AS penrank,
         h.TYPE,
         h.CTRLNR,
         h.MOBILENR,

@@ -1381,7 +1381,11 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
                 p.principal_lastname,
                 h.FIRSTNAME,
                 h.LASTNAME,
-                h.AFPSN,
+                CASE 
+                    WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                    THEN CONCAT('O-', h.AFPSN)
+                    ELSE h.AFPSN
+                END as AFPSN,
                 h.DOB,
                 h.MOBILENR,
                 h.CTRLNR,
@@ -1459,7 +1463,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
 
         const users = await executeQuery(`
             SELECT 
-                u.id as user_id,
+                u.id AS user_id,
                 u.email,
                 u.status,
                 u.created_at,
@@ -1468,10 +1472,15 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 p.type,
                 p.bos,
                 p.b_type,
-                h.FIRSTNAME as firstname,
-                h.LASTNAME as lastname,
-                h.AFPSN as afpsn,
-                h.MOBILENR as mobile
+                h.FIRSTNAME AS firstname,
+                h.LASTNAME AS lastname,
+                CASE 
+                    WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                    THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
+                    ELSE h.AFPSN
+                END AS afpsn,
+                h.PENRANK AS penrank,
+                h.MOBILENR AS mobile
             FROM users_tbl u
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
             JOIN test_table h ON p.hero_ndx = h.NDX
@@ -1484,7 +1493,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
         res.json({
             success: true,
             users: users,
-            data: users, // Include both for compatibility
+            data: users,
             count: users.length,
             meta: {
                 processingTime: `${processingTime}ms`,
@@ -1509,4 +1518,5 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
         });
     }
 });
+
 module.exports = router;

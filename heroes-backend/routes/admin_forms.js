@@ -455,7 +455,8 @@ router.get('/history-logs/:log_id', async (req, res) => {
         fs.submitted_at,
         t.FIRSTNAME as pensioner_firstname,
         t.LASTNAME as pensioner_lastname,
-        t.AFPSN
+        t.AFPSN,
+        t.PENRANK
       FROM history_logs hl
       LEFT JOIN admins_tbl a ON hl.action_by = a.id
       LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
@@ -558,11 +559,16 @@ router.get('/', async (req, res) => {
         t.LASTNAME,
         t.MIDDLENAME,    
         t.SUFFIX,
-        t.AFPSN,
+        CASE 
+          WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+          THEN CONCAT('O-', t.AFPSN)
+          ELSE t.AFPSN
+        END as AFPSN,
         t.DOB,       
         t.TYPE,         
         p.type,          
-        p.b_type         
+        p.b_type,
+        t.PENRANK
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
@@ -663,12 +669,17 @@ router.get('/paginated', async (req, res) => {
         t.LASTNAME,
         t.MIDDLENAME,    
         t.SUFFIX,
-        t.AFPSN,
+        CASE 
+          WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+          THEN CONCAT('O-', t.AFPSN)
+          ELSE t.AFPSN
+        END as AFPSN,
         t.TYPE,         
         t.CTRLNR,
         t.DOB,         
         p.type,      
-        p.b_type     
+        p.b_type,
+        t.PENRANK
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
@@ -742,7 +753,12 @@ router.get('/export/bulk', async (req, res) => {
         ft.name as form_type_name,
         t.FIRSTNAME,
         t.LASTNAME,
-        t.AFPSN,
+        CASE 
+          WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+          THEN CONCAT('O-', t.AFPSN)
+          ELSE t.AFPSN
+        END as AFPSN,
+        t.PENRANK,
         t.DOB,
         t.TYPE,
         p.b_type
@@ -929,7 +945,12 @@ router.get('/status/:status', async (req, res) => {
         t.LASTNAME,      
         t.MIDDLENAME,    
         t.SUFFIX,
-        t.AFPSN,
+        CASE 
+          WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+          THEN CONCAT('O-', t.AFPSN)
+          ELSE t.AFPSN
+        END as AFPSN,
+        t.PENRANK,
         t.DOB,
         t.TYPE,         
         p.type,          
@@ -1046,7 +1067,12 @@ router.get('/:form_id', async (req, res) => {
         t.LASTNAME,
         t.MIDDLENAME,    
         t.SUFFIX,
-        t.AFPSN,
+        CASE 
+          WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+          THEN CONCAT('O-', t.AFPSN)
+          ELSE t.AFPSN
+        END as AFPSN,
+        t.PENRANK,
         t.DOB, 
         t.TYPE,         
         p.type,      
@@ -1059,7 +1085,7 @@ router.get('/:form_id', async (req, res) => {
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX
       WHERE fs.id = ?
     `, [formId]);
-
+    
     if (submissionRows.length === 0) {
       return res.status(404).json({ 
         success: false, 

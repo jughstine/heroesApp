@@ -1571,7 +1571,6 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
     try {
         logger.info('Fetching all users for admin dashboard');
 
-        // Get users from both tables
         const users = await executeQuery(`
             SELECT 
                 u.id AS user_id,
@@ -1584,14 +1583,22 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 p.bos,
                 p.b_type,
                 p.source_table,
+
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME 
                     ELSE h1.FIRSTNAME 
                 END AS firstname,
+
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME 
                     ELSE h1.LASTNAME 
                 END AS lastname,
+
+                CASE 
+                    WHEN p.source_table = 'test_res_table' THEN h2.DOB
+                    ELSE h1.DOB
+                END AS dob,
+
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN 
                         CASE 
@@ -1606,14 +1613,17 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                             ELSE h1.AFPSN
                         END
                 END AS afpsn,
+
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN h2.PENRANK 
                     ELSE h1.PENRANK 
                 END AS penrank,
+
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR 
                     ELSE h1.MOBILENR 
                 END AS mobile
+
             FROM users_tbl u
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
             LEFT JOIN test_table h1 ON p.hero_ndx = h1.NDX AND p.source_table = 'test_table'
@@ -1621,7 +1631,6 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
             ORDER BY u.created_at DESC
         `);
 
-        // Calculate stats including breakdown by source table
         const stats = {
             totalUsers: users.length,
             principalUsers: users.filter((u) => u.type === 'P').length,
@@ -1636,9 +1645,9 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
 
         res.json({
             success: true,
-            users: users,
+            users,
             data: users,
-            stats: stats,
+            stats,
             count: users.length,
             meta: {
                 processingTime: `${processingTime}ms`,

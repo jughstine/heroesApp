@@ -2,19 +2,55 @@ const cron = require('node-cron');
 const { executeQuery, logger } = require('../config/database');
 
 /**
- * Automatic Status Change System - Calendar Year Based
+ * Automatic Status Change System - Quarterly Cycles
+ * Each cycle has 3 periods: Active, TAG transition, DEL transition
  */
 
-const YEARLY_CYCLES = [
-  { cycle: 1, startDay: 1, endDay: 75, name: 'Cycle 1 (Jan 1 - Mar 16)' },
-  { cycle: 2, startDay: 76, endDay: 150, name: 'Cycle 2 (Mar 17 - May 30)' },
-  { cycle: 3, startDay: 151, endDay: 225, name: 'Cycle 3 (May 31 - Aug 13)' },
-  { cycle: 4, startDay: 226, endDay: 300, name: 'Cycle 4 (Aug 14 - Oct 27)' },
-  { cycle: 5, startDay: 301, endDay: 365, name: 'Cycle 5 (Oct 28 - Dec 31)' }
+const QUARTERLY_CYCLES = [
+  {
+    cycle: 1,
+    activePeriod: { start: '01-01', end: '03-15' },
+    tagPeriod: { start: '03-16', end: '03-20' },
+    delPeriod: { start: '03-21', end: '03-31' },
+    name: 'Q1 (Jan-Mar)'
+  },
+  {
+    cycle: 2,
+    activePeriod: { start: '04-01', end: '06-15' },
+    tagPeriod: { start: '06-16', end: '06-20' },
+    delPeriod: { start: '06-21', end: '06-30' },
+    name: 'Q2 (Apr-Jun)'
+  },
+  {
+    cycle: 3,
+    activePeriod: { start: '07-01', end: '09-15' },
+    tagPeriod: { start: '09-16', end: '09-20' },
+    delPeriod: { start: '09-21', end: '09-30' },
+    name: 'Q3 (Jul-Sep)'
+  },
+  {
+    cycle: 4,
+    activePeriod: { start: '10-01', end: '12-15' },
+    tagPeriod: { start: '12-16', end: '12-20' },
+    delPeriod: { start: '12-21', end: '12-31' },
+    name: 'Q4 (Oct-Dec)'
+  }
 ];
 
 const autoStatusChangeService = {
   
+  /**
+   * Parse MM-DD format to day of year
+   */
+  dateToDayOfYear(dateStr, year) {
+    const [month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const start = new Date(year, 0, 0);
+    const diff = date - start;
+    const oneDay = 1000 * 60 * 60 * 24;
+    return Math.floor(diff / oneDay);
+  },
+
   getDayOfYear(date = new Date()) {
     const start = new Date(date.getFullYear(), 0, 0);
     const diff = date - start;
@@ -22,52 +58,114 @@ const autoStatusChangeService = {
     return Math.floor(diff / oneDay);
   },
 
-  getCurrentCycle(date = new Date()) {
+  /**
+   * Get current cycle and period information
+   */
+  getCurrentCycleInfo(date = new Date()) {
+    const year = date.getFullYear();
     const dayOfYear = this.getDayOfYear(date);
-    return YEARLY_CYCLES.find(cycle => 
-      dayOfYear >= cycle.startDay && dayOfYear <= cycle.endDay
-    ) || null;
-  },
 
-  getCycleFromDate(date) {
-    if (!date) return null;
-    const dateObj = new Date(date);
-    const dayOfYear = this.getDayOfYear(dateObj);
-    return YEARLY_CYCLES.find(cycle => 
-      dayOfYear >= cycle.startDay && dayOfYear <= cycle.endDay
-    )?.cycle || null;
-  },
+    for (const cycle of QUARTERLY_CYCLES) {
+      const activeStart = this.dateToDayOfYear(cycle.activePeriod.start, year);
+      const activeEnd = this.dateToDayOfYear(cycle.activePeriod.end, year);
+      const tagStart = this.dateToDayOfYear(cycle.tagPeriod.start, year);
+      const tagEnd = this.dateToDayOfYear(cycle.tagPeriod.end, year);
+      const delStart = this.dateToDayOfYear(cycle.delPeriod.start, year);
+      const delEnd = this.dateToDayOfYear(cycle.delPeriod.end, year);
 
-  hasSubmittedInCurrentYear(lastSubmissionDate) {
-    if (!lastSubmissionDate) return false;
-    const lastSubmission = new Date(lastSubmissionDate);
-    const now = new Date();
-    return lastSubmission.getFullYear() === now.getFullYear();
-  },
+      if (dayOfYear >= activeStart && dayOfYear <= activeEnd) {
+        return {
+          cycle: cycle.cycle,
+          name: cycle.name,
+          period: 'ACTIVE',
+          periodStart: activeStart,
+          periodEnd: activeEnd,
+          daysLeftInPeriod: activeEnd - dayOfYear,
+          nextPeriod: 'TAG',
+          nextPeriodStart: tagStart
+        };
+      }
 
-  getLastSubmissionCycle(lastSubmissionDate) {
-    if (!this.hasSubmittedInCurrentYear(lastSubmissionDate)) {
-      return null; // No submission in current year
+      if (dayOfYear >= tagStart && dayOfYear <= tagEnd) {
+        return {
+          cycle: cycle.cycle,
+          name: cycle.name,
+          period: 'TAG_TRANSITION',
+          periodStart: tagStart,
+          periodEnd: tagEnd,
+          daysLeftInPeriod: tagEnd - dayOfYear,
+          nextPeriod: 'DEL',
+          nextPeriodStart: delStart
+        };
+      }
+
+      if (dayOfYear >= delStart && dayOfYear <= delEnd) {
+        return {
+          cycle: cycle.cycle,
+          name: cycle.name,
+          period: 'DEL_TRANSITION',
+          periodStart: delStart,
+          periodEnd: delEnd,
+          daysLeftInPeriod: delEnd - dayOfYear,
+          nextPeriod: cycle.cycle === 4 ? 'Q1_ACTIVE' : 'NEXT_Q_ACTIVE',
+          nextPeriodStart: null
+        };
+      }
     }
-    return this.getCycleFromDate(lastSubmissionDate);
+
+    return null;
   },
 
+  /**
+   * Get the active period start date for current cycle
+   */
+  getActivePeriodStartDate(cycleInfo) {
+    if (!cycleInfo) return null;
+    const year = new Date().getFullYear();
+    const cycle = QUARTERLY_CYCLES.find(c => c.cycle === cycleInfo.cycle);
+    if (!cycle) return null;
+
+    const [month, day] = cycle.activePeriod.start.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  },
+
+  /**
+   * Check if user has submitted during active period of current cycle
+   */
+  hasSubmittedInActivePeriod(lastSubmissionDate, cycleInfo) {
+    if (!lastSubmissionDate || !cycleInfo) return false;
+    
+    const lastSubmission = new Date(lastSubmissionDate);
+    const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
+    
+    if (!activePeriodStart) return false;
+
+    // Check if submission was during this cycle's active period
+    return lastSubmission >= activePeriodStart;
+  },
+
+  /**
+   * Update TAG users to DEL during DEL transition periods
+   */
   async updateInactiveTAGUsers() {
     try {
-      logger.info('Starting TAG → DEL status update check (Cycle-based)');
+      logger.info('Starting TAG → DEL status update check');
 
-      const currentCycle = this.getCurrentCycle();
-      if (!currentCycle) {
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
         logger.warn('Could not determine current cycle');
         return 0;
       }
 
-      logger.info(`Current cycle: ${currentCycle.name}`);
+      logger.info(`Current: ${cycleInfo.name} - ${cycleInfo.period}`);
 
-      // Calculate the start date of current cycle
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const cycleStartDate = new Date(currentYear, 0, currentCycle.startDay);
+      // Only process during DEL transition periods
+      if (cycleInfo.period !== 'DEL_TRANSITION') {
+        logger.info('Not in DEL transition period - skipping TAG → DEL updates');
+        return 0;
+      }
+
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
 
       const result = await executeQuery(`
         UPDATE users_tbl 
@@ -77,13 +175,10 @@ const autoStatusChangeService = {
           deleted_at = NOW()
         WHERE status = 'TAG'
           AND (
-            -- No activity in current cycle
+            -- No activity during active period of current cycle
             COALESCE(status_updated_at, tagged_at, created_at) < ?
-            OR 
-            -- Activity was in previous year
-            YEAR(COALESCE(status_updated_at, tagged_at, created_at)) < YEAR(NOW())
           )
-      `, [cycleStartDate]);
+      `, [activePeriodStart]);
 
       if (result.affectedRows > 0) {
         logger.info(`✓ Updated ${result.affectedRows} TAG users to DEL status`);
@@ -111,22 +206,28 @@ const autoStatusChangeService = {
     }
   },
 
+  /**
+   * Update ACT users to TAG during TAG transition periods
+   */
   async updateInactiveACTUsers() {
     try {
-      logger.info('Starting ACT → TAG status update check (Cycle-based)');
+      logger.info('Starting ACT → TAG status update check');
 
-      const currentCycle = this.getCurrentCycle();
-      if (!currentCycle) {
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
         logger.warn('Could not determine current cycle');
         return 0;
       }
 
-      logger.info(`Current cycle: ${currentCycle.name}`);
+      logger.info(`Current: ${cycleInfo.name} - ${cycleInfo.period}`);
 
-      // Calculate the start date of current cycle
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const cycleStartDate = new Date(currentYear, 0, currentCycle.startDay);
+      // Only process during TAG transition periods
+      if (cycleInfo.period !== 'TAG_TRANSITION') {
+        logger.info('Not in TAG transition period - skipping ACT → TAG updates');
+        return 0;
+      }
+
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
 
       const result = await executeQuery(`
         UPDATE users_tbl 
@@ -136,18 +237,14 @@ const autoStatusChangeService = {
           tagged_at = NOW()
         WHERE status = 'ACT'
           AND (
-            -- No form submission in current cycle
+            -- No form submission during active period of current cycle
             COALESCE(form_submitted_at, approved_at, created_at) < ?
-            OR 
-            -- Last submission was in previous year
-            YEAR(COALESCE(form_submitted_at, approved_at, created_at)) < YEAR(NOW())
           )
-      `, [cycleStartDate]);
+      `, [activePeriodStart]);
 
       if (result.affectedRows > 0) {
         logger.info(`✓ Updated ${result.affectedRows} ACT users to TAG status`);
         
-        // Log affected users
         const taggedUsers = await executeQuery(`
           SELECT id, email, form_submitted_at, approved_at, created_at
           FROM users_tbl 
@@ -173,15 +270,25 @@ const autoStatusChangeService = {
 
   async runStatusUpdates() {
     const startTime = Date.now();
-    logger.info('=== Starting Automatic Status Update Job (Calendar Cycle-based) ===');
+    logger.info('=== Starting Automatic Status Update Job (Quarterly Cycles) ===');
 
-    const currentCycle = this.getCurrentCycle();
-    logger.info(`Current Cycle: ${currentCycle?.name || 'Unknown'}`);
+    const cycleInfo = this.getCurrentCycleInfo();
+    logger.info(`Current Cycle: ${cycleInfo?.name || 'Unknown'}`);
+    logger.info(`Current Period: ${cycleInfo?.period || 'Unknown'}`);
     logger.info(`Day of Year: ${this.getDayOfYear()}`);
 
     try {
-      const tagToDelCount = await this.updateInactiveTAGUsers();
-      const actToTagCount = await this.updateInactiveACTUsers();
+      let tagToDelCount = 0;
+      let actToTagCount = 0;
+
+      // Run appropriate updates based on current period
+      if (cycleInfo?.period === 'TAG_TRANSITION') {
+        actToTagCount = await this.updateInactiveACTUsers();
+      } else if (cycleInfo?.period === 'DEL_TRANSITION') {
+        tagToDelCount = await this.updateInactiveTAGUsers();
+      } else {
+        logger.info('Currently in ACTIVE period - no status changes needed');
+      }
 
       const processingTime = Date.now() - startTime;
       logger.info(`=== Status Update Job Completed in ${processingTime}ms ===`);
@@ -189,8 +296,9 @@ const autoStatusChangeService = {
 
       return {
         success: true,
-        currentCycle: currentCycle?.cycle,
-        cycleName: currentCycle?.name,
+        currentCycle: cycleInfo?.cycle,
+        cycleName: cycleInfo?.name,
+        period: cycleInfo?.period,
         tagToDelCount,
         actToTagCount,
         processingTime
@@ -210,64 +318,60 @@ const autoStatusChangeService = {
 
   async getUsersApproachingStatusChange() {
     try {
-      const currentCycle = this.getCurrentCycle();
-      if (!currentCycle) {
-        return { tagUsersNearDeletion: [], actUsersNearTagging: [] };
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
+        return { 
+          tagUsersNearDeletion: [], 
+          actUsersNearTagging: [],
+          message: 'Could not determine current cycle'
+        };
       }
 
-      const dayOfYear = this.getDayOfYear();
-      const daysLeftInCycle = currentCycle.endDay - dayOfYear;
-      
-      // Only warn if within last 7 days of cycle
-      if (daysLeftInCycle > 7) {
-        return { tagUsersNearDeletion: [], actUsersNearTagging: [] };
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
+      let tagUsersNearDeletion = [];
+      let actUsersNearTagging = [];
+
+      // During ACTIVE period, show ACT users who will be tagged soon
+      if (cycleInfo.period === 'ACTIVE' && cycleInfo.daysLeftInPeriod <= 7) {
+        actUsersNearTagging = await executeQuery(`
+          SELECT 
+            id, 
+            email, 
+            status,
+            COALESCE(form_submitted_at, approved_at, created_at) as last_activity,
+            ? as days_until_tagging,
+            ? as cycle_number,
+            ? as cycle_name
+          FROM users_tbl 
+          WHERE status = 'ACT'
+            AND COALESCE(form_submitted_at, approved_at, created_at) < ?
+          ORDER BY last_activity ASC
+        `, [cycleInfo.daysLeftInPeriod, cycleInfo.cycle, cycleInfo.name, activePeriodStart]);
       }
 
-      const currentYear = new Date().getFullYear();
-      const cycleStartDate = new Date(currentYear, 0, currentCycle.startDay);
-
-      // TAG users who will be deleted at end of cycle (no activity in current cycle)
-      const tagUsersNearDeletion = await executeQuery(`
-        SELECT 
-          id, 
-          email, 
-          status,
-          COALESCE(status_updated_at, tagged_at, created_at) as last_activity,
-          ? as days_remaining,
-          ? as cycle_number,
-          ? as cycle_name
-        FROM users_tbl 
-        WHERE status = 'TAG'
-          AND (
-            COALESCE(status_updated_at, tagged_at, created_at) < ?
-            OR YEAR(COALESCE(status_updated_at, tagged_at, created_at)) < YEAR(NOW())
-          )
-        ORDER BY last_activity ASC
-      `, [daysLeftInCycle, currentCycle.cycle, currentCycle.name, cycleStartDate]);
-
-      // ACT users who will be tagged at end of cycle (no form submission in current cycle)
-      const actUsersNearTagging = await executeQuery(`
-        SELECT 
-          id, 
-          email, 
-          status,
-          COALESCE(form_submitted_at, approved_at, created_at) as last_activity,
-          ? as days_remaining,
-          ? as cycle_number,
-          ? as cycle_name
-        FROM users_tbl 
-        WHERE status = 'ACT'
-          AND (
-            COALESCE(form_submitted_at, approved_at, created_at) < ?
-            OR YEAR(COALESCE(form_submitted_at, approved_at, created_at)) < YEAR(NOW())
-          )
-        ORDER BY last_activity ASC
-      `, [daysLeftInCycle, currentCycle.cycle, currentCycle.name, cycleStartDate]);
+      // During TAG period, show TAG users who will be deleted soon
+      if (cycleInfo.period === 'TAG_TRANSITION') {
+        tagUsersNearDeletion = await executeQuery(`
+          SELECT 
+            id, 
+            email, 
+            status,
+            COALESCE(status_updated_at, tagged_at, created_at) as last_activity,
+            ? as days_until_deletion,
+            ? as cycle_number,
+            ? as cycle_name
+          FROM users_tbl 
+          WHERE status = 'TAG'
+            AND COALESCE(status_updated_at, tagged_at, created_at) < ?
+          ORDER BY last_activity ASC
+        `, [cycleInfo.daysLeftInPeriod, cycleInfo.cycle, cycleInfo.name, activePeriodStart]);
+      }
 
       return {
-        currentCycle: currentCycle.cycle,
-        cycleName: currentCycle.name,
-        daysLeftInCycle,
+        currentCycle: cycleInfo.cycle,
+        cycleName: cycleInfo.name,
+        currentPeriod: cycleInfo.period,
+        daysLeftInPeriod: cycleInfo.daysLeftInPeriod,
         tagUsersNearDeletion,
         actUsersNearTagging
       };
@@ -282,41 +386,38 @@ const autoStatusChangeService = {
    */
   async getCycleStatistics() {
     try {
-      const currentCycle = this.getCurrentCycle();
-      if (!currentCycle) {
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
         return null;
       }
 
-      const currentYear = new Date().getFullYear();
-      const cycleStartDate = new Date(currentYear, 0, currentCycle.startDay);
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
 
-      // Count users by status and their cycle submission status
       const stats = await executeQuery(`
         SELECT 
           status,
           COUNT(*) as total,
           SUM(CASE 
-            WHEN COALESCE(form_submitted_at, approved_at, created_at) >= ? 
-              AND YEAR(COALESCE(form_submitted_at, approved_at, created_at)) = YEAR(NOW())
+            WHEN COALESCE(form_submitted_at, approved_at, created_at) >= ?
             THEN 1 
             ELSE 0 
-          END) as submitted_in_cycle,
+          END) as submitted_in_active_period,
           SUM(CASE 
-            WHEN COALESCE(form_submitted_at, approved_at, created_at) < ? 
-              OR YEAR(COALESCE(form_submitted_at, approved_at, created_at)) < YEAR(NOW())
+            WHEN COALESCE(form_submitted_at, approved_at, created_at) < ?
             THEN 1 
             ELSE 0 
-          END) as not_submitted_in_cycle
+          END) as not_submitted_in_active_period
         FROM users_tbl
         WHERE status IN ('ACT', 'TAG', 'DEL')
         GROUP BY status
-      `, [cycleStartDate, cycleStartDate]);
+      `, [activePeriodStart, activePeriodStart]);
 
       return {
-        currentCycle: currentCycle.cycle,
-        cycleName: currentCycle.name,
+        currentCycle: cycleInfo.cycle,
+        cycleName: cycleInfo.name,
+        currentPeriod: cycleInfo.period,
         dayOfYear: this.getDayOfYear(),
-        daysLeftInCycle: currentCycle.endDay - this.getDayOfYear(),
+        daysLeftInPeriod: cycleInfo.daysLeftInPeriod,
         statistics: stats
       };
     } catch (error) {
@@ -387,18 +488,17 @@ const createManualTriggerRoute = (router) => {
   // Get current cycle info
   router.get('/admin/current-cycle', async (req, res) => {
     try {
-      const currentCycle = autoStatusChangeService.getCurrentCycle();
-      const dayOfYear = autoStatusChangeService.getDayOfYear();
+      const cycleInfo = autoStatusChangeService.getCurrentCycleInfo();
       
       res.json({
         success: true,
         data: {
-          cycle: currentCycle?.cycle,
-          cycleName: currentCycle?.name,
-          dayOfYear: dayOfYear,
-          daysLeftInCycle: currentCycle ? currentCycle.endDay - dayOfYear : null,
-          cycleStartDay: currentCycle?.startDay,
-          cycleEndDay: currentCycle?.endDay
+          cycle: cycleInfo?.cycle,
+          cycleName: cycleInfo?.name,
+          period: cycleInfo?.period,
+          dayOfYear: autoStatusChangeService.getDayOfYear(),
+          daysLeftInPeriod: cycleInfo?.daysLeftInPeriod,
+          nextPeriod: cycleInfo?.nextPeriod
         }
       });
     } catch (error) {
@@ -415,5 +515,5 @@ module.exports = {
   autoStatusChangeService,
   scheduleStatusUpdates,
   createManualTriggerRoute,
-  YEARLY_CYCLES
+  QUARTERLY_CYCLES
 };

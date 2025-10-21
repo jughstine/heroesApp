@@ -699,6 +699,243 @@ router.get('/admins/same-role', authenticateAdminToken, async (req, res) => {
   }
 });
 
+// Update user status (Admin access required)
+router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status } = req.body;
+
+    // Validate status
+    const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status. Must be one of: ACT, TAG, DEL'
+      });
+    }
+
+    console.log(`Admin ${req.admin.email} updating user ${userId} status to ${status}`);
+
+    // Update user status in users_tbl (using 'id' column instead of 'user_id')
+    const updateQuery = `
+      UPDATE users_tbl 
+      SET status = ?, updated_at = NOW() 
+      WHERE id = ?
+    `;
+    
+    const result = await executeQuery(updateQuery, [status, userId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    console.log(`User ${userId} status updated to ${status} successfully`);
+
+    res.json({
+      success: true,
+      message: 'User status updated successfully',
+      data: {
+        userId: parseInt(userId),
+        status: status,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Update user status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update user status'
+    });
+  }
+});
+
+router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (req, res) => {
+    const startTime = Date.now();
+    let connection;
+
+    try {
+        const { userId } = req.params;
+
+        // First, get the pensioner info and verify they're in test_res_table
+        const pensionerInfo = await executeQuery(`
+            SELECT 
+                p.id as pensioner_id,
+                p.hero_ndx,
+                p.source_table,
+                p.type,
+                p.bos,
+                p.b_type,
+                p.principal_firstname,
+                p.principal_lastname
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            WHERE u.id = ?
+            LIMIT 1
+        `, [userId]);
+
+        if (pensionerInfo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Pensioner record not found",
+                code: 'PENSIONER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const pensioner = pensionerInfo[0];
+
+        // Check if already in test_table
+        if (pensioner.source_table === 'test_table') {
+            return res.status(400).json({
+                success: false,
+                error: "User is already in Alpha List (test_table)",
+                code: 'ALREADY_IN_ALPHA',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Check if in test_res_table
+        if (pensioner.source_table !== 'test_res_table') {
+            return res.status(400).json({
+                success: false,
+                error: "User is not in Resumption List (test_res_table)",
+                code: 'INVALID_SOURCE_TABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Get the hero data from test_res_table
+        const heroData = await executeQuery(`
+            SELECT 
+                LASTNAME,
+                FIRSTNAME,
+                MIDDLENAME,
+                SUFFIX,
+                DOB,
+                AFPSN,
+                ACRANK,
+                PENRANK,
+                TYPE,
+                CTRLNR,
+                MOBILENR
+            FROM test_res_table
+            WHERE NDX = ?
+            LIMIT 1
+        `, [pensioner.hero_ndx]);
+
+        if (heroData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Hero data not found in test_res_table",
+                code: 'HERO_DATA_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const hero = heroData[0];
+
+        // Get a connection for transaction
+        connection = await getDbConnection();
+        await connection.beginTransaction();
+
+        try {
+            // Insert into test_table (NDX will auto-increment)
+            const [insertResult] = await connection.execute(`
+                INSERT INTO test_table (
+                    LASTNAME,
+                    FIRSTNAME,
+                    MIDDLENAME,
+                    SUFFIX,
+                    DOB,
+                    AFPSN,
+                    ACRANK,
+                    PENRANK,
+                    TYPE,
+                    CTRLNR,
+                    MOBILENR
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                hero.LASTNAME,
+                hero.FIRSTNAME,
+                hero.MIDDLENAME,
+                hero.SUFFIX,
+                hero.DOB,
+                hero.AFPSN,
+                hero.ACRANK,
+                hero.PENRANK,
+                hero.TYPE,
+                hero.CTRLNR,
+                hero.MOBILENR
+            ]);
+
+            const newHeroNdx = insertResult.insertId;
+
+            // Update pensioners_tbl with new hero_ndx and source_table
+            await connection.execute(`
+                UPDATE pensioners_tbl
+                SET hero_ndx = ?,
+                    source_table = 'test_table'
+                WHERE id = ?
+            `, [newHeroNdx, pensioner.pensioner_id]);
+
+            // Delete from test_res_table to complete the transfer
+            await connection.execute(`
+                DELETE FROM test_res_table
+                WHERE NDX = ?
+            `, [pensioner.hero_ndx]);
+
+            // Commit transaction
+            await connection.commit();
+
+            const processingTime = Date.now() - startTime;
+
+            console.log(`Admin ${req.admin.email} transferred user ${userId} to Alpha List. Old NDX: ${pensioner.hero_ndx}, New NDX: ${newHeroNdx}`);
+
+            res.json({
+                success: true,
+                message: "User successfully transferred to Alpha List",
+                data: {
+                    userId: parseInt(userId),
+                    pensionerId: pensioner.pensioner_id,
+                    oldHeroNdx: pensioner.hero_ndx,
+                    newHeroNdx: newHeroNdx,
+                    oldSourceTable: 'test_res_table',
+                    newSourceTable: 'test_table'
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            // Rollback transaction on error
+            await connection.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        console.error("Transfer to Alpha error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to transfer user to Alpha List",
+            code: 'TRANSFER_ERROR',
+            details: error.message,
+            processingTime: `${processingTime}ms`
+        });
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+});
+
 module.exports = {
   router,
   authenticateAdminToken,

@@ -111,25 +111,26 @@ router.get('/profile', async (req, res) => {
     // Get database connection
     conn = await poolInstance.getConnection();
     
-    // Updated query to include DOB and TYPE
     const [profiles] = await conn.query(`
       SELECT 
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.DOB,
-        h.TYPE,
-        h.AFPSN,
-        h.MOBILENR,
+        COALESCE(h.FIRSTNAME, h2.FIRSTNAME) AS FIRSTNAME,
+        COALESCE(h.LASTNAME, h2.LASTNAME) AS LASTNAME,
+        COALESCE(h.DOB, h2.DOB) AS DOB,
+        COALESCE(h.TYPE, h2.TYPE) AS TYPE,
+        COALESCE(h.AFPSN, h2.AFPSN) AS AFPSN,
+        COALESCE(h.MOBILENR, h2.MOBILENR) AS MOBILENR,
         u.email,
         u.status,
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
+      LEFT JOIN test_table h ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
+      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
       ORDER BY u.created_at DESC
       LIMIT 1
     `);
+
 
     if (profiles.length === 0) {
       return res.status(404).json({
@@ -195,7 +196,7 @@ router.get('/profile/:userId', async (req, res) => {
 
   try {
     const userId = req.params.userId;
-    // Validate userId is a number
+    
     if (isNaN(userId) || userId <= 0) {
       return res.status(400).json({
         success: false,
@@ -205,7 +206,6 @@ router.get('/profile/:userId', async (req, res) => {
       });
     }
     
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -216,29 +216,58 @@ router.get('/profile/:userId', async (req, res) => {
       });
     }
 
-    // Get database connection
     conn = await poolInstance.getConnection();
     
-    // Query to get specific user profile
     const [profiles] = await conn.query(`
       SELECT 
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.DOB,
         CASE 
-            WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
-            THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
-            ELSE h.AFPSN
+          WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME 
+          ELSE h.FIRSTNAME 
+        END AS FIRSTNAME,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME 
+          ELSE h.LASTNAME 
+        END AS LASTNAME,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.DOB 
+          ELSE h.DOB 
+        END AS DOB,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN 
+            CASE 
+              WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN') 
+                THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
+              ELSE h2.AFPSN
+            END
+          ELSE 
+            CASE 
+              WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN') 
+                THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
+              ELSE h.AFPSN
+            END
         END AS afpsn,
-        h.PENRANK AS penrank,
-        h.TYPE,
-        h.CTRLNR,
-        h.MOBILENR,
-        p.type as pensioner_type,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.PENRANK 
+          ELSE h.PENRANK 
+        END AS penrank,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.TYPE 
+          ELSE h.TYPE 
+        END AS TYPE,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR 
+          ELSE h.CTRLNR 
+        END AS CTRLNR,
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR 
+          ELSE h.MOBILENR 
+        END AS MOBILENR,
+        p.type AS pensioner_type,
         p.bos,  
         p.b_type,
         p.principal_firstname,
         p.principal_lastname,
+        p.source_table,
         u.email,
         u.status,
         u.status_updated_at,
@@ -246,8 +275,9 @@ router.get('/profile/:userId', async (req, res) => {
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV' , 'TAG', 'DEL')
+      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX
+      LEFT JOIN test_table h ON p.hero_ndx = h.NDX
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
     `, [userId]);
 
     if (profiles.length === 0) {
@@ -261,25 +291,36 @@ router.get('/profile/:userId', async (req, res) => {
 
     const profile = profiles[0];
     
+    const heroData = {
+      FIRSTNAME: profile.FIRSTNAME,
+      LASTNAME: profile.LASTNAME,
+      DOB: profile.DOB,
+      AFPSN: profile.afpsn,
+      PENRANK: profile.penrank,
+      TYPE: profile.TYPE,
+      CTRLNR: profile.CTRLNR,
+      MOBILENR: profile.MOBILENR
+    };
+    
     const processingTime = Date.now() - startTime;
 
-    // Format the response
     const profileResponse = {
       success: true,
-      FIRSTNAME: profile.FIRSTNAME,
-      TYPE: profile.TYPE,
-      DOB: profile.DOB,
-      LASTNAME: profile.LASTNAME,
-      AFPSN: profile.AFPSN,
+      FIRSTNAME: heroData.FIRSTNAME,
+      TYPE: heroData.TYPE,
+      DOB: heroData.DOB,
+      LASTNAME: heroData.LASTNAME,
+      AFPSN: heroData.AFPSN,
       BOS: profile.bos,
       EMAIL: profile.email,
-      MOBILENR: profile.MOBILENR,
-      CTRLNR: profile.CTRLNR,
+      MOBILENR: heroData.MOBILENR,
+      CTRLNR: heroData.CTRLNR,
       email: profile.email,
       status: profile.status,
       status_updated_at: profile.status_updated_at,
       profile_picture: profile.profile_picture,
       pensioner_type: profile.pensioner_type,
+      source_table: profile.source_table,
       ...(profile.pensioner_type === 'B' && {
         beneficiary_info: {
           b_type: profile.b_type,
@@ -359,17 +400,32 @@ router.put('/profile/:userId/picture', async (req, res) => {
 
     conn = await poolInstance.getConnection();
 
-    // Verify user exists
+    // Verify user exists with better debugging
     const [users] = await conn.query(
-      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV','TAG', 'DEL')",
+      "SELECT id, status FROM users_tbl WHERE id = ?",
       [userId]
     );
 
     if (users.length === 0) {
+      console.warn(`User not found: userId=${userId}`);
       return res.status(404).json({
         success: false,
         error: "User not found",
         code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const user = users[0];
+    
+    // Check if user status allows profile updates
+    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'FOR_PAYROLL'];
+    if (!allowedStatuses.includes(user.status)) {
+      console.warn(`User status not allowed for update: userId=${userId}, status=${user.status}`);
+      return res.status(403).json({
+        success: false,
+        error: "Your account status does not allow profile updates",
+        code: 'FORBIDDEN_STATUS',
         processingTime: `${Date.now() - startTime}ms`
       });
     }
@@ -382,7 +438,7 @@ router.put('/profile/:userId/picture', async (req, res) => {
 
     const processingTime = Date.now() - startTime;
 
-    console.log(`✅ Profile picture updated for user ${userId}: ${profile_picture}`);
+    console.log(`Profile picture updated for user ${userId}`);
 
     res.json({
       success: true,
@@ -452,7 +508,7 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
       AND fs.status IN ('p', 'a', 'd') 
       ORDER BY fs.submitted_at DESC
     `);
@@ -525,14 +581,31 @@ router.get('/submissions/:userId', async (req, res) => {
 
     conn = await poolInstance.getConnection();
     
-    // Query for specific user's submissions
+    // Verify user exists (works with both tables)
+    const [userExists] = await conn.query(`
+      SELECT u.id, p.source_table
+      FROM users_tbl u
+      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+    `, [userId]);
+
+    if (userExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+        code: 'USER_NOT_FOUND',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Query for specific user's submissions with UTC timezone conversion
     const [submissions] = await conn.query(`
       SELECT 
         fs.id,
         fs.form_type_id,
         fs.status,
-        fs.submitted_at,
-        fs.reviewed_at,
+        CONVERT_TZ(fs.submitted_at, @@session.time_zone, '+00:00') as submitted_at,
+        CONVERT_TZ(fs.reviewed_at, @@session.time_zone, '+00:00') as reviewed_at,
         fs.admin_notes,
         fs.latitude,
         fs.longitude
@@ -542,14 +615,26 @@ router.get('/submissions/:userId', async (req, res) => {
       ORDER BY fs.submitted_at DESC
     `, [userId]);
 
+    // Ensure timestamps are in ISO 8601 format
+    const normalizedSubmissions = submissions.map(submission => ({
+      ...submission,
+      submitted_at: submission.submitted_at 
+        ? new Date(submission.submitted_at).toISOString()
+        : null,
+      reviewed_at: submission.reviewed_at
+        ? new Date(submission.reviewed_at).toISOString()
+        : null
+    }));
+
     const processingTime = Date.now() - startTime;
 
     res.json({
       success: true,
-      data: submissions,
+      data: normalizedSubmissions,
       meta: {
         userId: parseInt(userId),
-        count: submissions.length,
+        count: normalizedSubmissions.length,
+        source_table: userExists[0].source_table,
         processingTime: `${processingTime}ms`,
         retrieved: new Date().toISOString()
       }
@@ -577,7 +662,6 @@ router.get('/submissions/:userId', async (req, res) => {
     }
   }
 });
-
 // Form types reference endpoint
 router.get('/form-types', async (req, res) => {
   try {
@@ -644,7 +728,7 @@ router.put('/push-token/:userId', async (req, res) => {
 
     // Verify user exists
     const [users] = await conn.query(
-      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL')",
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')",
       [userId]
     );
 

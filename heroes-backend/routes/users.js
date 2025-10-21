@@ -84,11 +84,10 @@ router.get("/health", async (req, res) => {
     }
 });
 
-// Rate limiting
-
+// ===== RATE LIMITERS =====
 const identityLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 10, // 10 attempts per window
+    windowMs: 15 * 60 * 1000,
+    max: 10,
     message: {
         success: false,
         error: 'Too many identity validation attempts. Please try again later.',
@@ -293,42 +292,6 @@ const cleanupExpiredTokens = async () => {
     }
 };
 
-const debugTokenStatus = async (token) => {
-    try {
-        const results = await executeQuery(`
-      SELECT 
-        LEFT(token, 8) as token_prefix,
-        created_at,
-        expires_at,
-        UNIX_TIMESTAMP(created_at) as created_ts,
-        UNIX_TIMESTAMP(expires_at) as expires_ts,
-        UNIX_TIMESTAMP(NOW()) as now_ts,
-        (expires_at > NOW()) as is_valid,
-        TIMESTAMPDIFF(MINUTE, NOW(), expires_at) as minutes_remaining
-      FROM signup_tokens 
-      WHERE token = ?`,
-            [token]
-        );
-
-        if (results.length > 0) {
-            logger.info('Token debug info:', {
-                tokenPrefix: results[0].token_prefix,
-                createdAt: results[0].created_at,
-                expiresAt: results[0].expires_at,
-                isValid: results[0].is_valid === 1,
-                minutesRemaining: results[0].minutes_remaining
-            });
-        } else {
-            logger.warn(`Token not found in database: ${token.substring(0, 8)}...`);
-        }
-
-        return results[0] || null;
-    } catch (error) {
-        logger.error('Token debug failed:', error.message);
-        return null;
-    }
-};
-
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
@@ -399,16 +362,41 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         const normalizedFirstname = firstname.trim().toUpperCase();
         const normalizedLastname = lastname.trim().toUpperCase();
 
-        // ===== STEP 1A: Verify AFP Serial Number EXISTS =====
-        const afpsnRecords = await executeQuery(`
+        // ===== STEP 1A: Auto-detect which table the user is in =====
+        let detectedTable = null;
+        let afpsnRecords = null;
+        let penRank = null;
+
+        // Try active payroll first
+        afpsnRecords = await executeQuery(`
             SELECT COUNT(*) as count, PENRANK 
-            FROM test_table 
+            FROM test_table
             WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
             GROUP BY PENRANK`,
             [normalizedAfpsn, type]
         );
 
-        if (afpsnRecords.length === 0) {
+        if (afpsnRecords.length > 0) {
+            detectedTable = 'test_table';
+            penRank = afpsnRecords[0].PENRANK ? afpsnRecords[0].PENRANK.trim().toUpperCase() : null;
+        } else {
+            // Fall back to resumption table
+            afpsnRecords = await executeQuery(`
+                SELECT COUNT(*) as count, PENRANK 
+                FROM test_res_table
+                WHERE UPPER(TRIM(AFPSN)) = ? AND TYPE = ?
+                GROUP BY PENRANK`,
+                [normalizedAfpsn, type]
+            );
+
+            if (afpsnRecords.length > 0) {
+                detectedTable = 'test_res_table';
+                penRank = afpsnRecords[0].PENRANK ? afpsnRecords[0].PENRANK.trim().toUpperCase() : null;
+            }
+        }
+
+        // Record not found in either table
+        if (!detectedTable) {
             return res.status(401).json({
                 success: false,
                 error: "AFP Serial Number not found in our records",
@@ -417,11 +405,12 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             });
         }
 
-        // ===== CHECK OFFICER STATUS =====
-        const penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
-        const isOfficer = OFFICER_RANKS.includes(penRank);
+        // ===== DETERMINE ACCOUNT STATUS =====
+        const account_status = detectedTable === 'test_table' ? 'active' : 'resumption';
 
-        // Validate officer claim matches database
+        // ===== CHECK OFFICER STATUS (Define BEFORE using) =====
+        const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
+
         if (claims_officer && !isOfficer) {
             return res.status(400).json({
                 success: false,
@@ -442,29 +431,10 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             });
         }
 
-        // ===== CHECK IF ACCOUNT ALREADY EXISTS =====
-        const existingAccount = await executeQuery(`
-            SELECT u.id 
-            FROM users_tbl u 
-            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-            JOIN test_table h ON p.hero_ndx = h.NDX 
-            WHERE UPPER(TRIM(h.AFPSN)) = ? AND h.TYPE = ?`,
-            [normalizedAfpsn, type]
-        );
-
-        if (existingAccount.length > 0) {
-            return res.status(409).json({
-                success: false,
-                error: "An account already exists for this AFP Serial Number",
-                code: 'ACCOUNT_EXISTS',
-                processingTime: `${Date.now() - startTime}ms`
-            });
-        }
-
         // ===== STEP 1B: Verify Personal Information MATCHES =====
         const heroes = await executeQuery(`
-            SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK
-            FROM test_table 
+            SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK, ACRANK
+            FROM ${detectedTable}
             WHERE UPPER(TRIM(FIRSTNAME)) = ? 
               AND UPPER(TRIM(LASTNAME)) = ? 
               AND DATE(DOB) = DATE(?) 
@@ -474,7 +444,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         );
 
         if (heroes.length === 0) {
-            logger.warn(`Identity mismatch: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${normalizedAfpsn}`);
+            logger.warn(`Identity mismatch in ${detectedTable}: ${normalizedFirstname} ${normalizedLastname}, DOB: ${dob}, AFPSN: ${normalizedAfpsn}`);
             return res.status(401).json({
                 success: false,
                 error: "Personal information does not match our records. Please verify your details.",
@@ -484,7 +454,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         }
 
         if (heroes.length > 1) {
-            logger.warn(`Multiple heroes found: ${normalizedFirstname} ${normalizedLastname}`);
+            logger.warn(`Multiple heroes found in ${detectedTable}: ${normalizedFirstname} ${normalizedLastname}`);
             return res.status(409).json({
                 success: false,
                 error: "Multiple matching records found. Please contact support.",
@@ -493,9 +463,27 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             });
         }
 
-        // ===== SUCCESS: All Validations Passed =====
+        // ===== CHECK IF ACCOUNT ALREADY EXISTS FOR THIS SPECIFIC TABLE =====
         const heroData = heroes[0];
-        logger.info(`Identity verified: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN}), Rank: ${penRank}`);
+        const existingAccount = await executeQuery(`
+            SELECT u.id, u.status
+            FROM users_tbl u 
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+            WHERE p.hero_ndx = ? AND p.source_table = ? AND u.status NOT IN ('DEL')`,
+            [heroData.NDX, detectedTable]
+        );
+
+        if (existingAccount.length > 0) {
+            return res.status(409).json({
+                success: false,
+                error: "An account already exists for this AFP Serial Number in this record",
+                code: 'ACCOUNT_EXISTS',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // ===== SUCCESS: All Validations Passed =====
+        logger.info(`Identity verified in ${detectedTable}: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN}), Rank: ${penRank}`);
 
         // Create comprehensive token with all validated data
         const tokenData = {
@@ -511,7 +499,10 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             hero_ndx: heroData.NDX,
             hero_ctrl_nr: heroData.CTRLNR,
             penRank: penRank || null,
+            acRank: heroData.ACRANK || null,
             isOfficer: isOfficer,
+            account_status: account_status,
+            source_table: detectedTable,
             validated_at: new Date().toISOString()
         };
 
@@ -519,7 +510,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         const identityToken = await storeValidationToken(token, tokenData);
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Identity validation successful for ${normalizedAfpsn} in ${processingTime}ms`);
+        logger.info(`Identity validation successful for ${normalizedAfpsn} (${account_status}) in ${processingTime}ms`);
 
         res.json({
             success: true,
@@ -530,14 +521,17 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 afpsn: heroData.AFPSN,
                 controlNumber: heroData.CTRLNR,
                 type: heroData.TYPE,
-                dob: heroData.DOB
+                dob: heroData.DOB,
+                acRank: heroData.ACRANK || null
             },
             data: {
                 type,
                 afpsn: normalizedAfpsn,
                 rank: penRank,
                 isOfficer: isOfficer,
-                recordsFound: afpsnRecords[0].count
+                recordsFound: afpsnRecords[0].count,
+                account_status: account_status,
+                source_table: detectedTable
             },
             meta: {
                 processingTime: `${processingTime}ms`,
@@ -547,17 +541,24 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
 
     } catch (error) {
         const processingTime = Date.now() - startTime;
-        logger.error("Identity validation error:", error);
+        logger.error("Identity validation error:", {
+            message: error.message,
+            code: error.code,
+            sqlMessage: error.sqlMessage,
+            sqlState: error.sqlState,
+            errno: error.errno,
+            stack: error.stack
+        });
 
         res.status(500).json({
             success: false,
             error: "Identity validation failed. Please try again.",
             code: 'IDENTITY_VALIDATION_ERROR',
-            processingTime: `${processingTime}ms`
+            processingTime: `${processingTime}ms`,
+            debug: error.message // Remove in production
         });
     }
 });
-
 // Create Account (Email + Password)
 router.post("/create-account", createAccountLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
@@ -566,7 +567,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
     try {
         const { identityToken, email, password } = req.body;
 
-        // ===== VALIDATION: Required Fields =====
         if (!identityToken || !email || !password) {
             return res.status(400).json({
                 success: false,
@@ -585,7 +585,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Invalid validation data: missing hero_ndx');
             }
 
-            logger.info(`Identity token validated for: ${validationData.firstname} ${validationData.lastname}`);
+            logger.info(`Identity token validated for: ${validationData.firstname} ${validationData.lastname} (${validationData.account_status})`);
 
         } catch (error) {
             logger.warn(`Identity token validation failed: ${error.message}`);
@@ -629,8 +629,8 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             SELECT u.id 
             FROM users_tbl u 
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-            WHERE p.hero_ndx = ?`,
-            [validationData.hero_ndx]
+            WHERE p.hero_ndx = ? AND p.source_table = ?`,
+            [validationData.hero_ndx, validationData.source_table]
         );
 
         if (existingHeroAccount.length > 0) {
@@ -654,7 +654,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             });
         }
 
-        // ===== HASH PASSWORD (BEFORE CONNECTION) =====
+        // ===== HASH PASSWORD =====
         logger.info('Hashing password...');
         const saltRounds = 12;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
@@ -690,24 +690,35 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             await connection.beginTransaction();
             logger.info('Transaction started for account creation');
 
-            // Create pensioner record
+            // Determine initial user status based on account_status
+            let initialUserStatus = 'TAG'; // Default for active accounts
+            if (validationData.account_status === 'resumption') {
+                initialUserStatus = 'AFR'; // Resumption requires approval
+            }
+
             logger.info('Creating pensioner record', {
                 hero_ndx: validationData.hero_ndx,
-                type: validationData.type
+                type: validationData.type,
+                source_table: validationData.source_table,
+                account_status: validationData.account_status
             });
 
+            // Create pensioner record with additional metadata
             const [pensionerResult] = await connection.execute(
-                `INSERT INTO pensioners_tbl (hero_ndx, type, bos, b_type, principal_firstname, principal_lastname) 
-                 VALUES (?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO pensioners_tbl (hero_ndx, source_table, type, bos, b_type, principal_firstname, principal_lastname, account_status) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     validationData.hero_ndx,
+                    validationData.source_table,  // Add this
                     validationData.type,
                     validationData.bos || null,
                     validationData.b_type || null,
                     validationData.principal_first_name || null,
-                    validationData.principal_last_name || null
+                    validationData.principal_last_name || null,
+                    validationData.account_status
                 ]
             );
+
 
             const pensionerId = pensionerResult.insertId;
 
@@ -717,11 +728,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
             logger.info(`Pensioner created: ID ${pensionerId}`);
 
-            // Create user record with pre-hashed password
+            // Create user record with status based on account type
             const [userResult] = await connection.execute(
-                `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status) 
-                 VALUES (?, ?, ?, 'TAG')`,
-                [pensionerId, normalizedEmail, hashedPassword]
+                `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, tagged_at) 
+                 VALUES (?, ?, ?, ?, NOW())`,
+                [pensionerId, normalizedEmail, hashedPassword, initialUserStatus]
             );
 
             const userId = userResult.insertId;
@@ -730,7 +741,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Failed to create user - no insertId');
             }
 
-            logger.info(`User created: ID ${userId}`);
+            logger.info(`User created: ID ${userId} with status: ${initialUserStatus}`);
 
             // Delete used token to prevent reuse
             await connection.execute(
@@ -742,17 +753,21 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             logger.info('Transaction committed successfully');
 
             const processingTime = Date.now() - startTime;
-            logger.info(`Account created: ${normalizedEmail} (User: ${userId}) in ${processingTime}ms`);
+            logger.info(`Account created: ${normalizedEmail} (User: ${userId}, Status: ${initialUserStatus}) in ${processingTime}ms`);
 
             res.status(201).json({
                 success: true,
-                message: "Account created successfully",
+                message: validationData.account_status === 'resumption' 
+                    ? "Account created successfully. Your resumption application is pending approval."
+                    : "Account created successfully",
                 data: {
                     userId,
                     email: normalizedEmail,
                     pensionerId,
                     type: validationData.type,
-                    status: 'ACTIVE'
+                    status: initialUserStatus,
+                    account_status: validationData.account_status,
+                    source_table: validationData.source_table
                 },
                 meta: {
                     processingTime: `${processingTime}ms`,
@@ -881,29 +896,32 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         logger.info(`Login attempt for: ${normalizedEmail}`);
 
         const users = await executeQuery(`
-      SELECT 
-        u.id as user_id,
-        u.email,
-        u.password_hash,
-        u.status as user_status,
-        u.created_at,
-        p.id as pensioner_id,
-        p.type,
-        p.bos,
-        p.b_type,
-        p.principal_firstname,
-        p.principal_lastname,
-        h.FIRSTNAME,
-        h.LASTNAME,
-        h.AFPSN,
-        h.CTRLNR,
-        h.TYPE as hero_type
-      FROM users_tbl u
-      JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.email = ?
-      LIMIT 1
-    `, [normalizedEmail]);
+            SELECT 
+                u.id as user_id,
+                u.email,
+                u.password_hash,
+                u.status as user_status,
+                u.created_at,
+                p.id as pensioner_id,
+                p.type,
+                p.bos,
+                p.b_type,
+                p.principal_firstname,
+                p.principal_lastname,
+                p.source_table,
+                p.account_status,
+                COALESCE(h.FIRSTNAME, h2.FIRSTNAME) as FIRSTNAME,
+                COALESCE(h.LASTNAME, h2.LASTNAME) as LASTNAME,
+                COALESCE(h.AFPSN, h2.AFPSN) as AFPSN,
+                COALESCE(h.CTRLNR, h2.CTRLNR) as CTRLNR,
+                COALESCE(h.TYPE, h2.TYPE) as hero_type
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            LEFT JOIN test_table h ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
+            LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
+            WHERE u.email = ?
+            LIMIT 1
+        `, [normalizedEmail]);
 
         if (users.length === 0) {
             logger.warn(`Login failed - user not found: ${normalizedEmail}`);
@@ -916,7 +934,7 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         }
 
         const user = users[0];
-        logger.info(`User found: ${user.email}, Status: ${user.user_status}`);
+        logger.info(`User found: ${user.email}, Status: ${user.user_status}, Source: ${user.source_table}`);
 
         if (user.user_status === 'SUS') {
             return res.status(403).json({
@@ -957,6 +975,8 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
                 type: user.type,
                 bos: user.bos,
                 status: 'ACTIVE',
+                account_status: user.account_status,
+                source_table: user.source_table,
                 validated_hero: {
                     name: `${user.FIRSTNAME} ${user.LASTNAME}`,
                     afpsn: user.AFPSN,
@@ -1024,7 +1044,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         res.status(errorResponse.statusCode).json(errorResponse);
     }
 });
-
 // Logout endpoint
 router.post("/logout", async (req, res) => {
     try {
@@ -1289,6 +1308,7 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
             });
         }
 
+        // Check if user exists
         const userCheck = await executeQuery(
             'SELECT id FROM users_tbl WHERE id = ? LIMIT 1',
             [userId]
@@ -1303,12 +1323,13 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
             });
         }
 
+        // Get pensioner data including source_table to know which table to update
         const pensionerData = await executeQuery(`
-      SELECT p.hero_ndx 
-      FROM pensioners_tbl p
-      JOIN users_tbl u ON u.pensioner_ndx = p.id
-      WHERE u.id = ?
-      LIMIT 1`,
+            SELECT p.hero_ndx, p.id as pensioner_id, p.source_table, p.type
+            FROM pensioners_tbl p
+            JOIN users_tbl u ON u.pensioner_ndx = p.id
+            WHERE u.id = ?
+            LIMIT 1`,
             [userId]
         );
 
@@ -1321,26 +1342,66 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
             });
         }
 
-        const heroNdx = pensionerData[0].hero_ndx;
+        const { hero_ndx, source_table, type } = pensionerData[0];
 
-        // Update mobile in test_table (heroes table)
-        await executeQuery(
-            'UPDATE test_table SET MOBILENR = ? WHERE NDX = ?',
-            [normalizedMobile, heroNdx]
-        );
+        // Validate source_table
+        if (!source_table || (source_table !== 'test_table' && source_table !== 'test_res_table')) {
+            logger.error(`Invalid source_table: ${source_table} for hero_ndx ${hero_ndx}`);
+            return res.status(500).json({
+                success: false,
+                error: "Invalid source table configuration",
+                code: 'INVALID_SOURCE_TABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        logger.info(`Updating mobile for user ${userId}, type: ${type}, hero_ndx: ${hero_ndx}, source_table: ${source_table}`);
+
+        // Dynamically update the correct table based on source_table
+        const updateQuery = `UPDATE ${source_table} SET MOBILENR = ? WHERE NDX = ?`;
+        const updateResult = await executeQuery(updateQuery, [normalizedMobile, hero_ndx]);
+
+        // Check if the update actually affected any rows
+        if (updateResult.affectedRows === 0) {
+            logger.error(`Mobile update failed - no rows affected for hero_ndx ${hero_ndx} in ${source_table}`);
+            return res.status(500).json({
+                success: false,
+                error: `Failed to update mobile number - record not found in ${source_table}`,
+                code: 'UPDATE_FAILED',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Verify the update worked
+        const verifyQuery = `SELECT MOBILENR FROM ${source_table} WHERE NDX = ? LIMIT 1`;
+        const verifyData = await executeQuery(verifyQuery, [hero_ndx]);
+
+        if (verifyData.length === 0 || verifyData[0]?.MOBILENR !== normalizedMobile) {
+            logger.error(`Mobile update verification failed for hero_ndx ${hero_ndx} in ${source_table}`);
+            return res.status(500).json({
+                success: false,
+                error: "Failed to verify mobile number update",
+                code: 'VERIFICATION_FAILED',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Mobile number updated successfully for user ${userId} (hero_ndx: ${heroNdx}) in ${processingTime}ms`);
+        logger.info(`✅ Mobile number updated successfully for user ${userId} (hero_ndx: ${hero_ndx}) in ${source_table} - ${processingTime}ms`);
 
         res.json({
             success: true,
             message: "Mobile number updated successfully",
             data: {
-                mobile: normalizedMobile
+                mobile: normalizedMobile,
+                heroNdx: hero_ndx,
+                sourceTable: source_table,
+                userType: type
             },
             meta: {
                 processingTime: `${processingTime}ms`,
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
+                affectedRows: updateResult.affectedRows
             }
         });
 
@@ -1352,6 +1413,7 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
             success: false,
             error: "Failed to update mobile number. Please try again.",
             code: 'MOBILE_UPDATE_ERROR',
+            details: error.message,
             processingTime: `${processingTime}ms`
         });
     }
@@ -1363,6 +1425,47 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     try {
         const { userId } = req.params;
 
+        // First, get the pensioner info to determine which table to query
+        const pensionerInfo = await executeQuery(`
+            SELECT 
+                p.id,
+                p.hero_ndx,
+                p.source_table,
+                p.type,
+                p.bos,
+                p.b_type,
+                p.principal_firstname,
+                p.principal_lastname
+            FROM users_tbl u
+            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            WHERE u.id = ?
+            LIMIT 1
+        `, [userId]);
+
+        if (pensionerInfo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "Pensioner record not found",
+                code: 'PENSIONER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const pensioner = pensionerInfo[0];
+        const sourceTable = pensioner.source_table || 'test_table'; // Default to test_table if null
+
+        // Validate source table
+        if (sourceTable !== 'test_table' && sourceTable !== 'test_res_table') {
+            logger.error(`Invalid source_table: ${sourceTable} for user ${userId}`);
+            return res.status(500).json({
+                success: false,
+                error: "Invalid source table configuration",
+                code: 'INVALID_SOURCE_TABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Now query with the correct source table
         const userProfile = await executeQuery(`
             SELECT 
                 u.id as user_id,
@@ -1377,15 +1480,12 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
                 p.type,
                 p.bos,
                 p.b_type,
+                p.source_table,
                 p.principal_firstname,
                 p.principal_lastname,
                 h.FIRSTNAME,
                 h.LASTNAME,
-                CASE 
-                    WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
-                    THEN CONCAT('O-', h.AFPSN)
-                    ELSE h.AFPSN
-                END as AFPSN,
+                h.AFPSN,
                 h.DOB,
                 h.MOBILENR,
                 h.CTRLNR,
@@ -1393,7 +1493,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
                 h.ACRANK
             FROM users_tbl u
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-            JOIN test_table h ON p.hero_ndx = h.NDX
+            JOIN ${sourceTable} h ON p.hero_ndx = h.NDX
             WHERE u.id = ?
             LIMIT 1
         `, [userId]);
@@ -1408,6 +1508,13 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         }
 
         const profile = userProfile[0];
+        
+        // Format AFPSN with O- prefix for officers
+        const formattedAFPSN = profile.PENRANK && 
+            ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN'].includes(profile.PENRANK)
+            ? `O-${profile.AFPSN}`
+            : profile.AFPSN;
+
         const processingTime = Date.now() - startTime;
 
         res.json({
@@ -1420,11 +1527,12 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
             status: profile.status,
             FIRSTNAME: profile.FIRSTNAME,
             LASTNAME: profile.LASTNAME,
-            AFPSN: profile.AFPSN,
+            AFPSN: formattedAFPSN,
             DOB: profile.DOB,
-            MOBILE: profile.MOBILENR, 
+            MOBILENR: profile.MOBILENR, 
             BOS: profile.bos,
             TYPE: profile.type,
+            SOURCE_TABLE: profile.source_table,
             CTRLNR: profile.CTRLNR,
             ACRANK: profile.ACRANK,
             PENRANK: profile.PENRANK,
@@ -1438,7 +1546,8 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
             updated_at: profile.updated_at,
             meta: {
                 processingTime: `${processingTime}ms`,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                sourceTable: sourceTable
             }
         });
 
@@ -1450,6 +1559,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
             success: false,
             error: "Failed to fetch profile",
             code: 'PROFILE_FETCH_ERROR',
+            details: error.message,
             processingTime: `${processingTime}ms`
         });
     }
@@ -1461,6 +1571,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
     try {
         logger.info('Fetching all users for admin dashboard');
 
+        // Get users from both tables
         const users = await executeQuery(`
             SELECT 
                 u.id AS user_id,
@@ -1472,20 +1583,53 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 p.type,
                 p.bos,
                 p.b_type,
-                h.FIRSTNAME AS firstname,
-                h.LASTNAME AS lastname,
+                p.source_table,
                 CASE 
-                    WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
-                    THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
-                    ELSE h.AFPSN
+                    WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME 
+                    ELSE h1.FIRSTNAME 
+                END AS firstname,
+                CASE 
+                    WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME 
+                    ELSE h1.LASTNAME 
+                END AS lastname,
+                CASE 
+                    WHEN p.source_table = 'test_res_table' THEN 
+                        CASE 
+                            WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                            THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
+                            ELSE h2.AFPSN
+                        END
+                    ELSE 
+                        CASE 
+                            WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                            THEN CONCAT('O-', REPLACE(h1.AFPSN, 'O-', ''))
+                            ELSE h1.AFPSN
+                        END
                 END AS afpsn,
-                h.PENRANK AS penrank,
-                h.MOBILENR AS mobile
+                CASE 
+                    WHEN p.source_table = 'test_res_table' THEN h2.PENRANK 
+                    ELSE h1.PENRANK 
+                END AS penrank,
+                CASE 
+                    WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR 
+                    ELSE h1.MOBILENR 
+                END AS mobile
             FROM users_tbl u
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-            JOIN test_table h ON p.hero_ndx = h.NDX
+            LEFT JOIN test_table h1 ON p.hero_ndx = h1.NDX AND p.source_table = 'test_table'
+            LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
             ORDER BY u.created_at DESC
         `);
+
+        // Calculate stats including breakdown by source table
+        const stats = {
+            totalUsers: users.length,
+            principalUsers: users.filter((u) => u.type === 'P').length,
+            beneficiaryUsers: users.filter((u) => u.type === 'B').length,
+            activeUsers: users.filter((u) => u.status === 'ACT' || u.status === 'TAG').length,
+            testTableUsers: users.filter((u) => u.source_table === 'test_table').length,
+            testResTableUsers: users.filter((u) => u.source_table === 'test_res_table').length,
+        };
 
         const processingTime = Date.now() - startTime;
         logger.info(`Retrieved ${users.length} users in ${processingTime}ms`);
@@ -1494,6 +1638,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
             success: true,
             users: users,
             data: users,
+            stats: stats,
             count: users.length,
             meta: {
                 processingTime: `${processingTime}ms`,

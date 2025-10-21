@@ -70,7 +70,6 @@ router.get('/types', async (req, res) => {
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching form types:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message,
@@ -2182,10 +2181,11 @@ router.put('/:form_id/status', async (req, res) => {
 
     await pool.query('START TRANSACTION');
 
+    await pool.execute("SET time_zone = '+08:00'");
     try {
       const updateQuery = admin_notes !== undefined
-        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
-        : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
+        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = CONVERT_TZ(NOW(), "+00:00", "+08:00") WHERE id = ?'
+        : 'UPDATE form_submission SET status = ?, reviewed_at = CONVERT_TZ(NOW(), "+00:00", "+08:00") WHERE id = ?';
 
       const updateParams = admin_notes !== undefined
         ? [status, admin_notes, formId]
@@ -2196,10 +2196,10 @@ router.put('/:form_id/status', async (req, res) => {
 
       // Conditional approval: If form type is 3 (Restoration) and status is approved
       if (formTypeId === 3 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
-          ['TAG', userId]
-        );
+      await pool.execute(
+        'UPDATE users_tbl SET status = ?, approved_at = CONVERT_TZ(NOW(), "+00:00", "+08:00") WHERE id = ?',
+        ['ACT', userId]
+      );
       }
 
       // Delete requirements from appropriate table if status is denied
@@ -2235,7 +2235,7 @@ router.put('/:form_id/status', async (req, res) => {
       // Add user status update info if restoration form was approved
       if (formTypeId === 3 && status === 'a') {
         response.user_status_updated = true;
-        response.new_user_status = 'TAG';
+        response.new_user_status = 'ACT';
       }
 
       res.json(response);

@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const { executeQuery, logger } = require('../config/database');
+const { sendPushNotificationToUser } = require('./pushNotificationService');
 
 /**
  * Automatic Status Change System - Quarterly Cycles
@@ -43,77 +44,101 @@ const autoStatusChangeService = {
    * Parse MM-DD format to day of year
    */
   dateToDayOfYear(dateStr, year) {
-    const [month, day] = dateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    const start = new Date(year, 0, 0);
-    const diff = date - start;
-    const oneDay = 1000 * 60 * 60 * 24;
-    return Math.floor(diff / oneDay);
+    try {
+      const [month, day] = dateStr.split('-').map(Number);
+      const date = new Date(year, month - 1, day);
+      const start = new Date(year, 0, 0);
+      const diff = date - start;
+      const oneDay = 1000 * 60 * 60 * 24;
+      return Math.floor(diff / oneDay);
+    } catch (error) {
+      logger.error(`Error converting date ${dateStr} to day of year:`, error);
+      return null;
+    }
   },
 
   getDayOfYear(date = new Date()) {
-    const start = new Date(date.getFullYear(), 0, 0);
-    const diff = date - start;
-    const oneDay = 1000 * 60 * 60 * 24;
-    return Math.floor(diff / oneDay);
+    try {
+      const start = new Date(date.getFullYear(), 0, 0);
+      const diff = date - start;
+      const oneDay = 1000 * 60 * 60 * 24;
+      return Math.floor(diff / oneDay);
+    } catch (error) {
+      logger.error('Error calculating day of year:', error);
+      return null;
+    }
   },
 
   /**
    * Get current cycle and period information
    */
   getCurrentCycleInfo(date = new Date()) {
-    const year = date.getFullYear();
-    const dayOfYear = this.getDayOfYear(date);
+    try {
+      const year = date.getFullYear();
+      const dayOfYear = this.getDayOfYear(date);
 
-    for (const cycle of QUARTERLY_CYCLES) {
-      const activeStart = this.dateToDayOfYear(cycle.activePeriod.start, year);
-      const activeEnd = this.dateToDayOfYear(cycle.activePeriod.end, year);
-      const tagStart = this.dateToDayOfYear(cycle.tagPeriod.start, year);
-      const tagEnd = this.dateToDayOfYear(cycle.tagPeriod.end, year);
-      const delStart = this.dateToDayOfYear(cycle.delPeriod.start, year);
-      const delEnd = this.dateToDayOfYear(cycle.delPeriod.end, year);
-
-      if (dayOfYear >= activeStart && dayOfYear <= activeEnd) {
-        return {
-          cycle: cycle.cycle,
-          name: cycle.name,
-          period: 'ACTIVE',
-          periodStart: activeStart,
-          periodEnd: activeEnd,
-          daysLeftInPeriod: activeEnd - dayOfYear,
-          nextPeriod: 'TAG',
-          nextPeriodStart: tagStart
-        };
+      if (!dayOfYear) {
+        logger.error('Could not calculate day of year');
+        return null;
       }
 
-      if (dayOfYear >= tagStart && dayOfYear <= tagEnd) {
-        return {
-          cycle: cycle.cycle,
-          name: cycle.name,
-          period: 'TAG_TRANSITION',
-          periodStart: tagStart,
-          periodEnd: tagEnd,
-          daysLeftInPeriod: tagEnd - dayOfYear,
-          nextPeriod: 'DEL',
-          nextPeriodStart: delStart
-        };
+      for (const cycle of QUARTERLY_CYCLES) {
+        const activeStart = this.dateToDayOfYear(cycle.activePeriod.start, year);
+        const activeEnd = this.dateToDayOfYear(cycle.activePeriod.end, year);
+        const tagStart = this.dateToDayOfYear(cycle.tagPeriod.start, year);
+        const tagEnd = this.dateToDayOfYear(cycle.tagPeriod.end, year);
+        const delStart = this.dateToDayOfYear(cycle.delPeriod.start, year);
+        const delEnd = this.dateToDayOfYear(cycle.delPeriod.end, year);
+
+        // Check ACTIVE period
+        if (dayOfYear >= activeStart && dayOfYear <= activeEnd) {
+          return {
+            cycle: cycle.cycle,
+            name: cycle.name,
+            period: 'ACTIVE',
+            periodStart: activeStart,
+            periodEnd: activeEnd,
+            daysLeftInPeriod: activeEnd - dayOfYear,
+            nextPeriod: 'TAG',
+            nextPeriodStart: tagStart
+          };
+        }
+
+        // Check TAG period
+        if (dayOfYear >= tagStart && dayOfYear <= tagEnd) {
+          return {
+            cycle: cycle.cycle,
+            name: cycle.name,
+            period: 'TAG_TRANSITION',
+            periodStart: tagStart,
+            periodEnd: tagEnd,
+            daysLeftInPeriod: tagEnd - dayOfYear,
+            nextPeriod: 'DEL',
+            nextPeriodStart: delStart
+          };
+        }
+
+        // Check DEL period
+        if (dayOfYear >= delStart && dayOfYear <= delEnd) {
+          return {
+            cycle: cycle.cycle,
+            name: cycle.name,
+            period: 'DEL_TRANSITION',
+            periodStart: delStart,
+            periodEnd: delEnd,
+            daysLeftInPeriod: delEnd - dayOfYear,
+            nextPeriod: cycle.cycle === 4 ? 'Q1_ACTIVE' : 'NEXT_Q_ACTIVE',
+            nextPeriodStart: null
+          };
+        }
       }
 
-      if (dayOfYear >= delStart && dayOfYear <= delEnd) {
-        return {
-          cycle: cycle.cycle,
-          name: cycle.name,
-          period: 'DEL_TRANSITION',
-          periodStart: delStart,
-          periodEnd: delEnd,
-          daysLeftInPeriod: delEnd - dayOfYear,
-          nextPeriod: cycle.cycle === 4 ? 'Q1_ACTIVE' : 'NEXT_Q_ACTIVE',
-          nextPeriodStart: null
-        };
-      }
+      logger.warn(`Day ${dayOfYear} does not fall within any defined cycle period`);
+      return null;
+    } catch (error) {
+      logger.error('Error getting current cycle info:', error);
+      return null;
     }
-
-    return null;
   },
 
   /**
@@ -145,23 +170,157 @@ const autoStatusChangeService = {
   },
 
   /**
+   * 🔔 NEW: Send notifications to users about upcoming status changes
+   */
+  async sendStatusChangeWarningNotifications() {
+    try {
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
+        logger.warn('Could not determine current cycle');
+        return { sent: 0, failed: 0 };
+      }
+
+      const daysLeft = cycleInfo.daysLeftInPeriod;
+
+      let notificationsSent = 0;
+      let notificationsFailed = 0;
+
+      // SCENARIO 1: During ACTIVE period - Warn ACT users at 30 and 15 days before tagging
+      if (cycleInfo.period === 'ACTIVE' && (daysLeft === 30 || daysLeft === 15)) {        
+        const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
+        const inactiveUsers = await executeQuery(`
+          SELECT id, email 
+          FROM users_tbl 
+          WHERE status = 'ACT'
+            AND COALESCE(form_submitted_at, approved_at, created_at) < ?
+        `, [activePeriodStart]);
+
+        for (const user of inactiveUsers) {
+          const title = '⚠️ Account Status Warning';
+          const body = `You have ${daysLeft} days left to submit a form to keep your account active. Without submission, your account will be tagged for deletion.`;
+          const data = {
+            type: 'status_warning',
+            daysLeft: String(daysLeft),
+            currentStatus: 'ACT',
+            nextStatus: 'TAG',
+            screen: 'Home'
+          };
+
+          try {
+            const result = await sendPushNotificationToUser(user.id, title, body, data);
+            if (result.success) {
+              notificationsSent++;
+            } else {
+              notificationsFailed++;
+              logger.warn(`❌ Failed to send warning to user ${user.id}: ${result.error}`);
+            }
+          } catch (error) {
+            notificationsFailed++;
+            logger.error(`❌ Error sending notification to user ${user.id}:`, error);
+          }
+
+          // Small delay to avoid overwhelming the notification service
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      // SCENARIO 2: First day of TAG period - Notify users they've been tagged
+      if (cycleInfo.period === 'TAG_TRANSITION' && daysLeft === (cycleInfo.periodEnd - cycleInfo.periodStart)) {
+
+        const taggedUsers = await executeQuery(`
+          SELECT id, email 
+          FROM users_tbl 
+          WHERE status = 'TAG'
+            AND DATE(tagged_at) = CURDATE()
+        `);
+
+        for (const user of taggedUsers) {
+          const title = '🏷️ Account Tagged for Deletion';
+          const body = 'Your account has been tagged for deletion due to inactivity. Submit a form within the next few days to restore your active status.';
+          const data = {
+            type: 'status_changed',
+            currentStatus: 'TAG',
+            nextStatus: 'DEL',
+            screen: 'Profile'
+          };
+
+          try {
+            const result = await sendPushNotificationToUser(user.id, title, body, data);
+            if (result.success) {
+              notificationsSent++;
+            } else {
+              notificationsFailed++;
+            }
+          } catch (error) {
+            notificationsFailed++;
+            logger.error(`❌ Error sending TAG notification to user ${user.id}:`, error);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      // SCENARIO 3: First day of DEL period - Notify users they've been deleted
+      if (cycleInfo.period === 'DEL_TRANSITION' && daysLeft === (cycleInfo.periodEnd - cycleInfo.periodStart)) {
+
+        const deletedUsers = await executeQuery(`
+          SELECT id, email 
+          FROM users_tbl 
+          WHERE status = 'DEL'
+            AND DATE(deleted_at) = CURDATE()
+        `);
+
+        for (const user of deletedUsers) {
+          const title = '🗑️ Account Deleted';
+          const body = 'Your account has been deleted due to inactivity. You may contact support to restore your account.';
+          const data = {
+            type: 'status_changed',
+            currentStatus: 'DEL',
+            screen: 'Profile'
+          };
+
+          try {
+            const result = await sendPushNotificationToUser(user.id, title, body, data);
+            if (result.success) {
+              notificationsSent++;
+            } else {
+              notificationsFailed++;
+            }
+          } catch (error) {
+            notificationsFailed++;
+            logger.error(`❌ Error sending DEL notification to user ${user.id}:`, error);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      return {
+        sent: notificationsSent,
+        failed: notificationsFailed,
+        daysLeft,
+        period: cycleInfo.period
+      };
+
+    } catch (error) {
+      logger.error('Error sending status change warning notifications:', error);
+      throw error;
+    }
+  },
+
+  /**
    * Update TAG users to DEL during DEL transition periods
    */
   async updateInactiveTAGUsers() {
     try {
-      logger.info('Starting TAG → DEL status update check');
-
       const cycleInfo = this.getCurrentCycleInfo();
       if (!cycleInfo) {
         logger.warn('Could not determine current cycle');
         return 0;
       }
 
-      logger.info(`Current: ${cycleInfo.name} - ${cycleInfo.period}`);
-
       // Only process during DEL transition periods
       if (cycleInfo.period !== 'DEL_TRANSITION') {
-        logger.info('Not in DEL transition period - skipping TAG → DEL updates');
         return 0;
       }
 
@@ -180,9 +339,7 @@ const autoStatusChangeService = {
           )
       `, [activePeriodStart]);
 
-      if (result.affectedRows > 0) {
-        logger.info(`✓ Updated ${result.affectedRows} TAG users to DEL status`);
-        
+      if (result.affectedRows > 0) {        
         const deletedUsers = await executeQuery(`
           SELECT id, email, status_updated_at, tagged_at, created_at
           FROM users_tbl 
@@ -196,7 +353,6 @@ const autoStatusChangeService = {
           lastActivity: u.status_updated_at || u.tagged_at || u.created_at
         })));
       } else {
-        logger.info('No TAG users require deletion');
       }
 
       return result.affectedRows;
@@ -211,19 +367,15 @@ const autoStatusChangeService = {
    */
   async updateInactiveACTUsers() {
     try {
-      logger.info('Starting ACT → TAG status update check');
-
       const cycleInfo = this.getCurrentCycleInfo();
       if (!cycleInfo) {
         logger.warn('Could not determine current cycle');
         return 0;
       }
 
-      logger.info(`Current: ${cycleInfo.name} - ${cycleInfo.period}`);
 
       // Only process during TAG transition periods
       if (cycleInfo.period !== 'TAG_TRANSITION') {
-        logger.info('Not in TAG transition period - skipping ACT → TAG updates');
         return 0;
       }
 
@@ -243,7 +395,6 @@ const autoStatusChangeService = {
       `, [activePeriodStart]);
 
       if (result.affectedRows > 0) {
-        logger.info(`✓ Updated ${result.affectedRows} ACT users to TAG status`);
         
         const taggedUsers = await executeQuery(`
           SELECT id, email, form_submitted_at, approved_at, created_at
@@ -258,7 +409,6 @@ const autoStatusChangeService = {
           lastActivity: u.form_submitted_at || u.approved_at || u.created_at
         })));
       } else {
-        logger.info('No ACT users require tagging');
       }
 
       return result.affectedRows;
@@ -270,13 +420,7 @@ const autoStatusChangeService = {
 
   async runStatusUpdates() {
     const startTime = Date.now();
-    logger.info('=== Starting Automatic Status Update Job (Quarterly Cycles) ===');
-
     const cycleInfo = this.getCurrentCycleInfo();
-    logger.info(`Current Cycle: ${cycleInfo?.name || 'Unknown'}`);
-    logger.info(`Current Period: ${cycleInfo?.period || 'Unknown'}`);
-    logger.info(`Day of Year: ${this.getDayOfYear()}`);
-
     try {
       let tagToDelCount = 0;
       let actToTagCount = 0;
@@ -287,13 +431,12 @@ const autoStatusChangeService = {
       } else if (cycleInfo?.period === 'DEL_TRANSITION') {
         tagToDelCount = await this.updateInactiveTAGUsers();
       } else {
-        logger.info('Currently in ACTIVE period - no status changes needed');
       }
 
-      const processingTime = Date.now() - startTime;
-      logger.info(`=== Status Update Job Completed in ${processingTime}ms ===`);
-      logger.info(`Summary: ${tagToDelCount} deleted, ${actToTagCount} tagged`);
+      // 🔔 NEW: Send warning notifications
+      const notificationResult = await this.sendStatusChangeWarningNotifications();
 
+      const processingTime = Date.now() - startTime;
       return {
         success: true,
         currentCycle: cycleInfo?.cycle,
@@ -301,6 +444,8 @@ const autoStatusChangeService = {
         period: cycleInfo?.period,
         tagToDelCount,
         actToTagCount,
+        notificationsSent: notificationResult.sent,
+        notificationsFailed: notificationResult.failed,
         processingTime
       };
     } catch (error) {
@@ -427,13 +572,13 @@ const autoStatusChangeService = {
   }
 };
 
-const scheduleStatusUpdates = () => {
+const scheduleStatusUpdates = () => {  
   // Run every day at 2:00 AM
   cron.schedule('0 2 * * *', async () => {
     await autoStatusChangeService.runStatusUpdates();
   }, {
     timezone: "Asia/Manila"
-  });  
+  });
 };
 
 const createManualTriggerRoute = (router) => {
@@ -446,6 +591,23 @@ const createManualTriggerRoute = (router) => {
       res.status(500).json({
         success: false,
         error: 'Failed to run status update',
+        details: error.message
+      });
+    }
+  });
+
+  // 🔔 NEW: Manual trigger for notifications only
+  router.post('/admin/trigger-warning-notifications', async (req, res) => {
+    try {
+      const result = await autoStatusChangeService.sendStatusChangeWarningNotifications();
+      res.json({
+        success: true,
+        data: result
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to send warning notifications',
         details: error.message
       });
     }

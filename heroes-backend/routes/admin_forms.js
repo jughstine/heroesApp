@@ -2,6 +2,12 @@ const express = require('express');
 const router = express.Router();
 const { getPool } = require('../config/database');
 const { authenticateAdminToken, requireSuperAdmin } = require('./admin'); 
+const {
+  sendFormApprovalNotification,
+  sendFormDenialNotification,
+  sendAdminNotesNotification
+} = require('../services/pushNotificationService');
+
 
 const SORT_COLUMN_MAP = {
   'id': 'fs.id',
@@ -55,52 +61,43 @@ const getFormType3TableForForm = async (pool, formId) => {
 };
 
 const getFormRequirements = async (pool, formId, formTypeId) => {
-  console.log(`Getting requirements for formId: ${formId}, formTypeId: ${formTypeId}`);
   
   if (formTypeId === 2) {
     const [requirements] = await pool.execute(
       'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
       [formId]
     );
-    console.log(`Resumption requirements found: ${requirements.length}`);
     return { 
       requirements, 
       tableName: 'rsm_requirements',
       rst_subtype: null
     };
   } else if (formTypeId === 3) {
-    const { tableName, subtype } = await getFormType3TableForForm(pool, formId);
-    console.log(`Restoration table detected: ${tableName}, subtype: ${subtype}`);
-    
+    const { tableName, subtype } = await getFormType3TableForForm(pool, formId);    
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
       [formId]
     );
-    console.log(`Restoration requirements found: ${requirements.length}`);
     return { 
       requirements, 
       tableName,
       rst_subtype: subtype
     };
   } else if (formTypeId === 5) {
-    console.log('Using upd_requirements table for form type 5');
     const [requirements] = await pool.execute(
       'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [formId]
     );
-    console.log(`Form type 5 requirements found: ${requirements.length}`);
     return { 
       requirements, 
       tableName: 'upd_requirements',
       rst_subtype: null
     };
   } else {
-    console.log('Using upd_requirements table for form type:', formTypeId);
     const [requirements] = await pool.execute(
       'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [formId]
     );
-    console.log(`Regular requirements found: ${requirements.length}`);
     return { 
       requirements, 
       tableName: 'upd_requirements',
@@ -527,8 +524,6 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
     }
 
     await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
-
-    console.log(`History log ${logId} deleted by admin ${req.admin.adminId} (${req.admin.email})`);
 
     res.json({
       success: true,
@@ -1355,6 +1350,7 @@ router.get('/:form_id', async (req, res) => {
   }
 });
 
+// FORM APPROVAL/DECLINE
 router.put('/:form_id/status', async (req, res) => {
   try {
     const pool = getPool();
@@ -1403,12 +1399,6 @@ router.put('/:form_id/status', async (req, res) => {
     const formTypeId = existingForm[0].form_type_id;
     const userId = existingForm[0].user_id;
 
-    // Get user's push token
-    const [userInfo] = await pool.execute(
-      'SELECT push_token FROM users_tbl WHERE id = ?',
-      [userId]
-    );
-
     await pool.query('START TRANSACTION');
 
     try {
@@ -1439,30 +1429,30 @@ router.put('/:form_id/status', async (req, res) => {
       }
 
       // Conditional approval: UPDATING
-        if (formTypeId === 5 && status === 'a') {
-          const [updateFormData] = await pool.execute(
-            `SELECT value 
-            FROM upd_requirements 
-            WHERE form_id = ? AND requirement_type = 'home_address'`,
-            [formId]
-          );
+      if (formTypeId === 5 && status === 'a') {
+        const [updateFormData] = await pool.execute(
+          `SELECT value 
+          FROM upd_requirements 
+          WHERE form_id = ? AND requirement_type = 'home_address'`,
+          [formId]
+        );
 
-          const homeAddress = updateFormData[0]?.value;
+        const homeAddress = updateFormData[0]?.value;
 
-          // Update status
+        // Update status
+        await pool.execute(
+          'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
+          ['ACT', userId]
+        );
+
+        // Update home address if found
+        if (homeAddress) {
           await pool.execute(
-            'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
-            ['ACT', userId]
+            'UPDATE users_tbl SET home_address = ? WHERE id = ?',
+            [homeAddress, userId]
           );
-
-          // Update home address if found
-          if (homeAddress) {
-            await pool.execute(
-              'UPDATE users_tbl SET home_address = ? WHERE id = ?',
-              [homeAddress, userId]
-            );
-          }
         }
+      }
 
       // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
@@ -1481,22 +1471,23 @@ router.put('/:form_id/status', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      // Send push notification after successful database update
-      if (userInfo[0]?.push_token) {
-        const formDetails = {
-          form_id: formId,
-          form_type_id: formTypeId
-        };
-
+      // Pass pool as first parameter to notification functions
+      let notificationResult = { success: false };
+      
+      try {
         if (status === 'a') {
-          await sendFormApprovalNotification(userInfo[0].push_token, formDetails);
-          console.log(`✅ Push notification sent for form approval: ${formId}`);
+          notificationResult = await sendFormApprovalNotification(pool, userId, {
+            form_id: formId,
+            form_type_id: formTypeId
+          });
         } else if (status === 'd') {
-          await sendFormDenialNotification(userInfo[0].push_token, formDetails);
-          console.log(`❌ Push notification sent for form denial: ${formId}`);
+          notificationResult = await sendFormDenialNotification(pool, userId, {
+            form_id: formId,
+            form_type_id: formTypeId
+          });
         }
-      } else {
-        console.log(`⚠️ No push token found for user ${userId}`);
+      } catch (notifError) {
+        console.error('⚠️ Notification failed but continuing:', notifError);
       }
 
       const response = { 
@@ -1504,7 +1495,8 @@ router.put('/:form_id/status', async (req, res) => {
         message: 'Form status updated successfully',
         requirements_deleted: status === 'd',
         form_type_id: formTypeId,
-        notification_sent: !!userInfo[0]?.push_token,
+        notification_sent: notificationResult.success,
+        notification_error: notificationResult.error || null,
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1528,6 +1520,7 @@ router.put('/:form_id/status', async (req, res) => {
   }
 });
 
+// Admin notes route
 router.post('/:form_id/notes', async (req, res) => {
   try {
     const pool = getPool();
@@ -1572,12 +1565,6 @@ router.post('/:form_id/notes', async (req, res) => {
     const userId = existingForm[0].user_id;
     const formTypeId = existingForm[0].form_type_id;
 
-    // Get user's push token
-    const [userInfo] = await pool.execute(
-      'SELECT push_token FROM users_tbl WHERE id = ?',
-      [userId]
-    );
-
     await pool.query('START TRANSACTION');
 
     try {
@@ -1595,21 +1582,23 @@ router.post('/:form_id/notes', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      // Send push notification for admin notes
-      if (userInfo[0]?.push_token) {
-        await sendAdminNotesNotification(userInfo[0].push_token, {
+      // Pass pool as first parameter
+      let notificationResult = { success: false };
+      
+      try {
+        notificationResult = await sendAdminNotesNotification(pool, userId, {
           form_id: formId,
           form_type_id: formTypeId
         });
-        console.log(`📝 Push notification sent for admin note on form: ${formId}`);
+      } catch (notifError) {
+        console.error('⚠️ Admin note notification failed:', notifError);
       }
-
-      console.log(`Admin notes added to form ${formId} by admin ${adminId} (${req.admin.email})`);
 
       res.json({ 
         success: true, 
         message: 'Admin notes added and logged successfully',
-        notification_sent: !!userInfo[0]?.push_token,
+        notification_sent: notificationResult.success,
+        notification_error: notificationResult.error || null,
         added_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1685,8 +1674,6 @@ router.delete('/:form_id', async (req, res) => {
       }
 
       await pool.execute('COMMIT');
-
-      console.log(`Form ${formId} (type ${formTypeId}) deleted successfully`);
 
       res.json({
         success: true,

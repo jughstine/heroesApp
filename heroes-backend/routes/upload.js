@@ -1,10 +1,13 @@
-//upload.js
-
 const express = require('express');
 const multer = require('multer');
 const { Client } = require('minio');
 const { getPool } = require('../config/database');
+const { Expo } = require('expo-server-sdk'); 
+const { 
+  sendFCMAnnouncementBatch  
+} = require('../services/pushNotificationService');
 const router = express.Router();
+const admin = require('firebase-admin'); 
 
 const minioClient = new Client({
   endPoint: process.env.SPACES_ENDPOINT.replace('https://', ''),
@@ -171,7 +174,7 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
   try {
     const { title, description, link_url, is_active, display_order } = req.body;
     let image_url = null;
-    
+        
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
@@ -190,7 +193,7 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
     if (req.file) {
       const timestamp = Date.now();
       const fileName = `announcements/${timestamp}-${req.file.originalname}`;
-            
+                  
       await minioClient.putObject(
         process.env.SPACES_BUCKET,
         fileName,
@@ -207,6 +210,9 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
       image_url = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
     }
     
+    // Insert announcement into database
+    const isActive = is_active === 'true' || is_active === true;
+    
     const [result] = await conn.execute(
       `INSERT INTO announcements 
        (title, description, image_url, link_url, is_active, display_order)
@@ -216,27 +222,89 @@ router.post('/admin/announcements', upload.single('image'), async (req, res) => 
         description || null,
         image_url,
         link_url || null,
-        is_active === 'true' || is_active === true,
+        isActive,
         display_order || 0
       ]
     );
-    
+        
     // Fetch the created announcement
     const [announcement] = await conn.execute(
       'SELECT * FROM announcements WHERE id = ?',
       [result.insertId]
     );
+
+    const createdAnnouncement = announcement[0];
+
+    // Initialize notification status
+    let notificationStatus = {
+      sent: false,
+      recipientCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      error: null
+    };
+
+    // Send notifications ONLY if announcement is active
+    if (createdAnnouncement.is_active) {      
+      try {
+        // Query for DISTINCT users with FCM tokens only
+        // Using DISTINCT and checking for non-empty tokens
+        const [usersWithTokens] = await conn.execute(`
+          SELECT DISTINCT fcm_token
+          FROM users_tbl
+          WHERE fcm_token IS NOT NULL 
+            AND fcm_token != ''
+            AND TRIM(fcm_token) != ''
+        `);
+
+        // Extract tokens and use Set for additional deduplication
+        const fcmTokensSet = new Set();
+        
+        usersWithTokens.forEach(row => {
+          const token = row.fcm_token?.trim();
+          if (token && token !== '') {
+            fcmTokensSet.add(token);
+          }
+        });
+
+        const fcmTokens = Array.from(fcmTokensSet);
+
+        if (fcmTokens.length > 0) {          
+          // Send ONLY via FCM
+          const result = await sendFCMAnnouncementBatch(fcmTokens, createdAnnouncement);
+          
+          notificationStatus.sent = result.successCount > 0;
+          notificationStatus.recipientCount = fcmTokens.length;
+          notificationStatus.successCount = result.successCount || 0;
+          notificationStatus.failureCount = result.failureCount || 0;
+          
+        } else {
+        }
+      } catch (notifError) {
+        console.error("❌ Error sending announcement notifications:", notifError);
+        console.error("Stack trace:", notifError.stack);
+        notificationStatus.error = notifError.message;
+        // Don't fail the request if notifications fail
+      }
+    } else {
+    }
+
+    // Release connection
+    conn.release();
+    conn = null;
     
     res.json({
       success: true,
-      data: announcement[0],
+      data: createdAnnouncement,
+      notifications: notificationStatus,
       meta: {
         processingTime: `${Date.now() - startTime}ms`
       }
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error creating announcement:', error);
+    console.error('❌ Error creating announcement:', error);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to create announcement',
@@ -394,7 +462,6 @@ router.delete('/admin/announcements/:id', async (req, res) => {
 
   try {
     const { id } = req.params;
-    console.log('🗑️ DELETE endpoint hit - ID:', id, 'Type:', typeof id);
     
     // Validate ID
     const announcementId = parseInt(id);
@@ -422,17 +489,13 @@ router.delete('/admin/announcements/:id', async (req, res) => {
 
     const pool = getPool();
     conn = await pool.getConnection();
-    console.log('🗑️ Database connection established');
     
     // First, check if the announcement exists and get image URL
-    console.log('🗑️ Checking if announcement exists with ID:', announcementId);
     const [rows] = await conn.execute(
       'SELECT id, image_url FROM announcements WHERE id = ?',
       [announcementId]
     );
-    
-    console.log('🗑️ Query returned rows:', rows.length);
-    
+        
     if (rows.length === 0) {
       console.error('🗑️ Announcement not found with ID:', announcementId);
       return res.status(404).json({
@@ -445,8 +508,6 @@ router.delete('/admin/announcements/:id', async (req, res) => {
     
     const announcement = rows[0];
     const image_url = announcement.image_url;
-    console.log('🗑️ Found announcement:', announcement);
-    console.log('🗑️ Image URL:', image_url);
     
     // Delete the image from Spaces if it exists
     if (image_url) {
@@ -454,9 +515,7 @@ router.delete('/admin/announcements/:id', async (req, res) => {
         const urlParts = image_url.split('.digitaloceanspaces.com/');
         if (urlParts.length > 1) {
           const key = urlParts[1];
-          console.log('🗑️ Attempting to delete image with key:', key);
           await minioClient.removeObject(process.env.SPACES_BUCKET, key);
-          console.log('✅ Image deleted successfully from Spaces');
         }
       } catch (imageErr) {
         console.error('⚠️ Error deleting image from Spaces (continuing anyway):', imageErr.message);
@@ -465,15 +524,11 @@ router.delete('/admin/announcements/:id', async (req, res) => {
     }
     
     // Delete from database
-    console.log('🗑️ Executing DELETE query for ID:', announcementId);
     const [deleteResult] = await conn.execute(
       'DELETE FROM announcements WHERE id = ?',
       [announcementId]
     );
-    
-    console.log('🗑️ DELETE query result:', deleteResult);
-    console.log('🗑️ Affected rows:', deleteResult.affectedRows);
-    
+        
     if (deleteResult.affectedRows === 0) {
       console.error('🗑️ DELETE query ran but affected 0 rows');
       return res.status(500).json({
@@ -483,15 +538,12 @@ router.delete('/admin/announcements/:id', async (req, res) => {
         processingTime: `${Date.now() - startTime}ms`
       });
     }
-    
-    console.log('✅ Announcement deleted successfully from database');
-    
+        
     // Verify deletion
     const [verifyRows] = await conn.execute(
       'SELECT id FROM announcements WHERE id = ?',
       [announcementId]
     );
-    console.log('🔍 Verification query returned:', verifyRows.length, 'rows');
     
     res.json({
       success: true,
@@ -517,7 +569,6 @@ router.delete('/admin/announcements/:id', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log('🗑️ Connection released');
       } catch (releaseError) {
         console.error("❌ Connection release error:", releaseError);
       }

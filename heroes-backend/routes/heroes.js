@@ -145,7 +145,6 @@ router.get('/profile', async (req, res) => {
     
     const processingTime = Date.now() - startTime;
 
-    // Updated response to include DOB and TYPE
     const profileResponse = {
       success: true,
       data: {
@@ -437,8 +436,6 @@ router.put('/profile/:userId/picture', async (req, res) => {
     );
 
     const processingTime = Date.now() - startTime;
-
-    console.log(`Profile picture updated for user ${userId}`);
 
     res.json({
       success: true,
@@ -748,9 +745,6 @@ router.put('/push-token/:userId', async (req, res) => {
     );
 
     const processingTime = Date.now() - startTime;
-
-    console.log(`✅ Push token updated for user ${userId}`);
-
     res.json({
       success: true,
       message: 'Push token saved successfully',
@@ -809,8 +803,6 @@ router.delete('/push-token/:userId', async (req, res) => {
     );
 
     const processingTime = Date.now() - startTime;
-
-    console.log(`✅ Push token removed for user ${userId}`);
 
     res.json({
       success: true,

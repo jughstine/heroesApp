@@ -3,6 +3,22 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mysql = require('mysql2/promise');
 const router = express.Router();
+const db = require('../config/database');
+const { 
+  sendStatusChangeNotification 
+} = require('../services/pushNotificationService');
+
+const getPool = () => {
+  if (typeof db.getPool === 'function') {
+    return db.getPool();
+  } else if (typeof db.pool === 'function') {
+    return db.pool();
+  } else if (db.pool && typeof db.pool.query === 'function') {
+    return db.pool;
+  }
+  console.error('❌ Could not find pool in database module');
+  return null;
+};
 
 // Database connection helper (using your existing config)
 const getDbConnection = async () => {
@@ -701,55 +717,154 @@ router.get('/admins/same-role', authenticateAdminToken, async (req, res) => {
 
 // Update user status (Admin access required)
 router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => {
+  let conn = null;
+  
   try {
     const { userId } = req.params;
     const { status } = req.body;
 
     // Validate status
-    const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR'];
+    const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR', 'UNV'];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be one of: ACT, TAG, DEL'
+        error: 'Invalid status. Must be one of: ACT, TAG, DEL, FOR_PAYROLL, AFR, UNV'
       });
     }
 
-    console.log(`Admin ${req.admin.email} updating user ${userId} status to ${status}`);
+    console.log('═══════════════════════════════════════');
+    console.log('🔄 STATUS CHANGE REQUEST');
+    console.log('═══════════════════════════════════════');
+    console.log(`Admin: ${req.admin.email}`);
+    console.log(`User ID: ${userId}`);
+    console.log(`New Status: ${status}`);
+    console.log('═══════════════════════════════════════');
 
-    // Update user status in users_tbl (using 'id' column instead of 'user_id')
-    const updateQuery = `
-      UPDATE users_tbl 
-      SET status = ?, updated_at = NOW() 
-      WHERE id = ?
-    `;
-    
-    const result = await executeQuery(updateQuery, [status, userId]);
+    const pool = getPool();
+    conn = await pool.getConnection();
 
-    if (result.affectedRows === 0) {
+    // Get current user status and push token BEFORE updating
+    const [currentUser] = await conn.execute(
+      'SELECT id, status, push_token FROM users_tbl WHERE id = ?',
+      [userId]
+    );
+
+    if (currentUser.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'User not found'
       });
     }
 
-    console.log(`User ${userId} status updated to ${status} successfully`);
+    const user = currentUser[0];
+    const oldStatus = user.status;
+    
+    console.log(`User: ${user.FIRSTNAME} ${user.LASTNAME}`);
+    console.log(`Old Status: ${oldStatus} → New Status: ${status}`);
+    console.log(`Has Push Token: ${!!user.push_token}`);
+
+    // Don't send notification if status hasn't actually changed
+    if (oldStatus === status) {
+      console.log('⚠️ Status unchanged - no notification needed');
+      return res.json({
+        success: true,
+        message: 'Status unchanged',
+        data: {
+          userId: parseInt(userId),
+          status: status,
+          changed: false
+        }
+      });
+    }
+
+    // Update user status
+    const [updateResult] = await conn.execute(
+      'UPDATE users_tbl SET status = ?, updated_at = NOW() WHERE id = ?',
+      [status, userId]
+    );
+
+    if (updateResult.affectedRows === 0) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update user status'
+      });
+    }
+
+    console.log('✅ Status updated successfully in database');
+
+    // Initialize notification result
+    let notificationResult = {
+      sent: false,
+      reason: null,
+      error: null
+    };
+
+    if (user.push_token) {
+      try {
+        console.log('📤 Attempting to send FCM status change notification...');
+        
+        // Send FCM notification with correct arguments
+        const result = await sendStatusChangeNotification(
+          conn,              // Pass the database connection
+          user.id,           // userId
+          oldStatus,         // oldStatus
+          status,            // newStatus
+          user.FIRSTNAME,    // firstName
+          user.LASTNAME      // lastName
+        );
+
+        if (result.success) {
+          console.log('✅ FCM status change notification sent successfully');
+          notificationResult.sent = true;
+        } else {
+          console.log('⚠️ Failed to send FCM notification:', result.error);
+          notificationResult.error = result.error;
+          
+          // If token is invalid, remove it from database
+          if (result.shouldRemoveToken) {
+            console.log('🗑️ Removing invalid FCM token from database...');
+            await conn.execute(
+              'UPDATE users_tbl SET push_token = NULL WHERE id = ?',
+              [userId]
+            );
+            notificationResult.reason = 'Invalid token removed';
+          }
+        }
+      } catch (notifError) {
+        console.error('❌ Error sending status notification:', notifError);
+        notificationResult.error = notifError.message;
+      }
+    } else {
+      console.log('ℹ️ User has no push token - skipping notification');
+      notificationResult.reason = 'No push token';
+    }
+
+    console.log('═══════════════════════════════════════');
+    console.log('✅ STATUS CHANGE COMPLETE');
+    console.log('═══════════════════════════════════════');
 
     res.json({
       success: true,
       message: 'User status updated successfully',
       data: {
         userId: parseInt(userId),
-        status: status,
-        updatedAt: new Date().toISOString()
+        userName: `${user.FIRSTNAME} ${user.LASTNAME}`,
+        oldStatus: oldStatus,
+        newStatus: status,
+        changed: true,
+        updatedAt: new Date().toISOString(),
+        notification: notificationResult
       }
     });
 
   } catch (error) {
-    console.error('Update user status error:', error);
+    console.error('❌ Update user status error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to update user status'
     });
+  } finally {
+    if (conn) conn.release();
   }
 });
 

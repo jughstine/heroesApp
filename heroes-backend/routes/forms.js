@@ -723,7 +723,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
     if (conn) {
       try {
         await conn.rollback();
-        console.log('⚠️ Transaction rolled back');
       } catch (rollbackError) {
         console.error("❌ Rollback error:", rollbackError);
       }
@@ -768,7 +767,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
     if (conn) {
       try {
         conn.release();
-        console.log("✅ Database connection released");
       } catch (releaseError) {
         console.error("❌ Connection release error:", releaseError);
       }
@@ -907,13 +905,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
       [formSubmissionId]
     );
     
-    console.log('✅ Form submission created:', {
-      form_id: formSubmissionId,
-      user_id,
-      form_type_id,
-      location: applies_to_location
-    });
-
     for (const requirement of requirements) {
       const { requirement_type, value, file_url, file_key, file_type } = requirement;
 
@@ -951,11 +942,9 @@ router.post('/principal-restoration/submit', async (req, res) => {
         ]
       );
 
-      console.log(`✅ Inserted requirement: ${requirement_type}`);
     }
 
     await conn.commit();
-    console.log('✅ Transaction committed successfully');
 
     const processingTime = Date.now() - startTime;
 
@@ -990,7 +979,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
     if (conn) {
       try {
         await conn.rollback();
-        console.log('⚠️ Transaction rolled back');
       } catch (rollbackError) {
         console.error("❌ Rollback error:", rollbackError);
       }

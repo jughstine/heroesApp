@@ -36,11 +36,11 @@ const corsOptions = {
       'http://localhost:3000',
       'http://localhost:5173', 
       'http://192.168.254.108:5173',
+      'http://192.168.254.108:3000',
       'http://127.0.0.1:5173'
     ];
     // Development
     if (process.env.NODE_ENV === 'development') {
-      console.log('CORS [DEV]: Checking origin:', origin);
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -154,17 +154,29 @@ app.get('/api/health', async (req, res) => {
     let cycleInfo = null;
     try {
       const { autoStatusChangeService } = require('./services/autoStatusChange');
-      const currentCycle = autoStatusChangeService.getCurrentCycle();
+      const currentCycleInfo = autoStatusChangeService.getCurrentCycleInfo();
       const dayOfYear = autoStatusChangeService.getDayOfYear();
       
-      cycleInfo = {
-        currentCycle: currentCycle?.cycle || null,
-        cycleName: currentCycle?.name || 'Unknown',
-        dayOfYear: dayOfYear,
-        daysLeftInCycle: currentCycle ? currentCycle.endDay - dayOfYear : null
-      };
+      if (currentCycleInfo) {
+        cycleInfo = {
+          currentCycle: currentCycleInfo.cycle,
+          cycleName: currentCycleInfo.name,
+          currentPeriod: currentCycleInfo.period,
+          dayOfYear: dayOfYear,
+          daysLeftInPeriod: currentCycleInfo.daysLeftInPeriod,
+          nextPeriod: currentCycleInfo.nextPeriod
+        };
+      } else {
+        cycleInfo = {
+          error: 'Could not determine current cycle',
+          dayOfYear: dayOfYear
+        };
+      }
     } catch (error) {
-      cycleInfo = { error: 'Could not fetch cycle info' };
+      cycleInfo = { 
+        error: 'Could not fetch cycle info',
+        details: error.message 
+      };
     }
 
     const healthData = {
@@ -225,7 +237,6 @@ const startServer = async () => {
     scheduleStatusUpdates();
         
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`✓ Server running on port ${PORT}`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);

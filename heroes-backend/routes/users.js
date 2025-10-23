@@ -122,6 +122,18 @@ const loginLimiter = rateLimit({
     legacyHeaders: false,
 });
 
+const pushTokenLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    message: {
+        success: false,
+        error: 'Too many push token update attempts. Please try again later.',
+        code: 'RATE_LIMITED'
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 const sanitizeInput = (req, res, next) => {
     const sanitizeString = (str) => {
         if (typeof str !== 'string') return str;
@@ -209,7 +221,6 @@ const storeValidationToken = async (token, data, expiresInHours = 2) => {
             [token, jsonData, expiresAt]
         );
 
-        logger.info(`Token stored successfully: ${token.substring(0, 8)}... (expires: ${expiresAt.toISOString()})`);
         return token;
     } catch (error) {
         logger.error('Failed to store validation token:', error);
@@ -265,7 +276,6 @@ const getValidationToken = async (token) => {
             throw new Error('Invalid token data type');
         }
 
-        logger.info(`Token retrieved successfully: ${token.substring(0, 8)}...`);
         return parsedData;
     } catch (error) {
         if (error.message.includes('expired') || error.message.includes('Invalid') || error.message.includes('token data')) {
@@ -285,7 +295,6 @@ const cleanupExpiredTokens = async () => {
         );
 
         if (result.affectedRows > 0) {
-            logger.info(`Cleaned up ${result.affectedRows} expired tokens`);
         }
     } catch (error) {
         logger.warn('Failed to cleanup expired tokens:', error.message);
@@ -482,9 +491,6 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             });
         }
 
-        // ===== SUCCESS: All Validations Passed =====
-        logger.info(`Identity verified in ${detectedTable}: ${heroData.FIRSTNAME} ${heroData.LASTNAME} (${heroData.AFPSN}), Rank: ${penRank}`);
-
         // Create comprehensive token with all validated data
         const tokenData = {
             type,
@@ -510,8 +516,6 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         const identityToken = await storeValidationToken(token, tokenData);
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Identity validation successful for ${normalizedAfpsn} (${account_status}) in ${processingTime}ms`);
-
         res.json({
             success: true,
             message: "Identity verified successfully",
@@ -584,9 +588,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             if (!validationData || !validationData.hero_ndx) {
                 throw new Error('Invalid validation data: missing hero_ndx');
             }
-
-            logger.info(`Identity token validated for: ${validationData.firstname} ${validationData.lastname} (${validationData.account_status})`);
-
         } catch (error) {
             logger.warn(`Identity token validation failed: ${error.message}`);
             return res.status(400).json({
@@ -655,10 +656,8 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         }
 
         // ===== HASH PASSWORD =====
-        logger.info('Hashing password...');
         const saltRounds = 12;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
-        logger.info('Password hashed successfully');
 
         // ===== ACQUIRE CONNECTION FOR TRANSACTION =====
         try {
@@ -667,8 +666,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             if (!connection) {
                 throw new Error('Database connection returned null');
             }
-
-            logger.info(`DB connection acquired for: ${normalizedEmail}`);
 
         } catch (connError) {
             logger.error('Failed to get database connection:', {
@@ -688,20 +685,12 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         // ===== TRANSACTION: CREATE ACCOUNT =====
         try {
             await connection.beginTransaction();
-            logger.info('Transaction started for account creation');
 
             // Determine initial user status based on account_status
             let initialUserStatus = 'TAG'; // Default for active accounts
             if (validationData.account_status === 'resumption') {
                 initialUserStatus = 'AFR'; // Resumption requires approval
             }
-
-            logger.info('Creating pensioner record', {
-                hero_ndx: validationData.hero_ndx,
-                type: validationData.type,
-                source_table: validationData.source_table,
-                account_status: validationData.account_status
-            });
 
             // Create pensioner record with additional metadata
             const [pensionerResult] = await connection.execute(
@@ -726,8 +715,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Failed to create pensioner - no insertId');
             }
 
-            logger.info(`Pensioner created: ID ${pensionerId}`);
-
             // Create user record with status based on account type
             const [userResult] = await connection.execute(
                 `INSERT INTO users_tbl (pensioner_ndx, email, password_hash, status, tagged_at) 
@@ -741,8 +728,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 throw new Error('Failed to create user - no insertId');
             }
 
-            logger.info(`User created: ID ${userId} with status: ${initialUserStatus}`);
-
             // Delete used token to prevent reuse
             await connection.execute(
                 'DELETE FROM signup_tokens WHERE token = ?',
@@ -750,11 +735,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             );
 
             await connection.commit();
-            logger.info('Transaction committed successfully');
-
             const processingTime = Date.now() - startTime;
-            logger.info(`Account created: ${normalizedEmail} (User: ${userId}, Status: ${initialUserStatus}) in ${processingTime}ms`);
-
             res.status(201).json({
                 success: true,
                 message: validationData.account_status === 'resumption' 
@@ -786,7 +767,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             if (connection) {
                 try {
                     await connection.rollback();
-                    logger.info('Transaction rolled back');
                 } catch (rollbackError) {
                     logger.error('Rollback failed (non-fatal):', {
                         message: rollbackError.message,
@@ -893,8 +873,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         }
 
         const normalizedEmail = email.toLowerCase().trim();
-        logger.info(`Login attempt for: ${normalizedEmail}`);
-
         const users = await executeQuery(`
             SELECT 
                 u.id as user_id,
@@ -934,8 +912,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
         }
 
         const user = users[0];
-        logger.info(`User found: ${user.email}, Status: ${user.user_status}, Source: ${user.source_table}`);
-
         if (user.user_status === 'SUS') {
             return res.status(403).json({
                 success: false,
@@ -963,8 +939,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
             .catch(error => logger.warn('Failed to update last_login:', error.message));
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Login successful for ${normalizedEmail} in ${processingTime}ms`);
-
         const loginResponse = {
             success: true,
             message: "Login successful",
@@ -1145,8 +1119,6 @@ router.put("/update-email/:userId", profileUpdateLimiter, sanitizeInput, validat
         );
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Email updated successfully for user ${userId}: ${normalizedEmail} in ${processingTime}ms`);
-
         res.json({
             success: true,
             message: "Email updated successfully",
@@ -1254,8 +1226,6 @@ router.put("/update-password/:userId", profileUpdateLimiter, validateDatabaseCon
         );
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Password updated successfully for user ${userId} (${user.email}) in ${processingTime}ms`);
-
         res.json({
             success: true,
             message: "Password updated successfully",
@@ -1355,8 +1325,6 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
             });
         }
 
-        logger.info(`Updating mobile for user ${userId}, type: ${type}, hero_ndx: ${hero_ndx}, source_table: ${source_table}`);
-
         // Dynamically update the correct table based on source_table
         const updateQuery = `UPDATE ${source_table} SET MOBILENR = ? WHERE NDX = ?`;
         const updateResult = await executeQuery(updateQuery, [normalizedMobile, hero_ndx]);
@@ -1387,7 +1355,6 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
         }
 
         const processingTime = Date.now() - startTime;
-        logger.info(`✅ Mobile number updated successfully for user ${userId} (hero_ndx: ${hero_ndx}) in ${source_table} - ${processingTime}ms`);
 
         res.json({
             success: true,
@@ -1565,12 +1532,176 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     }
 });
 
+// ==================== PUSH NOTIFICATION ROUTES ====================
+
+// Register/Update push token
+router.post("/:userId/push-token", 
+    pushTokenLimiter, 
+    sanitizeInput, 
+    validateDatabaseConnection, 
+    async (req, res) => {
+        const startTime = Date.now();
+        
+        try {
+            const { userId } = req.params;
+                    
+            const { push_token, fcm_token, platform, device_token, device_token_type } = req.body;
+
+            // Validate that at least one token is provided
+            if (!push_token && !fcm_token) {
+                return res.status(400).json({
+                    success: false,
+                    error: "At least one push token (push_token or fcm_token) is required",
+                    code: 'MISSING_PUSH_TOKEN',
+                    processingTime: `${Date.now() - startTime}ms`
+                });
+            }
+
+            // Validate Expo token format if provided
+            if (push_token) {
+                const tokenPattern = /^ExponentPushToken\[[a-zA-Z0-9_-]+\]$/;
+                if (!tokenPattern.test(push_token)) {
+                    return res.status(400).json({
+                        success: false,
+                        error: "Invalid Expo push token format",
+                        code: 'INVALID_TOKEN_FORMAT',
+                        processingTime: `${Date.now() - startTime}ms`
+                    });
+                }
+            }
+
+            // Check if user exists
+            const userCheck = await executeQuery(
+                'SELECT id FROM users_tbl WHERE id = ? LIMIT 1',
+                [userId]
+            );
+
+            if (userCheck.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    error: "User not found",
+                    code: 'USER_NOT_FOUND',
+                    processingTime: `${Date.now() - startTime}ms`
+                });
+            }
+
+            // Update push tokens (store both)
+            const result = await executeQuery(
+                `UPDATE users_tbl 
+                 SET push_token = ?, 
+                     fcm_token = ?, 
+                     platform = ?,
+                     device_token = ?,
+                     device_token_type = ?,
+                     updated_at = NOW() 
+                 WHERE id = ?`,
+                [push_token || null, fcm_token || null, platform || null, device_token || null, device_token_type || null, userId]
+            );
+
+            if (result.affectedRows === 0) {
+                return res.status(500).json({
+                    success: false,
+                    error: "Failed to update push token",
+                    code: 'UPDATE_FAILED',
+                    processingTime: `${Date.now() - startTime}ms`
+                });
+            }
+
+            const processingTime = Date.now() - startTime;
+            res.json({
+                success: true,
+                message: "Push tokens saved successfully",
+                tokens: {
+                    expo: !!push_token,
+                    fcm: !!fcm_token,
+                    platform: platform
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            const processingTime = Date.now() - startTime;
+            logger.error("Push token update error:", error);
+
+            res.status(500).json({
+                success: false,
+                error: "Failed to save push token",
+                code: 'PUSH_TOKEN_ERROR',
+                details: error.message,
+                processingTime: `${processingTime}ms`
+            });
+        }
+    }
+);
+
+// Delete push token
+router.delete("/:userId/push-token", 
+    pushTokenLimiter, 
+    sanitizeInput, 
+    validateDatabaseConnection, 
+    async (req, res) => {
+        const startTime = Date.now();
+        
+        try {
+            const { userId } = req.params;
+
+            // Check if user exists
+            const userCheck = await executeQuery(
+                'SELECT id FROM users_tbl WHERE id = ? LIMIT 1',
+                [userId]
+            );
+
+            if (userCheck.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    error: "User not found",
+                    code: 'USER_NOT_FOUND',
+                    processingTime: `${Date.now() - startTime}ms`
+                });
+            }
+
+            // Remove both push tokens
+            const result = await executeQuery(
+                `UPDATE users_tbl 
+                 SET push_token = NULL, 
+                     fcm_token = NULL, 
+                     updated_at = NOW() 
+                 WHERE id = ?`,
+                [userId]
+            );
+
+            const processingTime = Date.now() - startTime;
+            res.json({
+                success: true,
+                message: "Push tokens removed successfully",
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            const processingTime = Date.now() - startTime;
+            logger.error("Push token removal error:", error);
+
+            res.status(500).json({
+                success: false,
+                error: "Failed to remove push tokens",
+                code: 'PUSH_TOKEN_DELETE_ERROR',
+                details: error.message,
+                processingTime: `${processingTime}ms`
+            });
+        }
+    }
+);
+
 router.get("/all", validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
     try {
-        logger.info('Fetching all users for admin dashboard');
-
         const users = await executeQuery(`
             SELECT 
                 u.id AS user_id,
@@ -1579,6 +1710,7 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 u.created_at,
                 u.last_login,
                 u.status_updated_at,
+                u.home_address,
                 p.type,
                 p.bos,
                 p.b_type,
@@ -1641,8 +1773,6 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
         };
 
         const processingTime = Date.now() - startTime;
-        logger.info(`Retrieved ${users.length} users in ${processingTime}ms`);
-
         res.json({
             success: true,
             users,
@@ -1672,5 +1802,6 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
         });
     }
 });
+
 
 module.exports = router;

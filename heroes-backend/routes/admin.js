@@ -63,8 +63,6 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    console.log('Admin login attempt:', email);
-
     // Find admin in admins_tbl
     const query = `
       SELECT id, email, password_hash, name, mobile_number, role, created_at, last_login_at
@@ -76,7 +74,6 @@ router.post('/login', async (req, res) => {
     const results = await executeQuery(query, [email.trim().toLowerCase()]);
 
     if (!results || results.length === 0) {
-      console.log('Admin not found:', email);
       return res.status(401).json({
         success: false,
         error: 'Invalid email or password'
@@ -84,13 +81,11 @@ router.post('/login', async (req, res) => {
     }
 
     const admin = results[0];
-    console.log('Admin found:', admin.email, 'Role:', admin.role);
 
     // Verify password
     const isPasswordValid = await bcrypt.compare(password, admin.password_hash);
 
     if (!isPasswordValid) {
-      console.log('Invalid password for admin:', email);
       return res.status(401).json({
         success: false,
         error: 'Invalid email or password'
@@ -123,8 +118,6 @@ router.post('/login', async (req, res) => {
         audience: 'afppgmc-admin-panel'
       }
     );
-
-    console.log('Admin login successful:', admin.email, 'Role:', admin.role);
 
     // Success response
     res.json({
@@ -419,8 +412,6 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (r
 
     await connection.commit();
 
-    console.log('New admin created by:', req.admin.email, 'New admin:', email);
-
     res.status(201).json({
       success: true,
       message: 'Admin account created successfully',
@@ -635,7 +626,6 @@ router.get('/stats', authenticateAdminToken, requireSuperAdmin, async (req, res)
 
 // Admin logout (optional - mainly for logging)
 router.post('/logout', authenticateAdminToken, (req, res) => {
-  console.log('Admin logout:', req.admin.email);
   res.json({
     success: true,
     message: 'Logged out successfully'
@@ -732,14 +722,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
       });
     }
 
-    console.log('═══════════════════════════════════════');
-    console.log('🔄 STATUS CHANGE REQUEST');
-    console.log('═══════════════════════════════════════');
-    console.log(`Admin: ${req.admin.email}`);
-    console.log(`User ID: ${userId}`);
-    console.log(`New Status: ${status}`);
-    console.log('═══════════════════════════════════════');
-
     const pool = getPool();
     conn = await pool.getConnection();
 
@@ -759,13 +741,8 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     const user = currentUser[0];
     const oldStatus = user.status;
     
-    console.log(`User: ${user.FIRSTNAME} ${user.LASTNAME}`);
-    console.log(`Old Status: ${oldStatus} → New Status: ${status}`);
-    console.log(`Has Push Token: ${!!user.push_token}`);
-
     // Don't send notification if status hasn't actually changed
     if (oldStatus === status) {
-      console.log('⚠️ Status unchanged - no notification needed');
       return res.json({
         success: true,
         message: 'Status unchanged',
@@ -790,8 +767,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
       });
     }
 
-    console.log('✅ Status updated successfully in database');
-
     // Initialize notification result
     let notificationResult = {
       sent: false,
@@ -800,9 +775,7 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     };
 
     if (user.push_token) {
-      try {
-        console.log('📤 Attempting to send FCM status change notification...');
-        
+      try {        
         // Send FCM notification with correct arguments
         const result = await sendStatusChangeNotification(
           conn,              // Pass the database connection
@@ -814,15 +787,12 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
         );
 
         if (result.success) {
-          console.log('✅ FCM status change notification sent successfully');
           notificationResult.sent = true;
         } else {
-          console.log('⚠️ Failed to send FCM notification:', result.error);
           notificationResult.error = result.error;
           
           // If token is invalid, remove it from database
           if (result.shouldRemoveToken) {
-            console.log('🗑️ Removing invalid FCM token from database...');
             await conn.execute(
               'UPDATE users_tbl SET push_token = NULL WHERE id = ?',
               [userId]
@@ -835,13 +805,8 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
         notificationResult.error = notifError.message;
       }
     } else {
-      console.log('ℹ️ User has no push token - skipping notification');
       notificationResult.reason = 'No push token';
     }
-
-    console.log('═══════════════════════════════════════');
-    console.log('✅ STATUS CHANGE COMPLETE');
-    console.log('═══════════════════════════════════════');
 
     res.json({
       success: true,
@@ -1007,8 +972,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             await connection.commit();
 
             const processingTime = Date.now() - startTime;
-
-            console.log(`Admin ${req.admin.email} transferred user ${userId} to Alpha List. Old NDX: ${pensioner.hero_ndx}, New NDX: ${newHeroNdx}`);
 
             res.json({
                 success: true,

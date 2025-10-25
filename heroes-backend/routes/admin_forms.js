@@ -585,13 +585,13 @@ router.get('/', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -729,13 +729,13 @@ router.get('/paginated', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -842,13 +842,13 @@ router.get('/export/bulk', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1074,13 +1074,13 @@ router.get('/status/:status', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1310,12 +1310,13 @@ router.get('/:form_id', async (req, res) => {
     }
     
     const submission = submissionRows[0];
-    
-    // Format AFPSN with O- prefix for officers
-    const formattedAFPSN = submission.PENRANK && 
-      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN'].includes(submission.PENRANK)
-      ? `O-${submission.AFPSN}`
-      : submission.AFPSN;
+        
+    const formattedAFPSN =
+      submission.PENRANK &&
+      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO'].includes(submission.PENRANK)
+        ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
+        : submission.AFPSN;
+
     
     // Get requirements from the appropriate table based on form_type_id
     const result = await getFormRequirements(pool, formId, submission.form_type_id);

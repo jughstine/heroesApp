@@ -71,8 +71,6 @@ const createDbConfig = () => {
     // disable SSL
     ssl: false
   };
-
-  logger.info(`Database pool configuration: ${connectionLimit} connections, ${maxIdle} max idle`);
   
   return config;
 };
@@ -100,7 +98,6 @@ const initializeDatabase = async (retries = 3) => {
       }
 
       const dbConfig = createDbConfig();
-      logger.info(`Database initialization attempt ${attempt}/${retries}`);
 
       pool = mysql.createPool(dbConfig);
       
@@ -122,10 +119,6 @@ const initializeDatabase = async (retries = 3) => {
       });
 
       poolStats.created = new Date();
-      logger.info('Database pool initialized successfully', { 
-        attempt,
-        connectionLimit: dbConfig.connectionLimit 
-      });
       return pool;
     } catch (error) {
       logger.error(`Database init attempt ${attempt}/${retries} failed:`, {

@@ -2,7 +2,6 @@ const admin = require('../config/firebase');
 const { Expo } = require('expo-server-sdk');
 const pool = require('../config/database');
 
-// Initialize Expo SDK
 const expo = new Expo();
 
 /**

@@ -234,13 +234,13 @@ router.get('/profile/:userId', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN') 
+              WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
                 THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
               ELSE h2.AFPSN
             END
           ELSE 
             CASE 
-              WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN') 
+              WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
                 THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
               ELSE h.AFPSN
             END

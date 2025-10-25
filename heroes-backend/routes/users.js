@@ -1180,7 +1180,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         
         const formattedAFPSN =
         profile.PENRANK &&
-        ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN'].includes(profile.PENRANK)
+        ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR'].includes(profile.PENRANK)
             ? (profile.AFPSN.startsWith('O-') ? profile.AFPSN : `O-${profile.AFPSN}`)
             : profile.AFPSN;
 
@@ -1437,13 +1437,13 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
                 CASE 
                     WHEN p.source_table = 'test_res_table' THEN 
                         CASE 
-                            WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                            WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
                             THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
                             ELSE h2.AFPSN
                         END
                     ELSE 
                         CASE 
-                            WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN') 
+                            WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
                             THEN CONCAT('O-', REPLACE(h1.AFPSN, 'O-', ''))
                             ELSE h1.AFPSN
                         END

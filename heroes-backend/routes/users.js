@@ -296,6 +296,7 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 // OPTIMIZED 2-STEP SIGNUP BACKEND
 
 const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
+
 function normalizeAfpsnForMatching(afpsn) {
     if (!afpsn) return '';
     
@@ -304,6 +305,9 @@ function normalizeAfpsnForMatching(afpsn) {
     
     return numericOnly;
 }
+
+// COMPLETE REPLACEMENT for /validate-identity endpoint
+// Place this AFTER the normalizeAfpsnForMatching function definition
 
 router.post("/validate-identity", identityLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
@@ -332,46 +336,102 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             return res.status(400).json({ success: false, error: "Beneficiary information required", code: 'MISSING_BENEFICIARY_INFO' });
         }
 
-        const afpsnPattern = `%${normalizedAfpsnNumeric}%`;
+        // Normalize inputs
+        const normalizedAfpsn = afpsn.trim().toUpperCase();
+        const normalizedAfpsnNumeric = normalizeAfpsnForMatching(normalizedAfpsn);
         const normalizedFirstname = firstname.trim().toUpperCase();
         const normalizedLastname = lastname.trim().toUpperCase();
+
+        // Debug logging
+        logger.info('AFPSN Search:', { 
+            original: afpsn, 
+            normalized: normalizedAfpsn, 
+            numeric: normalizedAfpsnNumeric,
+            type: type 
+        });
 
         // Auto-detect table (active vs resumption)
         let detectedTable = null;
         let afpsnRecords = null;
         let penRank = null;
 
-        afpsnRecords = await executeQuery(
-            `SELECT COUNT(*) as count, PENRANK, AFPSN 
-            FROM test_table
-            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ? 
-            AND TYPE = ? 
-            GROUP BY PENRANK, AFPSN`,
-            [afpsnPattern, type]
-        );
-
-        if (afpsnRecords.length > 0) {
-            detectedTable = 'test_table';
-            penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
-        } else {
-            // Try resumption table
+        // Try active table first
+        try {
             afpsnRecords = await executeQuery(
                 `SELECT COUNT(*) as count, PENRANK, AFPSN 
-                FROM test_res_table
-                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ? 
-                AND TYPE = ? 
-                GROUP BY PENRANK, AFPSN`,
-                [afpsnPattern, type]
+                 FROM test_table
+                 WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ? 
+                 AND TYPE = ? 
+                 GROUP BY PENRANK, AFPSN`,
+                [normalizedAfpsnNumeric, type]
             );
 
             if (afpsnRecords.length > 0) {
-                detectedTable = 'test_res_table';
+                detectedTable = 'test_table';
+                penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
+                logger.info('Found in active table:', { afpsn: afpsnRecords[0].AFPSN, rank: penRank });
+            }
+        } catch (regexpError) {
+            // REGEXP_REPLACE not available (MySQL < 8.0), fall back to REPLACE chain
+            logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
+            
+            afpsnRecords = await executeQuery(
+                `SELECT COUNT(*) as count, PENRANK, AFPSN 
+                 FROM test_table
+                 WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ? 
+                 AND TYPE = ? 
+                 GROUP BY PENRANK, AFPSN`,
+                [normalizedAfpsnNumeric, type]
+            );
+
+            if (afpsnRecords.length > 0) {
+                detectedTable = 'test_table';
                 penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
             }
         }
 
+        // Try resumption table if not found
         if (!detectedTable) {
-            return res.status(401).json({ success: false, error: "AFP Serial Number not found", code: 'AFPSN_NOT_FOUND' });
+            try {
+                afpsnRecords = await executeQuery(
+                    `SELECT COUNT(*) as count, PENRANK, AFPSN 
+                     FROM test_res_table
+                     WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ? 
+                     AND TYPE = ? 
+                     GROUP BY PENRANK, AFPSN`,
+                    [normalizedAfpsnNumeric, type]
+                );
+
+                if (afpsnRecords.length > 0) {
+                    detectedTable = 'test_res_table';
+                    penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
+                    logger.info('Found in resumption table:', { afpsn: afpsnRecords[0].AFPSN, rank: penRank });
+                }
+            } catch (regexpError) {
+                // Fallback for MySQL < 8.0
+                afpsnRecords = await executeQuery(
+                    `SELECT COUNT(*) as count, PENRANK, AFPSN 
+                     FROM test_res_table
+                     WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ? 
+                     AND TYPE = ? 
+                     GROUP BY PENRANK, AFPSN`,
+                    [normalizedAfpsnNumeric, type]
+                );
+
+                if (afpsnRecords.length > 0) {
+                    detectedTable = 'test_res_table';
+                    penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
+                }
+            }
+        }
+
+        if (!detectedTable) {
+            logger.warn('AFPSN not found:', { afpsn: normalizedAfpsn, numeric: normalizedAfpsnNumeric, type });
+            return res.status(401).json({ 
+                success: false, 
+                error: "AFP Serial Number not found in our records", 
+                code: 'AFPSN_NOT_FOUND' 
+            });
         }
 
         const account_status = detectedTable === 'test_table' ? 'active' : 'resumption';
@@ -379,52 +439,104 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
 
         // Officer validation
         if (claims_officer && !isOfficer) {
-            return res.status(400).json({ success: false, error: `Rank mismatch: ${penRank}`, code: 'INVALID_OFFICER_CLAIM', rank: penRank });
+            return res.status(400).json({ 
+                success: false, 
+                error: `Rank mismatch: ${penRank}`, 
+                code: 'INVALID_OFFICER_CLAIM', 
+                rank: penRank 
+            });
         }
         if (!claims_officer && isOfficer) {
-            return res.status(400).json({ success: false, error: `You are an officer (${penRank})`, code: 'MISSING_OFFICER_CLAIM', rank: penRank });
+            return res.status(400).json({ 
+                success: false, 
+                error: `You are an officer (${penRank})`, 
+                code: 'MISSING_OFFICER_CLAIM', 
+                rank: penRank 
+            });
         }
 
         // Verify personal information
-        const heroes = await executeQuery(
-            `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK, ACRANK
-            FROM ${detectedTable}
-            WHERE UPPER(TRIM(FIRSTNAME)) = ? 
-            AND UPPER(TRIM(LASTNAME)) = ? 
-            AND DATE(DOB) = DATE(?) 
-            AND REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ?
-            AND TYPE = ?`,
-            [normalizedFirstname, normalizedLastname, dob, afpsnPattern, type]
-        );
+        let heroes;
+        try {
+            heroes = await executeQuery(
+                `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK, ACRANK
+                FROM ${detectedTable}
+                WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+                AND UPPER(TRIM(LASTNAME)) = ? 
+                AND DATE(DOB) = DATE(?) 
+                AND REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
+                AND TYPE = ?`,
+                [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric, type]
+            );
+        } catch (regexpError) {
+            // Fallback for MySQL < 8.0
+            heroes = await executeQuery(
+                `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, CTRLNR, PENRANK, ACRANK
+                FROM ${detectedTable}
+                WHERE UPPER(TRIM(FIRSTNAME)) = ? 
+                AND UPPER(TRIM(LASTNAME)) = ? 
+                AND DATE(DOB) = DATE(?) 
+                AND REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
+                AND TYPE = ?`,
+                [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric, type]
+            );
+        }
 
         if (heroes.length === 0) {
-            return res.status(401).json({ success: false, error: "Personal information mismatch", code: 'PERSONAL_INFO_MISMATCH' });
+            return res.status(401).json({ 
+                success: false, 
+                error: "Personal information mismatch", 
+                code: 'PERSONAL_INFO_MISMATCH' 
+            });
         }
         if (heroes.length > 1) {
-            return res.status(409).json({ success: false, error: "Multiple records found", code: 'DUPLICATE_RECORDS' });
+            return res.status(409).json({ 
+                success: false, 
+                error: "Multiple records found", 
+                code: 'DUPLICATE_RECORDS' 
+            });
         }
 
         const heroData = heroes[0];
 
-        const existingAccount = await executeQuery(
-            `SELECT u.id, u.status, h.FIRSTNAME, h.LASTNAME, h.AFPSN
-            FROM users_tbl u 
-            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-            LEFT JOIN ${detectedTable} h ON p.hero_ndx = h.NDX
-            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(h.AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ?
-            AND UPPER(TRIM(h.FIRSTNAME)) = ?
-            AND UPPER(TRIM(h.LASTNAME)) = ?
-            AND p.source_table = ?
-            AND u.status NOT IN ('DEL')
-            FOR UPDATE`,
-            [afpsnPattern, normalizedFirstname, normalizedLastname, detectedTable]
-        );
+        // Check for existing account
+        let existingAccount;
+        try {
+            existingAccount = await executeQuery(
+                `SELECT u.id, u.status, h.FIRSTNAME, h.LASTNAME, h.AFPSN
+                FROM users_tbl u 
+                JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+                LEFT JOIN ${detectedTable} h ON p.hero_ndx = h.NDX
+                WHERE REGEXP_REPLACE(UPPER(TRIM(h.AFPSN)), '[^0-9]', '') = ?
+                AND UPPER(TRIM(h.FIRSTNAME)) = ?
+                AND UPPER(TRIM(h.LASTNAME)) = ?
+                AND p.source_table = ?
+                AND u.status NOT IN ('DEL')
+                FOR UPDATE`,
+                [normalizedAfpsnNumeric, normalizedFirstname, normalizedLastname, detectedTable]
+            );
+        } catch (regexpError) {
+            // Fallback for MySQL < 8.0
+            existingAccount = await executeQuery(
+                `SELECT u.id, u.status, h.FIRSTNAME, h.LASTNAME, h.AFPSN
+                FROM users_tbl u 
+                JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
+                LEFT JOIN ${detectedTable} h ON p.hero_ndx = h.NDX
+                WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(h.AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
+                AND UPPER(TRIM(h.FIRSTNAME)) = ?
+                AND UPPER(TRIM(h.LASTNAME)) = ?
+                AND p.source_table = ?
+                AND u.status NOT IN ('DEL')
+                FOR UPDATE`,
+                [normalizedAfpsnNumeric, normalizedFirstname, normalizedLastname, detectedTable]
+            );
+        }
 
         if (existingAccount.length > 0) {
             logger.warn(`Duplicate account attempt: ${normalizedAfpsn} - ${normalizedFirstname} ${normalizedLastname}`);
             return res.status(409).json({ 
                 success: false, 
-                error: "An account already exists for this person (AFPSN + Name combination)", 
+                error: "An account already exists for this person", 
                 code: 'ACCOUNT_EXISTS',
                 details: {
                     afpsn: normalizedAfpsn,
@@ -435,13 +547,22 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
 
         // Generate token
         const tokenData = {
-            type, afpsn: normalizedAfpsn, bos: type === 'P' ? bos?.trim().toUpperCase() : null,
+            type, 
+            afpsn: normalizedAfpsn, 
+            bos: type === 'P' ? bos?.trim().toUpperCase() : null,
             b_type: b_type || null,
             principal_first_name: type === 'B' ? principal_first_name?.trim().toUpperCase() : null,
             principal_last_name: type === 'B' ? principal_last_name?.trim().toUpperCase() : null,
-            firstname: normalizedFirstname, lastname: normalizedLastname, dob,
-            hero_ndx: heroData.NDX, hero_ctrl_nr: heroData.CTRLNR,
-            penRank, acRank: heroData.ACRANK, isOfficer, account_status, source_table: detectedTable,
+            firstname: normalizedFirstname, 
+            lastname: normalizedLastname, 
+            dob,
+            hero_ndx: heroData.NDX, 
+            hero_ctrl_nr: heroData.CTRLNR,
+            penRank, 
+            acRank: heroData.ACRANK, 
+            isOfficer, 
+            account_status, 
+            source_table: detectedTable,
             validated_at: new Date().toISOString()
         };
 
@@ -459,13 +580,28 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 type: heroData.TYPE,
                 dob: heroData.DOB
             },
-            data: { type, afpsn: normalizedAfpsn, rank: penRank, isOfficer, account_status, source_table: detectedTable },
-            meta: { processingTime: `${Date.now() - startTime}ms`, validUntil: new Date(Date.now() + TOKEN_EXPIRY_HOURS * 3600000).toISOString() }
+            data: { 
+                type, 
+                afpsn: normalizedAfpsn, 
+                rank: penRank, 
+                isOfficer, 
+                account_status, 
+                source_table: detectedTable 
+            },
+            meta: { 
+                processingTime: `${Date.now() - startTime}ms`, 
+                validUntil: new Date(Date.now() + TOKEN_EXPIRY_HOURS * 3600000).toISOString() 
+            }
         });
 
     } catch (error) {
         logger.error("Identity validation error:", error);
-        res.status(500).json({ success: false, error: "Identity validation failed", code: 'IDENTITY_VALIDATION_ERROR' });
+        res.status(500).json({ 
+            success: false, 
+            error: "Identity validation failed", 
+            code: 'IDENTITY_VALIDATION_ERROR',
+            details: error.message 
+        });
     }
 });
 

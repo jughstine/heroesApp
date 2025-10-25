@@ -299,8 +299,8 @@ const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','COMMO', 'COL'
 function normalizeAfpsnForMatching(afpsn) {
     if (!afpsn) return '';
     
-    const cleaned = afpsn.trim().toUpperCase();
-    const numericOnly = cleaned.replace(/^[A-Z]-?/, '').replace(/[A-Z]+$/, '');
+    // Remove all non-numeric characters
+    const numericOnly = afpsn.toString().replace(/\D/g, '');
     
     return numericOnly;
 }
@@ -332,8 +332,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             return res.status(400).json({ success: false, error: "Beneficiary information required", code: 'MISSING_BENEFICIARY_INFO' });
         }
 
-        const normalizedAfpsn = afpsn.trim().toUpperCase();
-        const normalizedAfpsnNumeric = normalizeAfpsnForMatching(normalizedAfpsn);
+        const afpsnPattern = `%${normalizedAfpsnNumeric}%`;
         const normalizedFirstname = firstname.trim().toUpperCase();
         const normalizedLastname = lastname.trim().toUpperCase();
 
@@ -343,21 +342,26 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         let penRank = null;
 
         afpsnRecords = await executeQuery(
-            `SELECT COUNT(*) as count, PENRANK, AFPSN FROM test_table
-            WHERE REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X', '') LIKE ? AND TYPE = ? 
+            `SELECT COUNT(*) as count, PENRANK, AFPSN 
+            FROM test_table
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ? 
+            AND TYPE = ? 
             GROUP BY PENRANK, AFPSN`,
-            [`%${normalizedAfpsnNumeric}%`, type]
+            [afpsnPattern, type]
         );
 
         if (afpsnRecords.length > 0) {
             detectedTable = 'test_table';
             penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
         } else {
+            // Try resumption table
             afpsnRecords = await executeQuery(
-                `SELECT COUNT(*) as count, PENRANK, AFPSN FROM test_res_table
-                WHERE REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X', '') LIKE ? AND TYPE = ? 
+                `SELECT COUNT(*) as count, PENRANK, AFPSN 
+                FROM test_res_table
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ? 
+                AND TYPE = ? 
                 GROUP BY PENRANK, AFPSN`,
-                [`%${normalizedAfpsnNumeric}%`, type]
+                [afpsnPattern, type]
             );
 
             if (afpsnRecords.length > 0) {
@@ -388,9 +392,9 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             WHERE UPPER(TRIM(FIRSTNAME)) = ? 
             AND UPPER(TRIM(LASTNAME)) = ? 
             AND DATE(DOB) = DATE(?) 
-            AND REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X', '') LIKE ?
+            AND REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ?
             AND TYPE = ?`,
-            [normalizedFirstname, normalizedLastname, dob, `%${normalizedAfpsnNumeric}%`, type]
+            [normalizedFirstname, normalizedLastname, dob, afpsnPattern, type]
         );
 
         if (heroes.length === 0) {
@@ -407,13 +411,13 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             FROM users_tbl u 
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
             LEFT JOIN ${detectedTable} h ON p.hero_ndx = h.NDX
-            WHERE REPLACE(REPLACE(UPPER(TRIM(h.AFPSN)), 'O-', ''), 'X', '') LIKE ?
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(h.AFPSN)), 'O-', ''), 'X-', ''), ' ', '') LIKE ?
             AND UPPER(TRIM(h.FIRSTNAME)) = ?
             AND UPPER(TRIM(h.LASTNAME)) = ?
             AND p.source_table = ?
             AND u.status NOT IN ('DEL')
             FOR UPDATE`,
-            [`%${normalizedAfpsnNumeric}%`, normalizedFirstname, normalizedLastname, detectedTable]
+            [afpsnPattern, normalizedFirstname, normalizedLastname, detectedTable]
         );
 
         if (existingAccount.length > 0) {

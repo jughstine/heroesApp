@@ -91,7 +91,7 @@ router.get("/health", async (req, res) => {
 // ===== RATE LIMITERS =====
 const identityLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 10,
+    max: 100,
     message: { success: false, error: 'Too many identity validation attempts. Please try again later.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -99,7 +99,7 @@ const identityLimiter = rateLimit({
 
 const createAccountLimiter = rateLimit({
     windowMs: 30 * 60 * 1000,
-    max: 10,
+    max: 100,
     message: { success: false, error: 'Too many account creation attempts. Please try again later.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -107,7 +107,7 @@ const createAccountLimiter = rateLimit({
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 5,
+    max: 100,
     message: { success: false, error: 'Too many login attempts. Please try again after 15 minutes.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -115,7 +115,7 @@ const loginLimiter = rateLimit({
 
 const pushTokenLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 20,
+    max: 100,
     message: {
         success: false,
         error: 'Too many push token update attempts. Please try again later.',
@@ -293,8 +293,6 @@ setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
 
-// OPTIMIZED 2-STEP SIGNUP BACKEND
-
 const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
 
 function normalizeAfpsnForMatching(afpsn) {
@@ -305,9 +303,6 @@ function normalizeAfpsnForMatching(afpsn) {
     
     return numericOnly;
 }
-
-// COMPLETE REPLACEMENT for /validate-identity endpoint
-// Place this AFTER the normalizeAfpsnForMatching function definition
 
 router.post("/validate-identity", identityLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
@@ -657,7 +652,6 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         // Get connection
         connection = await getConnection();
 
-        // CRITICAL FIX: Set isolation level BEFORE starting transaction
         await retryWithBackoff(async () => {
             try {
                 // Set isolation level FIRST (before beginTransaction)

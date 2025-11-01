@@ -126,7 +126,7 @@ router.get('/profile', async (req, res) => {
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table h ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
       LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFB', 'AFR', 'FOR_PAYROLL')
       ORDER BY u.created_at DESC
       LIMIT 1
     `);
@@ -220,23 +220,35 @@ router.get('/profile/:userId', async (req, res) => {
     const [profiles] = await conn.query(`
       SELECT 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME 
+          WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.FIRSTNAME
           ELSE h.FIRSTNAME 
         END AS FIRSTNAME,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME 
+          WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.LASTNAME
           ELSE h.LASTNAME 
         END AS LASTNAME,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.DOB 
+          WHEN p.source_table = 'test_res_table' THEN h2.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.DOB
           ELSE h.DOB 
         END AS DOB,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
               WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
                 THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
               ELSE h2.AFPSN
+            END
+          WHEN p.source_table = 'beneficiaries_table' THEN
+            CASE 
+              WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
+                THEN CONCAT('O-', REPLACE(h3.AFPSN, 'O-', ''))
+              ELSE h3.AFPSN
             END
           ELSE 
             CASE 
@@ -245,22 +257,31 @@ router.get('/profile/:userId', async (req, res) => {
               ELSE h.AFPSN
             END
         END AS afpsn,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.PENRANK 
+          WHEN p.source_table = 'test_res_table' THEN h2.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.PENRANK
           ELSE h.PENRANK 
         END AS penrank,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.TYPE 
+          WHEN p.source_table = 'test_res_table' THEN h2.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.TYPE
           ELSE h.TYPE 
         END AS TYPE,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR 
+          WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.CTRLNR
           ELSE h.CTRLNR 
         END AS CTRLNR,
+
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR 
+          WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR
+          WHEN p.source_table = 'beneficiaries_table' THEN h3.MOBILENR
           ELSE h.MOBILENR 
         END AS MOBILENR,
+
         p.type AS pensioner_type,
         p.bos,  
         p.b_type,
@@ -274,9 +295,11 @@ router.get('/profile/:userId', async (req, res) => {
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX
       LEFT JOIN test_table h ON p.hero_ndx = h.NDX
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX
+      LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
+      WHERE u.id = ? 
+        AND u.status IN ('ACT', 'UNV', 'AFB', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
     `, [userId]);
 
     if (profiles.length === 0) {
@@ -344,7 +367,7 @@ router.get('/profile/:userId', async (req, res) => {
       success: false,
       error: "Failed to retrieve user profile",
       code: 'PROFILE_ERROR',
-      processingTime: `${Date.now() - startTime}ms`
+      processingTime: `${processingTime}ms`
     });
 
   } finally {
@@ -418,7 +441,7 @@ router.put('/profile/:userId/picture', async (req, res) => {
     const user = users[0];
     
     // Check if user status allows profile updates
-    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'FOR_PAYROLL'];
+    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'AFB', 'FOR_PAYROLL'];
     if (!allowedStatuses.includes(user.status)) {
       console.warn(`User status not allowed for update: userId=${userId}, status=${user.status}`);
       return res.status(403).json({
@@ -476,7 +499,7 @@ router.put('/profile/:userId/picture', async (req, res) => {
 router.get('/submissions', async (req, res) => {
   const startTime = Date.now();
   const poolInstance = getPool(); 
-  let conn = null; 
+  let conn = ll; 
 
   try {
     
@@ -505,7 +528,7 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')
       AND fs.status IN ('p', 'a', 'd') 
       ORDER BY fs.submitted_at DESC
     `);
@@ -583,7 +606,7 @@ router.get('/submissions/:userId', async (req, res) => {
       SELECT u.id, p.source_table
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')
     `, [userId]);
 
     if (userExists.length === 0) {
@@ -725,7 +748,7 @@ router.put('/push-token/:userId', async (req, res) => {
 
     // Verify user exists
     const [users] = await conn.query(
-      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')",
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')",
       [userId]
     );
 

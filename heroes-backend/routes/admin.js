@@ -714,7 +714,7 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     const { status } = req.body;
 
     // Validate status
-    const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR', 'UNV'];
+    const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR', 'AFB', 'AFB', 'UNV'];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -1004,6 +1004,156 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             success: false,
             error: "Failed to transfer user to Alpha List",
             code: 'TRANSFER_ERROR',
+            details: error.message,
+            processingTime: `${processingTime}ms`
+        });
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+});
+
+router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, res) => {
+    const startTime = Date.now();
+    let connection;
+
+    try {
+        const { userId } = req.params;
+
+        // First, get the pensioner info
+        const userInfo = await executeQuery(`
+            SELECT 
+                u.id as user_id,
+                u.pensioner_ndx,
+                p.id as pensioner_id,
+                p.hero_ndx,
+                p.source_table,
+                CONCAT(p.principal_firstname, ' ', p.principal_lastname) as name
+            FROM users_tbl u
+            LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            WHERE u.id = ?
+            LIMIT 1
+        `, [userId]);
+
+        if (userInfo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "User not found",
+                code: 'USER_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const user = userInfo[0];
+
+        // Get a connection for transaction
+        connection = await getDbConnection();
+        await connection.beginTransaction();
+
+        try {
+            // 1. Get all form submissions for this user
+            const [formSubmissions] = await connection.execute(`
+                SELECT id FROM form_submission WHERE user_id = ?
+            `, [userId]);
+
+            // 2. Delete history logs for each form submission
+            if (formSubmissions.length > 0) {
+                const formSubmissionIds = formSubmissions.map(fs => fs.id);
+                const placeholders = formSubmissionIds.map(() => '?').join(',');
+                
+                await connection.execute(`
+                    DELETE FROM history_logs 
+                    WHERE form_submission_id IN (${placeholders})
+                `, formSubmissionIds);
+
+                console.log(`Deleted history logs for ${formSubmissionIds.length} form submissions`);
+            }
+
+            // 3. Delete form submissions
+            const [deleteFormsResult] = await connection.execute(`
+                DELETE FROM form_submission WHERE user_id = ?
+            `, [userId]);
+
+            console.log(`Deleted ${deleteFormsResult.affectedRows} form submissions`);
+
+            // 4. Delete from users_tbl
+            const [deleteUserResult] = await connection.execute(`
+                DELETE FROM users_tbl WHERE id = ?
+            `, [userId]);
+
+            console.log(`Deleted user from users_tbl`);
+
+            // 5. Delete from pensioners_tbl (if exists)
+            let deletedPensioner = false;
+            if (user.pensioner_id) {
+                const [deletePensionerResult] = await connection.execute(`
+                    DELETE FROM pensioners_tbl WHERE id = ?
+                `, [user.pensioner_id]);
+                
+                deletedPensioner = deletePensionerResult.affectedRows > 0;
+                console.log(`Deleted pensioner record: ${deletedPensioner}`);
+            }
+
+            // 6. Delete from source table (test_table or test_res_table) if hero_ndx exists
+            let deletedFromSourceTable = false;
+            if (user.hero_ndx && user.source_table) {
+                const sourceTable = user.source_table === 'test_table' ? 'test_table' : 'test_res_table';
+                
+                try {
+                    const [deleteHeroResult] = await connection.execute(`
+                        DELETE FROM ${sourceTable} WHERE NDX = ?
+                    `, [user.hero_ndx]);
+                    
+                    deletedFromSourceTable = deleteHeroResult.affectedRows > 0;
+                    console.log(`Deleted from ${sourceTable}: ${deletedFromSourceTable}`);
+                } catch (error) {
+                    console.log(`Note: Could not delete from ${sourceTable}:`, error.message);
+                    // Continue anyway - the hero record might not exist
+                }
+            }
+
+            // Commit transaction
+            await connection.commit();
+
+            const processingTime = Date.now() - startTime;
+
+            res.json({
+                success: true,
+                message: "User successfully deleted",
+                data: {
+                    userId: parseInt(userId),
+                    pensionerId: user.pensioner_id,
+                    heroNdx: user.hero_ndx,
+                    sourceTable: user.source_table,
+                    deletedRecords: {
+                        historyLogs: formSubmissions.length > 0 ? 'deleted' : 'none',
+                        formSubmissions: deleteFormsResult.affectedRows,
+                        user: deleteUserResult.affectedRows,
+                        pensioner: deletedPensioner,
+                        heroRecord: deletedFromSourceTable
+                    }
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            // Rollback transaction on error
+            await connection.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        console.error("Delete user error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to delete user",
+            code: 'DELETE_ERROR',
             details: error.message,
             processingTime: `${processingTime}ms`
         });

@@ -19,7 +19,7 @@ const SORT_COLUMN_MAP = {
 
 router.use(authenticateAdminToken);
 
-const FORM_TYPE_3_TABLES = [
+const RESTORATION_TABLES = [
   'rst_widow_requirements',
   'rst_bi_principal_requirements',
   'rst_bi_bene_requirements',
@@ -27,7 +27,7 @@ const FORM_TYPE_3_TABLES = [
   'rst_principal_requirements'
 ];
 
-const getFormType3TableForForm = async (pool, formId) => {
+const getRestorationTableForForm = async (pool, formId) => {
   const tableTypeMap = {
     'rst_widow_requirements': 'widow',
     'rst_bi_principal_requirements': 'bi_principal',
@@ -36,7 +36,7 @@ const getFormType3TableForForm = async (pool, formId) => {
     'rst_principal_requirements': 'principal'
   };
 
-  for (const tableName of FORM_TYPE_3_TABLES) {
+  for (const tableName of RESTORATION_TABLES) {
     try {
       const [rows] = await pool.execute(
         `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
@@ -60,6 +60,45 @@ const getFormType3TableForForm = async (pool, formId) => {
   };
 };
 
+const DLB_TYPES_TABLES = [
+  'dlb_child_requirements',
+  'dlb_parent_requirements',
+  'dlb_sibling_requirements',
+  'dlb_spouse_requirements'
+];
+
+const getDlbForForm = async (pool, formId) => {
+  const tableTypeMap = {
+    'dlb_child_requirements': 'child',
+    'dlb_parent_requirements': 'parent',
+    'dlb_sibling_requirements': 'sibling',
+    'dlb_spouse_requirements': 'spouse'
+  };
+
+  for (const tableName of DLB_TYPES_TABLES) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
+        [formId]
+      );
+      
+      if (rows[0].count > 0) {
+        return {
+          tableName,
+          subtype: tableTypeMap[tableName]
+        };
+      }
+    } catch (error) {
+      console.error(`Error checking table ${tableName}:`, error);
+    }
+  }
+  
+  return {
+    tableName: 'dlb_child_requirements',
+    subtype: 'child'
+  };
+};
+
 const getFormRequirements = async (pool, formId, formTypeId) => {
   
   if (formTypeId === 2) {
@@ -73,7 +112,7 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
       rst_subtype: null
     };
   } else if (formTypeId === 3) {
-    const { tableName, subtype } = await getFormType3TableForForm(pool, formId);    
+    const { tableName, subtype } = await getRestorationTableForForm(pool, formId);    
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
       [formId]
@@ -83,7 +122,20 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
       tableName,
       rst_subtype: subtype
     };
-  } else if (formTypeId === 5) {
+  } else if (formTypeId === 1) {
+    const { tableName, subtype } = await getDlbForForm(pool, formId);    
+    const [requirements] = await pool.execute(
+      `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName,
+      dlb_subtype: subtype
+    };
+  } 
+  
+  else if (formTypeId === 5) {
     const [requirements] = await pool.execute(
       'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
       [formId]
@@ -296,7 +348,7 @@ router.get('/history-logs', async (req, res) => {
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.max(1, parseInt(limit) || 10);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 10);
     const offset = (pageNum - 1) * limitNum;
 
     let whereConditions = [];
@@ -347,6 +399,7 @@ router.get('/history-logs', async (req, res) => {
       LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
       LEFT JOIN form_type ft ON fs.form_type_id = ft.id
       LEFT JOIN users_tbl u ON fs.user_id = u.id
+      LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       ${whereClause}
     `;
 
@@ -370,22 +423,46 @@ router.get('/history-logs', async (req, res) => {
         u.status_updated_at,
         fs.status as current_form_status,
         p.source_table,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as pensioner_firstname,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
-        END as pensioner_lastname
+        END as pensioner_lastname,
+
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
+          ELSE t.AFPSN
+        END as AFPSN,
+
+        CASE 
+          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
+          ELSE t.PENRANK
+        END as PENRANK
+
       FROM history_logs hl
       LEFT JOIN admins_tbl a ON hl.action_by = a.id
       LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
       LEFT JOIN form_type ft ON fs.form_type_id = ft.id
       LEFT JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+
+      -- main joins for all possible source tables
+      LEFT JOIN test_table t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
+      LEFT JOIN test_res_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b 
+        ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
+
       ${whereClause}
       ORDER BY ${sortColumn} ${sortOrderSafe}
       LIMIT ${limitNum} OFFSET ${offset}
@@ -439,40 +516,56 @@ router.get('/history-logs/:log_id', async (req, res) => {
         hl.status,
         hl.remarks,
         hl.action_date,
-        a.name as admin_name,
-        a.email as admin_email,
+        a.name AS admin_name,
+        a.email AS admin_email,
+        a.role AS admin_role,
         u.status_updated_at,
-        a.role as admin_role,
-        ft.name as form_type_name,
-        u.email as user_email,
+        u.email AS user_email,
         u.profile_picture,
-        fs.status as current_form_status,
+        fs.status AS current_form_status,
         fs.submitted_at,
+        ft.name AS form_type_name,
         p.source_table,
+        
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
-        END as pensioner_firstname,
+        END AS pensioner_firstname,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
-        END as pensioner_lastname,
+        END AS pensioner_lastname,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
-        END as AFPSN,
+        END AS AFPSN,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
-        END as PENRANK
+        END AS PENRANK
+
       FROM history_logs hl
       LEFT JOIN admins_tbl a ON hl.action_by = a.id
       LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
       LEFT JOIN form_type ft ON fs.form_type_id = ft.id
       LEFT JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN test_table t 
+        ON p.hero_ndx = t.NDX 
+        AND (p.source_table = 'test_table' OR p.source_table IS NULL)
+      LEFT JOIN test_res_table tr 
+        ON p.hero_ndx = tr.NDX 
+        AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b 
+        ON p.hero_ndx = b.NDX 
+        AND p.source_table = 'beneficiaries_table'
       WHERE hl.id = ?
     `, [logId]);
 
@@ -564,22 +657,27 @@ router.get('/', async (req, res) => {
         p.source_table,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.NDX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.NDX
           ELSE t.NDX
         END as test_table_ndx,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX,
         CASE 
@@ -588,6 +686,12 @@ router.get('/', async (req, res) => {
               WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
+            END
+          WHEN p.source_table = 'beneficiaries_table' THEN 
+            CASE 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              THEN CONCAT('O-', b.AFPSN)
+              ELSE b.AFPSN
             END
           ELSE 
             CASE 
@@ -598,16 +702,19 @@ router.get('/', async (req, res) => {
         END as AFPSN,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END as DOB,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END as TYPE,
         p.type as pensioner_type,
         p.b_type,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK
       FROM form_submission fs
@@ -616,6 +723,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ORDER BY fs.submitted_at DESC
     `);
 
@@ -667,8 +775,8 @@ router.get('/paginated', async (req, res) => {
     if (search && search.trim()) {
       whereConditions.push(`(
         u.email LIKE ? OR 
-        COALESCE(t.FIRSTNAME, tr.FIRSTNAME) LIKE ? OR 
-        COALESCE(t.LASTNAME, tr.LASTNAME) LIKE ? OR 
+        COALESCE(t.FIRSTNAME, tr.FIRSTNAME, b.FIRSTNAME) LIKE ? OR 
+        COALESCE(t.LASTNAME, tr.LASTNAME, b.LASTNAME) LIKE ? OR 
         ft.name LIKE ? OR 
         CAST(fs.id AS CHAR) LIKE ?
       )`);
@@ -678,9 +786,18 @@ router.get('/paginated', async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
+    // Optional: define sort columns to prevent SQL injection
+    const SORT_COLUMN_MAP = {
+      submitted_at: 'fs.submitted_at',
+      reviewed_at: 'fs.reviewed_at',
+      status: 'fs.status',
+      form_type_name: 'ft.name'
+    };
+
     const sortColumn = SORT_COLUMN_MAP[sort_by] || SORT_COLUMN_MAP['submitted_at'];
     const sortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
 
+    // Count Query
     const countQuery = `
       SELECT COUNT(*) as total
       FROM form_submission fs
@@ -689,12 +806,14 @@ router.get('/paginated', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
     `;
 
     const [countResult] = await pool.execute(countQuery, queryParams);
     const totalCount = countResult[0].total;
 
+    // Data Query
     const dataQuery = `
       SELECT 
         fs.id,
@@ -712,18 +831,22 @@ router.get('/paginated', async (req, res) => {
         p.source_table,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX,
         CASE 
@@ -732,6 +855,12 @@ router.get('/paginated', async (req, res) => {
               WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
+            END
+          WHEN p.source_table = 'beneficiaries_table' THEN 
+            CASE 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              THEN CONCAT('O-', b.AFPSN)
+              ELSE b.AFPSN
             END
           ELSE 
             CASE 
@@ -742,20 +871,24 @@ router.get('/paginated', async (req, res) => {
         END as AFPSN,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END as TYPE,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.CTRLNR
+          WHEN p.source_table = 'beneficiaries_table' THEN b.CTRLNR
           ELSE t.CTRLNR
         END as CTRLNR,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END as DOB,
         p.type as pensioner_type,
         p.b_type,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK
       FROM form_submission fs
@@ -764,6 +897,7 @@ router.get('/paginated', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
       ORDER BY ${sortColumn} ${sortOrder}
       LIMIT ? OFFSET ?
@@ -890,7 +1024,8 @@ router.get('/export/bulk', async (req, res) => {
     // Separate forms by type
     const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
     const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
-    const reinstatementFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
+    const restorationFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
+    const albFormIds = forms.filter(f => f.form_type_id === 1).map(f => f.id);
 
     const requirementMap = {};
 
@@ -931,8 +1066,8 @@ router.get('/export/bulk', async (req, res) => {
     }
 
     // Get requirements from form type 3 tables (for reinstatement forms)
-    for (const formId of reinstatementFormIds) {
-      const result = await getFormType3TableForForm(pool, formId);
+    for (const formId of restorationFormIds) {
+      const result = await getRestorationTableForForm(pool, formId);
       const tableName = result.tableName;
       
       try {
@@ -944,6 +1079,30 @@ router.get('/export/bulk', async (req, res) => {
         `, [formId]);
 
         type3Requirements.forEach(req => {
+          if (!requirementMap[req.form_id]) {
+            requirementMap[req.form_id] = {};
+          }
+          requirementMap[req.form_id][req.requirement_type] = req.value;
+        });
+      } catch (tableError) {
+        console.error(`Error fetching requirements from ${tableName}:`, tableError);
+      }
+    }
+
+    // Get requirements from dlb tables (for dlb forms)
+    for (const formId of albFormIds) {
+      const result = await getDlbForForm(pool, formId);
+      const tableName = result.tableName;
+      
+      try {
+        const [dlbRequirements] = await pool.execute(`
+          SELECT form_id, requirement_type, value
+          FROM ${tableName}
+          WHERE form_id = ?
+            AND requirement_type IN ('home_address', 'mobile_number')
+        `, [formId]);
+
+        dlbRequirements.forEach(req => {
           if (!requirementMap[req.form_id]) {
             requirementMap[req.form_id] = {};
           }
@@ -1217,7 +1376,7 @@ router.get('/:form_id', async (req, res) => {
     
     const formId = parseInt(form_id);
     
-    // First, get the form submission and determine the source table
+    // Get source_table
     const [formBasicInfo] = await pool.execute(`
       SELECT 
         fs.id,
@@ -1231,24 +1390,18 @@ router.get('/:form_id', async (req, res) => {
     `, [formId]);
     
     if (formBasicInfo.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Form submission not found' 
-      });
+      return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
     
     const sourceTable = formBasicInfo[0].source_table || 'test_table';
     
-    // Validate source table
-    if (sourceTable !== 'test_table' && sourceTable !== 'test_res_table') {
+    // ✅ Allow beneficiaries_table too
+    if (!['test_table', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
       console.error(`Invalid source_table: ${sourceTable} for form ${formId}`);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Invalid source table configuration' 
-      });
+      return res.status(500).json({ success: false, error: 'Invalid source table configuration' });
     }
     
-    // Now get the full submission data with the correct table
+    // Main data query
     const [submissionRows] = await pool.execute(`
       SELECT 
         fs.*,
@@ -1260,34 +1413,42 @@ router.get('/:form_id', async (req, res) => {
         p.source_table,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
         END as AFPSN,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END as DOB,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END as TYPE,
         p.type as pensioner_type,
@@ -1299,14 +1460,12 @@ router.get('/:form_id', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.id = ?
     `, [formId]);
     
     if (submissionRows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Form submission not found' 
-      });
+      return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
     
     const submission = submissionRows[0];
@@ -1317,8 +1476,7 @@ router.get('/:form_id', async (req, res) => {
         ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
         : submission.AFPSN;
 
-    
-    // Get requirements from the appropriate table based on form_type_id
+    // ✅ Get requirements (unchanged)
     const result = await getFormRequirements(pool, formId, submission.form_type_id);
     
     const formData = {
@@ -1328,6 +1486,7 @@ router.get('/:form_id', async (req, res) => {
       requirements: result.requirements || [],
       requirement_table_used: result.tableName,
       rst_subtype: result.rst_subtype,
+      dlb_subtype: result.dlb_subtype,
       source_table: sourceTable,
       location: {
         longitude: submission.longitude,
@@ -1336,10 +1495,7 @@ router.get('/:form_id', async (req, res) => {
       }
     };
         
-    res.json({ 
-      success: true, 
-      data: formData 
-    });
+    res.json({ success: true, data: formData });
     
   } catch (error) {
     console.error('Error fetching admin form details:', error);
@@ -1459,11 +1615,18 @@ router.put('/:form_id/status', async (req, res) => {
       if (status === 'd') {
         if (formTypeId === 2) {
           await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
-        } else if (formTypeId === 3) {
-          const result = await getFormType3TableForForm(pool, formId);
+        } 
+        else if (formTypeId === 3) {
+          const result = await getRestorationTableForForm(pool, formId);
           const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-        } else if (formTypeId === 5) {
+        }
+        else if (formTypeId === 1) {
+          const result = await getDlbForForm(pool, formId);
+          const tableName = result.tableName;
+          await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
+        }
+         else if (formTypeId === 5) {
           await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
         } else {
           await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
@@ -1654,12 +1817,23 @@ router.delete('/:form_id', async (req, res) => {
 
       // Delete from appropriate requirements table
       if (formTypeId === 2) {
+        // Resumption
         await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
-      } else if (formTypeId === 3) {
-        const result = await getFormType3TableForForm(pool, formId);
+      } 
+      else if (formTypeId === 3) {
+        // Restoration
+        const result = await getRestorationTableForForm(pool, formId);
         const tableName = result.tableName;
         await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-      } else {
+      } 
+      else if (formTypeId === 1) {
+        // Declaration of Legal Beneficiary - FIXED: Added await here
+        const result = await getDlbForForm(pool, formId);
+        const tableName = result.tableName;
+        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
+      } 
+      else {
+        // Updating (default)
         await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
       }
       

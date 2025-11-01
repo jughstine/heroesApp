@@ -87,13 +87,29 @@ router.get('/types', async (req, res) => {
   }
 });
 
-// POST - Submit a new form (UPDATING - form_type_id = 5)
+function generateFormReference(formTypeId, formId) {
+  const prefixes = {
+    2: 'RSM',  // Resumption
+    3: 'RST',  // Restoration
+    5: 'UPD',   // Updating
+    1: 'DLB'   // Updating
+  };
+  
+  const prefix = prefixes[formTypeId] || 'FRM';
+  const year = new Date().getFullYear();
+  const paddedId = String(formId).padStart(6, '0');
+  
+  return `${prefix}-${year}-${paddedId}`;
+}
+
+// ========================================
+// UPDATING
+// ========================================
 router.post('/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -117,10 +133,8 @@ router.post('/submit', async (req, res) => {
       abroad_status 
     } = req.body;
 
-    // Set form_type_id to 5 for UPDATING
     const form_type_id = 5;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -130,7 +144,6 @@ router.post('/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -158,7 +171,6 @@ router.post('/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -179,25 +191,22 @@ router.post('/submit', async (req, res) => {
       }
     }
 
-    // Determine location status based on abroad_status
     const locationStatus = abroad_status ? 'abr' : 'loc';
     
-    // Insert form submission with location data and location status
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion by querying the record
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
-    // Insert form requirements with proper applies_to_location mapping
     for (const requirement of requirements) {
       const { requirement_type, value, file_url, file_key, file_type } = requirement;
 
@@ -238,6 +247,7 @@ router.post('/submit', async (req, res) => {
       message: 'Form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,
         form_type_id: form_type_id,
         location_status: locationStatus,
         abroad_status: abroad_status,
@@ -258,7 +268,6 @@ router.post('/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -272,7 +281,6 @@ router.post('/submit', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Form submission failed due to server error",
@@ -295,7 +303,6 @@ router.post('/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -306,13 +313,14 @@ router.post('/submit', async (req, res) => {
   }
 });
 
-// POST - Submit a RESUMPTION form (form_type_id = 2)
+// ========================================
+// RESUMPTION
+// ========================================
 router.post('/submit-resumption', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -336,10 +344,8 @@ router.post('/submit-resumption', async (req, res) => {
       late_filing_status 
     } = req.body;
 
-    // Set form_type_id to 2 for RESUMPTION
     const form_type_id = 2;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -349,7 +355,6 @@ router.post('/submit-resumption', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -377,7 +382,6 @@ router.post('/submit-resumption', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -398,25 +402,22 @@ router.post('/submit-resumption', async (req, res) => {
       }
     }
 
-    // Resumption forms are always 'loc' (local) - pensioners are back in Philippines
     const locationStatus = 'loc';
     
-    // Insert form submission with location data and location status
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, locationStatus, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion by querying the record
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
-    // Insert form requirements into rsm_requirements table
     for (const requirement of requirements) {
       const { requirement_type, value, file_url, file_key, file_type } = requirement;
 
@@ -424,7 +425,6 @@ router.post('/submit-resumption', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Insert into rsm_requirements table (specific for resumption forms)
       await conn.execute(
         `INSERT INTO rsm_requirements (form_id, requirement_type, value, file_url, file_key, file_type) 
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -448,6 +448,7 @@ router.post('/submit-resumption', async (req, res) => {
       message: 'Resumption form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,
         form_type_id: form_type_id,
         form_type: 'resumption',
         location_status: locationStatus,
@@ -469,7 +470,6 @@ router.post('/submit-resumption', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -483,7 +483,6 @@ router.post('/submit-resumption', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Resumption form submission failed due to server error",
@@ -506,7 +505,6 @@ router.post('/submit-resumption', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -517,13 +515,14 @@ router.post('/submit-resumption', async (req, res) => {
   }
 });
 
-// POST - Submit a RESTORATION -WIDOW form (form_type_id = 3)
+// ========================================
+// WIDOW RESTORATION
+// ========================================
 router.post('/widow-restoration/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -545,12 +544,11 @@ router.post('/widow-restoration/submit', async (req, res) => {
       requirements, 
       location_metadata,
       video_metadata,
-      applies_to_location // 'loc', 'abr', or 'both'
+      applies_to_location
     } = req.body;
 
     const form_type_id = 3;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -560,7 +558,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
       });
     }
 
-    // Validate applies_to_location
     if (!applies_to_location || !['loc', 'abr', 'both'].includes(applies_to_location)) {
       return res.status(400).json({
         success: false,
@@ -570,7 +567,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -598,7 +594,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -619,7 +614,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate required widow restoration documents
     const requiredTypes = ['video_submission', 'home_address', 'mobile_number', 'puf', 'jago_declaration', 'afp_id', 'pension_acc'];
     const providedTypes = requirements.map(r => r.requirement_type);
     
@@ -633,19 +627,18 @@ router.post('/widow-restoration/submit', async (req, res) => {
       });
     }
 
-    // Insert form submission with location data
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
     for (const requirement of requirements) {
@@ -655,7 +648,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Validate requirement_type against allowed enum values
       const validTypes = [
         'video_submission',
         'home_address',
@@ -686,7 +678,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
           applies_to_location
         ]
       );
-
     }
 
     await conn.commit();
@@ -698,6 +689,7 @@ router.post('/widow-restoration/submit', async (req, res) => {
       message: 'Widow restoration form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,  // ⭐ INCLUDE IN RESPONSE
         form_type_id: form_type_id,
         form_type: 'widow_restoration',
         location_status: applies_to_location,
@@ -719,7 +711,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -733,7 +724,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Widow restoration form submission failed due to server error",
@@ -763,7 +753,6 @@ router.post('/widow-restoration/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -774,13 +763,14 @@ router.post('/widow-restoration/submit', async (req, res) => {
   }
 });
 
-// POST - Submit a RESTORATION - PRINCIPAL form 
+// ========================================
+// PRINCIPAL RESTORATION
+// ========================================
 router.post('/principal-restoration/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -802,12 +792,11 @@ router.post('/principal-restoration/submit', async (req, res) => {
       requirements, 
       location_metadata,
       video_metadata,
-      applies_to_location // 'loc', 'abr', or 'both'
+      applies_to_location
     } = req.body;
 
     const form_type_id = 3;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -817,7 +806,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Validate applies_to_location
     if (!applies_to_location || !['loc', 'abr', 'both'].includes(applies_to_location)) {
       return res.status(400).json({
         success: false,
@@ -827,7 +815,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -855,7 +842,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -876,7 +862,7 @@ router.post('/principal-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate required widow restoration documents
+    // Validate required principal restoration documents
     const requiredTypes = ['video_submission', 'home_address', 'mobile_number', 'puf', 'afp_id', 'pension_acc'];
     const providedTypes = requirements.map(r => r.requirement_type);
     
@@ -890,19 +876,19 @@ router.post('/principal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Insert form submission with location data
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    // Generate and update form reference
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
     for (const requirement of requirements) {
@@ -912,7 +898,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Validate requirement_type against allowed enum values
       const validTypes = [
         'video_submission',
         'home_address',
@@ -941,7 +926,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
           applies_to_location
         ]
       );
-
     }
 
     await conn.commit();
@@ -950,11 +934,12 @@ router.post('/principal-restoration/submit', async (req, res) => {
 
     const responseData = {
       success: true,
-      message: 'Restoration form submitted successfully',
+      message: 'Principal restoration form submitted successfully',  
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,
         form_type_id: form_type_id,
-        form_type: 'widow_restoration',
+        form_type: 'principal_restoration', 
         location_status: applies_to_location,
         location: {
           longitude: finalLongitude,
@@ -975,7 +960,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -985,14 +969,13 @@ router.post('/principal-restoration/submit', async (req, res) => {
     }
 
     const processingTime = Date.now() - startTime;
-    console.error('❌ Error submitting widow restoration form:', error);
+    console.error('❌ Error submitting principal restoration form:', error); 
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
-      error: "Widow restoration form submission failed due to server error",
+      error: "Principal restoration form submission failed due to server error",  
       details: error.message,
       code: 'SERVER_ERROR',
       processingTime: `${processingTime}ms`
@@ -1019,7 +1002,6 @@ router.post('/principal-restoration/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -1030,13 +1012,14 @@ router.post('/principal-restoration/submit', async (req, res) => {
   }
 });
 
-// POST - Submit a RESTORATION - BI-PRINCIPAL form 
+// ========================================
+// BI-PRINCIPAL RESTORATION
+// ========================================
 router.post('/biprincipal-restoration/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -1058,12 +1041,11 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       requirements, 
       location_metadata,
       video_metadata,
-      applies_to_location // 'loc', 'abr', or 'both'
+      applies_to_location
     } = req.body;
 
     const form_type_id = 3;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -1073,7 +1055,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Validate applies_to_location
     if (!applies_to_location || !['loc', 'abr', 'both'].includes(applies_to_location)) {
       return res.status(400).json({
         success: false,
@@ -1083,7 +1064,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -1111,7 +1091,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -1132,7 +1111,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate required bi-principal restoration documents
     const requiredTypes = [
       'video_submission', 
       'home_address', 
@@ -1158,21 +1136,20 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       });
     }
 
-    // Insert form submission with location data
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
-    
+
     for (const requirement of requirements) {
       const { requirement_type, value, file_url, file_key, file_type } = requirement;
 
@@ -1180,7 +1157,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Validate requirement_type against allowed enum values for bi-principal
       const validTypes = [
         'video_submission',
         'home_address',
@@ -1213,7 +1189,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
           applies_to_location
         ]
       );
-
     }
 
     await conn.commit();
@@ -1225,6 +1200,7 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
       message: 'Bi-principal restoration form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,  // ⭐ INCLUDE IN RESPONSE
         form_type_id: form_type_id,
         form_type: 'biprincipal_restoration',
         location_status: applies_to_location,
@@ -1246,7 +1222,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -1260,7 +1235,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Bi-principal restoration form submission failed due to server error",
@@ -1290,7 +1264,6 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -1301,13 +1274,14 @@ router.post('/biprincipal-restoration/submit', async (req, res) => {
   }
 });
 
-// POST - Submit a RESTORATION - RE-ENTITLEMENT form 
+// ========================================
+// RE-ENTITLEMENT RESTORATION 
+// ========================================
 router.post('/reentitlement-restoration/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -1329,12 +1303,11 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       requirements, 
       location_metadata,
       video_metadata,
-      applies_to_location // 'loc', 'abr', or 'both'
+      applies_to_location
     } = req.body;
 
     const form_type_id = 3;
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -1344,7 +1317,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       });
     }
 
-    // Validate applies_to_location
     if (!applies_to_location || !['loc', 'abr', 'both'].includes(applies_to_location)) {
       return res.status(400).json({
         success: false,
@@ -1354,7 +1326,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -1382,7 +1353,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -1403,7 +1373,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate required re-entitlement restoration documents
     const requiredTypes = [
       'video_submission',
       'home_address',
@@ -1429,19 +1398,18 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       });
     }
 
-    // Insert form submission with location data
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
     for (const requirement of requirements) {
@@ -1451,7 +1419,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Validate requirement_type against allowed enum values for re-entitlement
       const validTypes = [
         'video_submission',
         'home_address',
@@ -1484,7 +1451,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
           applies_to_location
         ]
       );
-
     }
 
     await conn.commit();
@@ -1496,6 +1462,7 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
       message: 'Re-entitlement restoration form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,  // ⭐ INCLUDE IN RESPONSE
         form_type_id: form_type_id,
         form_type: 'reentitlement_restoration',
         location_status: applies_to_location,
@@ -1517,7 +1484,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -1531,7 +1497,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Re-entitlement restoration form submission failed due to server error",
@@ -1561,7 +1526,6 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
@@ -1572,13 +1536,14 @@ router.post('/reentitlement-restoration/submit', async (req, res) => {
   }
 });
 
-// POST - Submit a RESTORATION - BI-BENEFICIARY form 
+// ========================================
+// BI-BENEFICIARY RESTORATION
+// ========================================
 router.post('/bibeneficiary-restoration/submit', async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
-    // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
@@ -1600,12 +1565,11 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       requirements, 
       location_metadata,
       video_metadata,
-      applies_to_location // 'loc', 'abr', or 'both'
+      applies_to_location
     } = req.body;
 
     const form_type_id = 3; 
 
-    // Validate required fields
     if (!user_id || !requirements || !Array.isArray(requirements)) {
       return res.status(400).json({
         success: false,
@@ -1615,7 +1579,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       });
     }
 
-    // Validate applies_to_location
     if (!applies_to_location || !['loc', 'abr', 'both'].includes(applies_to_location)) {
       return res.status(400).json({
         success: false,
@@ -1625,7 +1588,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       });
     }
 
-    // Convert location values to proper types if they exist
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -1653,7 +1615,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate location data if provided
     if (finalLongitude !== null && finalLatitude !== null) {
       if (finalLongitude < -180 || finalLongitude > 180) {
         return res.status(400).json({
@@ -1674,7 +1635,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       }
     }
 
-    // Validate required bi-beneficiary restoration documents
     const requiredTypes = [
       'video_submission',
       'home_address',
@@ -1705,19 +1665,18 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       });
     }
 
-    // Insert form submission with location data
     const [submissionResult] = await conn.execute(
       `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p'] // 'p' for pending
+      [user_id, form_type_id, finalLongitude, finalLatitude, applies_to_location, 'p']
     );
 
     const formSubmissionId = submissionResult.insertId;
 
-    // Verify the insertion
-    const [insertedRecord] = await conn.execute(
-      'SELECT id, user_id, form_type_id, longitude, latitude, location, status, submitted_at FROM form_submission WHERE id = ?',
-      [formSubmissionId]
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
     );
     
     for (const requirement of requirements) {
@@ -1727,7 +1686,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
         throw new Error('requirement_type is required for all requirements');
       }
 
-      // Validate requirement_type against allowed enum values for bi-beneficiary
       const validTypes = [
         'video_submission',
         'home_address',
@@ -1765,7 +1723,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
           applies_to_location
         ]
       );
-
     }
 
     await conn.commit();
@@ -1777,6 +1734,7 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
       message: 'Bi-beneficiary restoration form submitted successfully',
       data: {
         form_id: formSubmissionId,
+        form_reference: formReference,  // ⭐ INCLUDE IN RESPONSE
         form_type_id: form_type_id,
         form_type: 'bibeneficiary_restoration',
         location_status: applies_to_location,
@@ -1798,7 +1756,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
     res.json(responseData);
 
   } catch (error) {
-    // Rollback transaction if connection exists
     if (conn) {
       try {
         await conn.rollback();
@@ -1812,7 +1769,6 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
     console.error('❌ Stack trace:', error.stack);
     console.error(`Processing time: ${processingTime}ms`);
 
-    // Handle specific error types
     let errorResponse = {
       success: false,
       error: "Bi-beneficiary restoration form submission failed due to server error",
@@ -1842,12 +1798,234 @@ router.post('/bibeneficiary-restoration/submit', async (req, res) => {
     res.status(500).json(errorResponse);
 
   } finally {
-    // Always release connection
     if (conn) {
       try {
         conn.release();
       } catch (releaseError) {
         console.error("❌ Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
+// ========================================
+// DLB 
+// ========================================
+router.post('/legal-beneficiary/submit', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
+  try {
+    const dbHealthy = await checkDatabaseHealth();
+    if (!dbHealthy) {
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable. Please try again later.",
+        code: 'DB_UNAVAILABLE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const pool = getPool();
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const { 
+      user_id, 
+      longitude, 
+      latitude, 
+      requirements, 
+      location_metadata 
+    } = req.body;
+
+    const form_type_id = 1; // Legal Beneficiary form type
+
+    if (!user_id || !requirements || !Array.isArray(requirements)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: user_id and requirements array',
+        code: 'MISSING_FIELDS',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Extract applicant_type from requirements
+    const applicantTypeReq = requirements.find(r => r.requirement_type === 'applicant_type');
+    if (!applicantTypeReq || !applicantTypeReq.value) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required field: applicant_type',
+        code: 'MISSING_APPLICANT_TYPE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const applicantType = applicantTypeReq.value;
+    const validApplicantTypes = ['spouse', 'child', 'sibling', 'parent'];
+    
+    if (!validApplicantTypes.includes(applicantType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid applicant_type. Must be one of: ${validApplicantTypes.join(', ')}`,
+        code: 'INVALID_APPLICANT_TYPE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Validate and process location data
+    let finalLongitude = null;
+    let finalLatitude = null;
+
+    if (longitude !== null && longitude !== undefined && longitude !== '') {
+      finalLongitude = Number(longitude);
+      if (isNaN(finalLongitude) || finalLongitude < -180 || finalLongitude > 180) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid longitude value. Must be between -180 and 180',
+          code: 'INVALID_LONGITUDE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
+    if (latitude !== null && latitude !== undefined && latitude !== '') {
+      finalLatitude = Number(latitude);
+      if (isNaN(finalLatitude) || finalLatitude < -90 || finalLatitude > 90) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid latitude value. Must be between -90 and 90',
+          code: 'INVALID_LATITUDE',
+          processingTime: `${Date.now() - startTime}ms`
+        });
+      }
+    }
+
+    // Insert into main form_submission table
+    const [submissionResult] = await conn.execute(
+      `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, status, submitted_at) 
+       VALUES (?, ?, ?, ?, ?, NOW())`,
+      [user_id, form_type_id, finalLongitude, finalLatitude, 'p']
+    );
+
+    const formSubmissionId = submissionResult.insertId;
+
+    // Generate and update form reference
+    const formReference = generateFormReference(form_type_id, formSubmissionId);
+    await conn.execute(
+      'UPDATE form_submission SET form_reference = ? WHERE id = ?',
+      [formReference, formSubmissionId]
+    );
+
+    // Determine the requirements table based on applicant_type
+    const requirementsTableMap = {
+      'spouse': 'dlb_spouse_requirements',
+      'child': 'dlb_child_requirements',
+      'sibling': 'dlb_sibling_requirements',
+      'parent': 'dlb_parent_requirements'
+    };
+
+    const requirementsTable = requirementsTableMap[applicantType];
+
+    // Filter out applicant_type from requirements before inserting
+    const requirementsToInsert = requirements.filter(r => r.requirement_type !== 'applicant_type');
+
+    // Insert all requirements (excluding applicant_type) into the applicant-specific table
+    for (const requirement of requirementsToInsert) {
+      const { requirement_type, value, file_url, file_key, file_type } = requirement;
+
+      if (!requirement_type) {
+        throw new Error('requirement_type is required for all requirements');
+      }
+
+      await conn.execute(
+        `INSERT INTO ${requirementsTable} (form_id, requirement_type, value, file_url, file_key, file_type) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          formSubmissionId, 
+          requirement_type, 
+          value || null, 
+          file_url || null, 
+          file_key || null, 
+          file_type || null
+        ]
+      );
+    }
+
+    await conn.commit();
+
+    const processingTime = Date.now() - startTime;
+
+    const responseData = {
+      success: true,
+      message: 'Legal Beneficiary form submitted successfully',
+      data: {
+        form_id: formSubmissionId,
+        form_reference: formReference,
+        form_type_id: form_type_id,
+        requirements_table: requirementsTable,
+        location: {
+          longitude: finalLongitude,
+          latitude: finalLatitude,
+          accuracy: location_metadata?.accuracy,
+          timestamp: location_metadata?.timestamp,
+          was_recorded: finalLongitude !== null && finalLatitude !== null
+        }
+      },
+      meta: {
+        processingTime: `${processingTime}ms`,
+        submissionTime: new Date().toISOString()
+      }
+    };
+
+    res.json(responseData);
+
+  } catch (error) {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackError) {
+        console.error("Rollback error:", rollbackError);
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+    console.error('❌ Error submitting Legal Beneficiary form:', error);
+    console.error('❌ Stack trace:', error.stack);
+    console.error(`Processing time: ${processingTime}ms`);
+
+    let errorResponse = {
+      success: false,
+      error: "Form submission failed due to server error",
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
+    };
+
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      errorResponse.error = "Database connection failed. Please try again later.";
+      errorResponse.code = 'DB_CONNECTION_ERROR';
+      return res.status(503).json(errorResponse);
+    }
+
+    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
+      errorResponse.error = "Database access denied. Please contact system administrator.";
+      errorResponse.code = 'DB_ACCESS_ERROR';
+      return res.status(503).json(errorResponse);
+    }
+
+    if (error.code === 'ER_NO_SUCH_TABLE') {
+      errorResponse.error = "Database table configuration error. Please contact system administrator.";
+      errorResponse.code = 'DB_TABLE_ERROR';
+      return res.status(500).json(errorResponse);
+    }
+
+    res.status(500).json(errorResponse);
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
       }
     }
   }

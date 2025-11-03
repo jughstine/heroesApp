@@ -7,7 +7,8 @@ const {
   sendFormDenialNotification,
   sendAdminNotesNotification
 } = require('../services/pushNotificationService');
-
+const multer = require('multer');
+const { Client } = require('minio');
 
 const SORT_COLUMN_MAP = {
   'id': 'fs.id',
@@ -18,6 +19,27 @@ const SORT_COLUMN_MAP = {
 };
 
 router.use(authenticateAdminToken);
+const upload = multer({
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit for PDFs
+  },
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed for resolution documents'), false);
+    }
+  }
+});
+
+const minioClient = new Client({
+  endPoint: process.env.SPACES_ENDPOINT.replace('https://', ''),
+  port: 443,
+  useSSL: true,
+  accessKey: process.env.SPACES_KEY,
+  secretKey: process.env.SPACES_SECRET,
+});
 
 const RESTORATION_TABLES = [
   'rst_widow_requirements',
@@ -109,7 +131,6 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
     return { 
       requirements, 
       tableName: 'rsm_requirements',
-      rst_subtype: null
     };
   } else if (formTypeId === 3) {
     const { tableName, subtype } = await getRestorationTableForForm(pool, formId);    
@@ -121,6 +142,15 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
       requirements, 
       tableName,
       rst_subtype: subtype
+    };
+  } else if (formTypeId === 4) {
+    const [requirements] = await pool.execute(
+      'SELECT * FROM top_requirements WHERE form_id = ? ORDER BY requirement_type',
+      [formId]
+    );
+    return { 
+      requirements, 
+      tableName: 'top_requirements',
     };
   } else if (formTypeId === 1) {
     const { tableName, subtype } = await getDlbForForm(pool, formId);    
@@ -963,43 +993,61 @@ router.get('/export/bulk', async (req, res) => {
         fs.submitted_at,
         fs.longitude,
         fs.latitude,
-        ft.name as form_type_name,
+        ft.name AS form_type_name,
         p.source_table,
+        p.b_type,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
-        END as FIRSTNAME,
+        END AS FIRSTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
-        END as LASTNAME,
+        END AS LASTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
+          WHEN p.source_table = 'beneficiaries_table' THEN 
+            CASE 
+              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              THEN CONCAT('O-', b.AFPSN)
+              ELSE b.AFPSN
+            END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
-        END as AFPSN,
+        END AS AFPSN,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
-        END as PENRANK,
+        END AS PENRANK,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
-        END as DOB,
+        END AS DOB,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
-        END as TYPE,
-        p.b_type,
+        END AS TYPE,
+
         CASE 
           WHEN p.bos = 'AR' THEN 'Philippine Army'
           WHEN p.bos = 'AF' THEN 'Philippine Air Force'
@@ -1007,12 +1055,17 @@ router.get('/export/bulk', async (req, res) => {
           WHEN p.bos = 'PC' THEN 'Philippine Constabulary'
           ELSE p.bos
         END AS bos
+
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN test_table t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
+      LEFT JOIN test_res_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b 
+        ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
       ORDER BY fs.submitted_at DESC
     `, queryParams);
@@ -1024,12 +1077,13 @@ router.get('/export/bulk', async (req, res) => {
     // Separate forms by type
     const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
     const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
+    const transferFormIds = forms.filter(f => f.form_type_id === 4).map(f => f.id);
     const restorationFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
-    const albFormIds = forms.filter(f => f.form_type_id === 1).map(f => f.id);
+    const dlbFormIds = forms.filter(f => f.form_type_id === 1).map(f => f.id);
 
     const requirementMap = {};
 
-    // Get requirements from upd_requirements table (for form types 1, 5, and other regular forms)
+    // --- Get requirements for all types of forms ---
     if (regularFormIds.length > 0) {
       const placeholders = regularFormIds.map(() => '?').join(',');
       const [requirements] = await pool.execute(`
@@ -1040,14 +1094,11 @@ router.get('/export/bulk', async (req, res) => {
       `, regularFormIds);
 
       requirements.forEach(req => {
-        if (!requirementMap[req.form_id]) {
-          requirementMap[req.form_id] = {};
-        }
+        if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
     }
 
-    // Get requirements from rsm_requirements table (for resumption forms)
     if (resumptionFormIds.length > 0) {
       const placeholders = resumptionFormIds.map(() => '?').join(',');
       const [rsmRequirements] = await pool.execute(`
@@ -1058,18 +1109,29 @@ router.get('/export/bulk', async (req, res) => {
       `, resumptionFormIds);
 
       rsmRequirements.forEach(req => {
-        if (!requirementMap[req.form_id]) {
-          requirementMap[req.form_id] = {};
-        }
+        if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
     }
 
-    // Get requirements from form type 3 tables (for reinstatement forms)
+    if (transferFormIds.length > 0) {
+      const placeholders = transferFormIds.map(() => '?').join(',');
+      const [topRequirements] = await pool.execute(`
+        SELECT form_id, requirement_type, value
+        FROM top_requirements
+        WHERE form_id IN (${placeholders})
+          AND requirement_type IN ('mobile_number')
+      `, transferFormIds);
+
+      topRequirements.forEach(req => {
+        if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
+        requirementMap[req.form_id][req.requirement_type] = req.value;
+      });
+    }
+
     for (const formId of restorationFormIds) {
       const result = await getRestorationTableForForm(pool, formId);
       const tableName = result.tableName;
-      
       try {
         const [type3Requirements] = await pool.execute(`
           SELECT form_id, requirement_type, value
@@ -1077,11 +1139,8 @@ router.get('/export/bulk', async (req, res) => {
           WHERE form_id = ?
             AND requirement_type IN ('home_address', 'mobile_number')
         `, [formId]);
-
         type3Requirements.forEach(req => {
-          if (!requirementMap[req.form_id]) {
-            requirementMap[req.form_id] = {};
-          }
+          if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
           requirementMap[req.form_id][req.requirement_type] = req.value;
         });
       } catch (tableError) {
@@ -1089,11 +1148,9 @@ router.get('/export/bulk', async (req, res) => {
       }
     }
 
-    // Get requirements from dlb tables (for dlb forms)
-    for (const formId of albFormIds) {
+    for (const formId of dlbFormIds) {
       const result = await getDlbForForm(pool, formId);
       const tableName = result.tableName;
-      
       try {
         const [dlbRequirements] = await pool.execute(`
           SELECT form_id, requirement_type, value
@@ -1101,11 +1158,8 @@ router.get('/export/bulk', async (req, res) => {
           WHERE form_id = ?
             AND requirement_type IN ('home_address', 'mobile_number')
         `, [formId]);
-
         dlbRequirements.forEach(req => {
-          if (!requirementMap[req.form_id]) {
-            requirementMap[req.form_id] = {};
-          }
+          if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
           requirementMap[req.form_id][req.requirement_type] = req.value;
         });
       } catch (tableError) {
@@ -1113,10 +1167,11 @@ router.get('/export/bulk', async (req, res) => {
       }
     }
 
+    // Combine form + requirement data
     const exportData = forms.map(form => ({
       ...form,
       home_address: requirementMap[form.id]?.home_address || '',
-      mobilenr: requirementMap[form.id]?.mobile_number || ''
+      mobilenr: requirementMap[form.id]?.mobile_number || '',
     }));
 
     res.json({ success: true, data: exportData });
@@ -1202,76 +1257,102 @@ router.get('/status/:status', async (req, res) => {
     if (!['p', 'a', 'd'].includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)'
+        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)',
       });
     }
 
     const [rows] = await pool.execute(`
       SELECT 
         fs.*,
-        ft.name as form_type_name,
-        u.email as user_email,
+        ft.name AS form_type_name,
+        u.email AS user_email,
         u.profile_picture,
         u.status_updated_at,
         p.source_table,
+        p.type AS pensioner_type,
+        p.b_type,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
-        END as FIRSTNAME,
+        END AS FIRSTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
-        END as LASTNAME,
+        END AS LASTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
-        END as MIDDLENAME,
+        END AS MIDDLENAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
-        END as SUFFIX,
+        END AS SUFFIX,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
+          WHEN p.source_table = 'beneficiaries_table' THEN 
+            CASE 
+              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              THEN CONCAT('O-', b.AFPSN)
+              ELSE b.AFPSN
+            END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
-        END as AFPSN,
+        END AS AFPSN,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
-        END as PENRANK,
+        END AS PENRANK,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
-        END as DOB,
+        END AS DOB,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
-        END as TYPE,
-        p.type as pensioner_type,
-        p.b_type
+        END AS TYPE
+
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN test_table t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
+      LEFT JOIN test_res_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b 
+        ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.status = ?
       ORDER BY fs.submitted_at DESC
     `, [status]);
 
     const statusNames = {
-      'p': 'pending',
-      'a': 'approved', 
-      'd': 'denied'
+      p: 'pending',
+      a: 'approved',
+      d: 'denied',
     };
 
     res.json({
@@ -1279,15 +1360,15 @@ router.get('/status/:status', async (req, res) => {
       data: {
         status: statusNames[status],
         count: rows.length,
-        submissions: rows
-      }
+        submissions: rows,
+      },
     });
 
   } catch (error) {
     console.error('Error fetching forms by status:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch forms by status' 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch forms by status',
     });
   }
 });
@@ -1314,18 +1395,22 @@ router.get('/location/:location_status', async (req, res) => {
         p.source_table,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX
       FROM form_submission fs
@@ -1334,6 +1419,7 @@ router.get('/location/:location_status', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.location = ?
       ORDER BY fs.submitted_at DESC
     `, [location_status]);
@@ -1367,16 +1453,13 @@ router.get('/:form_id', async (req, res) => {
     const pool = getPool();
     const { form_id } = req.params;
     
+    // Validate form_id
     if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid form ID' 
-      });
+      return res.status(400).json({ success: false, error: 'Invalid form ID' });
     }
-    
+
     const formId = parseInt(form_id);
-    
-    // Get source_table
+
     const [formBasicInfo] = await pool.execute(`
       SELECT 
         fs.id,
@@ -1388,97 +1471,111 @@ router.get('/:form_id', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       WHERE fs.id = ?
     `, [formId]);
-    
+
     if (formBasicInfo.length === 0) {
       return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
-    
+
     const sourceTable = formBasicInfo[0].source_table || 'test_table';
-    
-    // ✅ Allow beneficiaries_table too
+
     if (!['test_table', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
       console.error(`Invalid source_table: ${sourceTable} for form ${formId}`);
       return res.status(500).json({ success: false, error: 'Invalid source table configuration' });
     }
-    
-    // Main data query
+
     const [submissionRows] = await pool.execute(`
       SELECT 
         fs.*,
-        fs.location as location_status,
-        ft.name as form_type_name,
-        u.email as user_email,
+        fs.location AS location_status,
+        ft.name AS form_type_name,
+        u.email AS user_email,
         u.profile_picture,
         u.status_updated_at,
+        u.created_at AS user_created_at,
         p.source_table,
+        p.type AS pensioner_type,
+        p.b_type,
+
+        -- Name details
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
-        END as FIRSTNAME,
+        END AS FIRSTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
-        END as LASTNAME,
+        END AS LASTNAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
-        END as MIDDLENAME,
+        END AS MIDDLENAME,
+
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
-        END as SUFFIX,
+        END AS SUFFIX,
+
+        -- AFPSN (with officer prefix logic)
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
           WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
-        END as AFPSN,
+        END AS AFPSN,
+
+        -- Rank
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
-        END as PENRANK,
+        END AS PENRANK,
+
+        -- Date of birth
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
-        END as DOB,
+        END AS DOB,
+
+        -- Type
         CASE 
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
-        END as TYPE,
-        p.type as pensioner_type,
-        p.b_type,
-        u.created_at as user_created_at
+        END AS TYPE
+
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
-      LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
+      LEFT JOIN test_table t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
+      LEFT JOIN test_res_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN beneficiaries_table b 
+        ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.id = ?
     `, [formId]);
-    
+
     if (submissionRows.length === 0) {
       return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
-    
+
     const submission = submissionRows[0];
-        
+
     const formattedAFPSN =
       submission.PENRANK &&
       ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO'].includes(submission.PENRANK)
         ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
         : submission.AFPSN;
 
-    // ✅ Get requirements (unchanged)
     const result = await getFormRequirements(pool, formId, submission.form_type_id);
-    
+
     const formData = {
       ...submission,
       AFPSN: formattedAFPSN,
@@ -1491,12 +1588,12 @@ router.get('/:form_id', async (req, res) => {
       location: {
         longitude: submission.longitude,
         latitude: submission.latitude,
-        status: submission.location
+        status: submission.location_status
       }
     };
-        
+
     res.json({ success: true, data: formData });
-    
+
   } catch (error) {
     console.error('Error fetching admin form details:', error);
     res.status(500).json({ 
@@ -1507,8 +1604,7 @@ router.get('/:form_id', async (req, res) => {
   }
 });
 
-// FORM APPROVAL/DECLINE
-router.put('/:form_id/status', async (req, res) => {
+router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
@@ -1556,19 +1652,91 @@ router.put('/:form_id/status', async (req, res) => {
     const formTypeId = existingForm[0].form_type_id;
     const userId = existingForm[0].user_id;
 
+    // For DLB forms (form_type_id = 1), require PDF on approval
+    if (formTypeId === 1 && status === 'a' && !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Resolution PDF is required for approving Declaration of Legal Beneficiary forms'
+      });
+    }
+
+    // Declare these variables outside the transaction try block
+    let resolutionFileUrl = null;
+    let resolutionFileKey = null;
+
     await pool.query('START TRANSACTION');
 
     try {
-      const updateQuery = admin_notes !== undefined
-        ? 'UPDATE form_submission SET status = ?, admin_notes = ?, reviewed_at = NOW() WHERE id = ?'
-        : 'UPDATE form_submission SET status = ?, reviewed_at = NOW() WHERE id = ?';
+      // Handle PDF upload for DLB forms on approval
+      if (formTypeId === 1 && status === 'a' && req.file) {
+        // Get user details for filename - Join through pensioners_tbl
+        const [userDetails] = await pool.execute(
+          `SELECT 
+            COALESCE(b.FIRSTNAME, p.principal_firstname, 'User') as FIRSTNAME,
+            COALESCE(b.LASTNAME, p.principal_lastname, 'Unknown') as LASTNAME
+          FROM users_tbl u
+          LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+          LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
+          WHERE u.id = ?`,
+          [userId]
+        );
 
-      const updateParams = admin_notes !== undefined
-        ? [status, admin_notes, formId]
-        : [status, formId];
+        if (userDetails.length === 0) {
+          throw new Error('User not found in users_tbl');
+        }
+
+        const user = userDetails[0];
+        const lastName = user.LASTNAME || 'Unknown';
+        const firstName = user.FIRSTNAME || 'User';
+        const timestamp = Date.now();
+        const fileName = `resolutions/${timestamp}-${lastName}_${firstName}_DLB_Resolution.pdf`;
+        
+        // Upload to DigitalOcean Spaces
+        await minioClient.putObject(
+          process.env.SPACES_BUCKET,
+          fileName,
+          req.file.buffer,
+          req.file.size,
+          {
+            'Content-Type': 'application/pdf',
+            'x-amz-acl': 'public-read',
+            'x-amz-meta-original-name': `${lastName}_${firstName}_DLB_Resolution.pdf`,
+            'x-amz-meta-upload-timestamp': timestamp.toString(),
+            'x-amz-meta-form-id': formId.toString(),
+            'x-amz-meta-user-id': userId.toString(),
+            'x-amz-meta-uploaded-by': adminId.toString()
+          }
+        );
+
+        resolutionFileUrl = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
+        resolutionFileKey = fileName;
+      }
+
+      let updateQuery = 'UPDATE form_submission SET status = ?, reviewed_at = NOW()';
+      let updateParams = [status];
+
+      if (admin_notes !== undefined) {
+        updateQuery += ', admin_notes = ?';
+        updateParams.push(admin_notes);
+      }
+
+      if (resolutionFileUrl) {
+        updateQuery += ', resolution_file_url = ?, resolution_file_key = ?';
+        updateParams.push(resolutionFileUrl, resolutionFileKey);
+      }
+
+      updateQuery += ' WHERE id = ?';
+      updateParams.push(formId);
 
       await pool.execute('SET @current_admin_id = ?', [adminId]);
       await pool.execute(updateQuery, updateParams);
+
+      if (formTypeId === 1 && status === 'a') {
+        await pool.execute(
+          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
+          ['AFB2', userId]
+        );
+      }
 
       // Conditional approval: If form type is 3 (Restoration) and status is approved
       if (formTypeId === 3 && status === 'a') {
@@ -1579,6 +1747,13 @@ router.put('/:form_id/status', async (req, res) => {
       }
 
       if (formTypeId === 2 && status === 'a') {
+        await pool.execute(
+          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
+          ['FOR_PAYROLL', userId]
+        );
+      }
+
+      if (formTypeId === 4 && status === 'a') {
         await pool.execute(
           'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
           ['FOR_PAYROLL', userId]
@@ -1625,6 +1800,23 @@ router.put('/:form_id/status', async (req, res) => {
           const result = await getDlbForForm(pool, formId);
           const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
+          
+          // Delete resolution file from Spaces if exists
+          const [formData] = await pool.execute(
+            'SELECT resolution_file_key FROM form_submission WHERE id = ?',
+            [formId]
+          );
+          if (formData[0]?.resolution_file_key) {
+            try {
+              await minioClient.removeObject(
+                process.env.SPACES_BUCKET,
+                formData[0].resolution_file_key
+              );
+              console.log('✅ Deleted resolution file:', formData[0].resolution_file_key);
+            } catch (deleteErr) {
+              console.error('⚠️ Error deleting resolution file (continuing anyway):', deleteErr.message);
+            }
+          }
         }
          else if (formTypeId === 5) {
           await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
@@ -1661,6 +1853,9 @@ router.put('/:form_id/status', async (req, res) => {
         form_type_id: formTypeId,
         notification_sent: notificationResult.success,
         notification_error: notificationResult.error || null,
+        resolution_uploaded: !!resolutionFileUrl,
+        resolution_file_url: resolutionFileUrl,
+        resolution_file_key: resolutionFileKey,
         updated_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
@@ -1676,11 +1871,39 @@ router.put('/:form_id/status', async (req, res) => {
       res.json(response);
     } catch (transactionError) {
       await pool.execute('ROLLBACK');
+      
+      // Clean up uploaded file if transaction failed
+      if (resolutionFileKey) {
+        try {
+          await minioClient.removeObject(
+            process.env.SPACES_BUCKET,
+            resolutionFileKey
+          );
+          console.log('🧹 Cleaned up file after transaction failure:', resolutionFileKey);
+        } catch (cleanupErr) {
+          console.error('⚠️ Error cleaning up file:', cleanupErr.message);
+        }
+      }
+      
       throw transactionError;
     }
   } catch (error) {
     console.error('Error updating form status:', error);
-    res.status(500).json({ success: false, error: 'Failed to update form status' });
+    
+    // Handle multer errors
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'PDF file too large. Maximum size is 10MB.' 
+        });
+      }
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update form status' 
+    });
   }
 });
 

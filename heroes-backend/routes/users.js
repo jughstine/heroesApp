@@ -1137,7 +1137,6 @@ if (validationData.type === 'B') {
     pensionerId = pensionerResult.insertId;
     if (!pensionerId) throw new Error('Failed to create pensioner');
 }
-
                 // Determine initial user status
                 let initialUserStatus;
                 if (validationData.type === 'B') {

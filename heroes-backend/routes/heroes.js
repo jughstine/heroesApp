@@ -126,7 +126,7 @@ router.get('/profile', async (req, res) => {
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN test_table h ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
       LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFB', 'AFR', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFB', 'AFB2', 'AFR', 'FOR_PAYROLL')
       ORDER BY u.created_at DESC
       LIMIT 1
     `);
@@ -299,7 +299,7 @@ router.get('/profile/:userId', async (req, res) => {
       LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
       WHERE u.id = ? 
-        AND u.status IN ('ACT', 'UNV', 'AFB', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
+        AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
     `, [userId]);
 
     if (profiles.length === 0) {
@@ -441,7 +441,7 @@ router.put('/profile/:userId/picture', async (req, res) => {
     const user = users[0];
     
     // Check if user status allows profile updates
-    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'AFB', 'FOR_PAYROLL'];
+    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'AFB', 'AFB2', 'FOR_PAYROLL'];
     if (!allowedStatuses.includes(user.status)) {
       console.warn(`User status not allowed for update: userId=${userId}, status=${user.status}`);
       return res.status(403).json({
@@ -528,7 +528,7 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
       AND fs.status IN ('p', 'a', 'd') 
       ORDER BY fs.submitted_at DESC
     `);
@@ -570,6 +570,7 @@ router.get('/submissions', async (req, res) => {
   }
 });
 
+// Get user submissions endpoint
 router.get('/submissions/:userId', async (req, res) => {
   const startTime = Date.now();
   const poolInstance = getPool(); 
@@ -606,7 +607,7 @@ router.get('/submissions/:userId', async (req, res) => {
       SELECT u.id, p.source_table
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
     `, [userId]);
 
     if (userExists.length === 0) {
@@ -618,7 +619,7 @@ router.get('/submissions/:userId', async (req, res) => {
       });
     }
 
-    // Query for specific user's submissions with UTC timezone conversion
+    // Query for specific user's submissions with UTC timezone conversion AND download count
     const [submissions] = await conn.query(`
       SELECT 
         fs.id,
@@ -628,7 +629,13 @@ router.get('/submissions/:userId', async (req, res) => {
         CONVERT_TZ(fs.reviewed_at, @@session.time_zone, '+00:00') as reviewed_at,
         fs.admin_notes,
         fs.latitude,
-        fs.longitude
+        fs.longitude,
+        CASE 
+          WHEN fs.resolution_file_url IS NOT NULL AND fs.resolution_file_url != '' 
+          THEN TRUE 
+          ELSE FALSE 
+        END as has_resolution_file,
+        COALESCE(fs.resolution_download_count, 0) as resolution_download_count
       FROM form_submission fs
       WHERE fs.user_id = ?
       AND fs.status IN ('p', 'a', 'd')
@@ -643,7 +650,9 @@ router.get('/submissions/:userId', async (req, res) => {
         : null,
       reviewed_at: submission.reviewed_at
         ? new Date(submission.reviewed_at).toISOString()
-        : null
+        : null,
+      has_resolution_file: Boolean(submission.has_resolution_file),
+      resolution_download_count: submission.resolution_download_count || 0
     }));
 
     const processingTime = Date.now() - startTime;
@@ -682,6 +691,153 @@ router.get('/submissions/:userId', async (req, res) => {
     }
   }
 });
+
+// secure download resolution file
+router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
+  const startTime = Date.now();
+  const poolInstance = getPool(); 
+  let conn = null; 
+
+  try {
+    const submissionId = req.params.submissionId;
+    const userId = req.query.userId;
+    
+    // Validate parameters
+    if (isNaN(submissionId) || submissionId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid submission ID provided",
+        code: 'INVALID_SUBMISSION_ID',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    if (!userId || isNaN(userId) || userId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+        code: 'USER_ID_REQUIRED',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    conn = await poolInstance.getConnection();
+    
+    // Start transaction to ensure atomic operations
+    await conn.beginTransaction();
+    
+    // Verify the submission belongs to the user and get current download count
+    // SECURITY: Only allow access for APPROVED (status = 'a') Declaration forms (form_type_id = 1)
+    const [submissions] = await conn.query(`
+      SELECT 
+        fs.id,
+        fs.user_id,
+        fs.form_type_id,
+        fs.status,
+        fs.resolution_file_url,
+        COALESCE(fs.resolution_download_count, 0) as download_count
+      FROM form_submission fs
+      WHERE fs.id = ? 
+        AND fs.user_id = ?
+        AND fs.form_type_id = 1
+        AND fs.status = 'a'
+    `, [submissionId, userId]);
+
+    if (submissions.length === 0) {
+      await conn.rollback();
+      return res.status(403).json({
+        success: false,
+        error: "Resolution file is only available for approved declarations",
+        code: 'ACCESS_DENIED',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const submission = submissions[0];
+    const currentDownloadCount = submission.download_count;
+
+    // Check if download limit exceeded
+    if (currentDownloadCount >= 1) {
+      await conn.rollback();
+      return res.status(403).json({
+        success: false,
+        error: "Download limit reached. You can only download this file once.",
+        code: 'DOWNLOAD_LIMIT_EXCEEDED',
+        downloadCount: currentDownloadCount,
+        maxDownloads: 1,
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Check if resolution file exists
+    if (!submission.resolution_file_url) {
+      await conn.rollback();
+      return res.status(404).json({
+        success: false,
+        error: "Resolution file not available for this submission",
+        code: 'NO_RESOLUTION_FILE',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Increment download count
+    await conn.query(`
+      UPDATE form_submission 
+      SET resolution_download_count = resolution_download_count + 1
+      WHERE id = ?
+    `, [submissionId]);
+
+    // Commit transaction
+    await conn.commit();
+
+    const newDownloadCount = currentDownloadCount + 1;
+    const remainingDownloads = 2 - newDownloadCount;
+    
+    res.json({
+      success: true,
+      data: {
+        submissionId: submission.id,
+        fileUrl: submission.resolution_file_url,
+        downloadCount: newDownloadCount,
+        remainingDownloads: remainingDownloads
+      },
+      message: remainingDownloads > 0 
+        ? `You have ${remainingDownloads} download(s) remaining.`
+        : 'This is your last download.',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } catch (error) {
+    // Rollback transaction on error
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackError) {
+        console.error("Rollback error:", rollbackError);
+      }
+    }
+
+    console.error("=== RESOLUTION FILE DOWNLOAD ERROR ===");
+    console.error("Error details:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to retrieve resolution file",
+      code: 'RESOLUTION_FILE_ERROR',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
 // Form types reference endpoint
 router.get('/form-types', async (req, res) => {
   try {
@@ -748,7 +904,7 @@ router.put('/push-token/:userId', async (req, res) => {
 
     // Verify user exists
     const [users] = await conn.query(
-      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'FOR_PAYROLL')",
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'AFB', 'AFB2', 'FOR_PAYROLL')",
       [userId]
     );
 

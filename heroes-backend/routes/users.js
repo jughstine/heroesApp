@@ -5,10 +5,30 @@ const rateLimit = require("express-rate-limit");
 const validator = require("validator");
 const router = express.Router();
 const { getConnection, executeQuery, healthCheck, testConnection, logger } = require('../config/database');
+const nodemailer = require('nodemailer');
+require('dotenv').config();
 
 const TOKEN_EXPIRY_HOURS = 2;
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 100;
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST, 
+  port: process.env.SMTP_PORT || 587,
+  secure: false, 
+  auth: {
+    user: process.env.SMTP_USER, 
+    pass: process.env.SMTP_PASS 
+  }
+});
+
+transporter.verify((error, success) => {
+  if (error) {
+    logger.error('SMTP configuration error:', error);
+  } else {
+    logger.info('SMTP server is ready to send emails');
+  }
+});
 
 router.get("/", async (req, res) => {
     res.json({
@@ -292,7 +312,6 @@ const cleanupExpiredTokens = async () => {
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
-
 const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
 
 function normalizeAfpsnForMatching(afpsn) {
@@ -1342,7 +1361,6 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
     }
 });
 
-
 // Logout endpoint
 router.post("/logout", async (req, res) => {
     try {
@@ -1711,6 +1729,538 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
     }
 });
 
+// ==================== RESET PASSWORD ROUTES ====================
+router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+  let connection = null;
+
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: "Email is required",
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+
+    if (!validator.isEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid email format",
+        code: 'INVALID_EMAIL_FORMAT'
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if user exists
+    const users = await executeQuery(
+      'SELECT id, email FROM users_tbl WHERE email = ? AND deleted_at IS NULL',
+      [normalizedEmail]
+    );
+
+    // Return same response whether user exists or not (security best practice)
+    if (users.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "If an account exists with this email, a reset code has been sent.",
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    const user = users[0];
+    connection = await getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      // Check for recent code requests (rate limiting)
+      const [recentCodes] = await connection.execute(
+        `SELECT created_at FROM password_resets 
+         WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+         ORDER BY created_at DESC LIMIT 1`,
+        [user.id]
+      );
+
+      if (recentCodes.length > 0) {
+        await connection.rollback();
+        return res.status(429).json({
+          success: false,
+          error: "Please wait 1 minute before requesting another code",
+          code: 'RATE_LIMITED'
+        });
+      }
+
+      // Invalidate all previous unused codes for this user
+      await connection.execute(
+        'UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0',
+        [user.id]
+      );
+
+      // Generate 5-digit code
+      const resetCode = crypto.randomInt(10000, 99999).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+      // Store reset code
+      await connection.execute(
+        `INSERT INTO password_resets (user_id, code, expires_at) 
+         VALUES (?, ?, ?)`,
+        [user.id, resetCode, expiresAt]
+      );
+
+      await connection.commit();
+
+      // Send email with reset code
+      const mailOptions = {
+        from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+        to: user.email,
+        subject: 'Password Reset Code',
+        html: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="UTF-8">
+            <style>
+                body {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                line-height: 1.6;
+                color: #222;
+                background-color: #e5e7eb;
+                margin: 0;
+                padding: 0;
+                }
+
+                .container {
+                max-width: 600px;
+                margin: 40px auto;
+                background: #ffffff;
+                border-radius: 10px;
+                overflow: hidden;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                }
+
+                .header {
+                background: linear-gradient(135deg, #1e3a2a 0%, #2f5233 100%);
+                color: white;
+                padding: 25px 20px;
+                text-align: center;
+                border-bottom: 5px solid #c9b458;
+                }
+
+                .header img {
+                width: 90px;
+                height: auto;
+                margin-bottom: 10px;
+                }
+
+                .header h1 {
+                margin: 0;
+                font-size: 22px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                }
+
+                .content {
+                padding: 30px;
+                background-color: #f9fafb;
+                }
+
+                .code-box {
+                background: white;
+                border: 2px dashed #2f5233;
+                padding: 20px;
+                text-align: center;
+                margin: 20px 0;
+                border-radius: 8px;
+                }
+
+                .code {
+                font-size: 36px;
+                font-weight: bold;
+                color: #1e3a2a;
+                letter-spacing: 8px;
+                font-family: 'Courier New', monospace;
+                }
+
+                .warning {
+                background: #fff3cd;
+                border-left: 5px solid #b38f00;
+                padding: 12px 16px;
+                margin: 25px 0;
+                border-radius: 6px;
+                font-size: 14px;
+                }
+
+                .footer {
+                text-align: center;
+                color: #6b7280;
+                font-size: 12px;
+                padding: 15px;
+                background: #f3f4f6;
+                border-top: 1px solid #e5e7eb;
+                }
+
+                strong {
+                color: #111827;
+                }
+            </style>
+            </head>
+            <body>
+            <div class="container">
+                <div class="header">
+                <!-- Replace with your local image (same folder) -->
+                <img src="https://psahelpline.ph/img/ecert/afp/PGMC.png" alt="AFP Logo" />
+                <h1>Password Change Request</h1>
+                </div>
+
+                <div class="content">
+                <p>Dear Pensioner,</p>
+                <p>You have submitted a password change request.</p>
+                <p>Use the verification code below to reset your password:</p>
+
+                <div class="code-box">
+                    <div class="code">${resetCode}</div>
+                    <p style="margin: 10px 0 0; color: #666; font-size: 14px;">
+                    This code will expire in <strong>10 minutes</strong>.
+                    </p>
+                </div>
+
+                <p>If you did not request this code, you can safely ignore this email — your password will remain unchanged. <strong>Do not give this code to anyone</strong></p>
+
+                <p>Respectfully,<br><strong>AFP Pension and Gratuity Management Center Team</strong></p>
+                </div>
+
+                <div class="footer">
+                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
+                </div>
+            </div>
+            </body>
+            </html>
+        `
+      };
+
+      // Send email asynchronously (don't wait for it)
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          logger.error('Email sending failed:', error);
+        } else {
+          logger.info('Reset code email sent:', info.messageId);
+        }
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "If an account exists with this email, a reset code has been sent.",
+        processingTime: `${Date.now() - startTime}ms`
+      });
+
+    } catch (error) {
+      if (connection) await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    logger.error("Forgot password error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Unable to process password reset request",
+      code: 'PASSWORD_RESET_FAILED',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } finally {
+    if (connection) {
+      try {
+        connection.release();
+      } catch (e) {
+        logger.error('Connection release failed:', e);
+      }
+    }
+  }
+});
+
+router.post("/verify-reset-code", sanitizeInput, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({
+        success: false,
+        error: "Email and code are required",
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Find valid reset code
+    const resets = await executeQuery(
+      `SELECT pr.id, pr.user_id, pr.expires_at 
+       FROM password_resets pr
+       JOIN users_tbl u ON pr.user_id = u.id
+       WHERE u.email = ? AND pr.code = ? AND pr.used = 0
+       ORDER BY pr.created_at DESC LIMIT 1`,
+      [normalizedEmail, code]
+    );
+
+    if (resets.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid or expired reset code",
+        code: 'INVALID_CODE'
+      });
+    }
+
+    const reset = resets[0];
+    const now = new Date();
+    const expiresAt = new Date(reset.expires_at);
+
+    if (now > expiresAt) {
+      return res.status(400).json({
+        success: false,
+        error: "Reset code has expired",
+        code: 'CODE_EXPIRED'
+      });
+    }
+
+    // Code is valid
+    res.status(200).json({
+      success: true,
+      message: "Code verified successfully",
+      data: {
+        resetId: reset.id,
+        userId: reset.user_id
+      },
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } catch (error) {
+    logger.error("Verify code error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Unable to verify reset code",
+      code: 'VERIFICATION_FAILED',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+  }
+});
+
+router.post("/reset-password", sanitizeInput, validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+  let connection = null;
+
+  try {
+    const { email, code, newPassword } = req.body;
+
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: "Email, code, and new password are required",
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePasswordStrength(newPassword);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: "Weak password",
+        details: passwordValidation.errors,
+        code: 'PASSWORD_TOO_WEAK'
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    connection = await getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      // Find and validate reset code
+      const [resets] = await connection.execute(
+        `SELECT pr.id, pr.user_id, pr.expires_at, u.password_hash
+         FROM password_resets pr
+         JOIN users_tbl u ON pr.user_id = u.id
+         WHERE u.email = ? AND pr.code = ? AND pr.used = 0
+         FOR UPDATE`,
+        [normalizedEmail, code]
+      );
+
+      if (resets.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          error: "Invalid or expired reset code",
+          code: 'INVALID_CODE'
+        });
+      }
+
+      const reset = resets[0];
+      const now = new Date();
+      const expiresAt = new Date(reset.expires_at);
+
+      if (now > expiresAt) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          error: "Reset code has expired",
+          code: 'CODE_EXPIRED'
+        });
+      }
+
+      // Check if new password is same as old password
+      const isSamePassword = await bcrypt.compare(newPassword, reset.password_hash);
+      if (isSamePassword) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          error: "New password must be different from your current password",
+          code: 'SAME_PASSWORD'
+        });
+      }
+
+      // Hash new password
+      const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+      // Update password
+      await connection.execute(
+        'UPDATE users_tbl SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+        [hashedPassword, reset.user_id]
+      );
+
+      // Mark reset code as used
+      await connection.execute(
+        'UPDATE password_resets SET used = 1 WHERE id = ?',
+        [reset.id]
+      );
+
+      await connection.commit();
+
+      // Send confirmation email
+      const [users] = await connection.execute(
+        'SELECT email FROM users_tbl WHERE id = ?',
+        [reset.user_id]
+      );
+
+      if (users.length > 0) {
+        const confirmationEmail = {
+          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+          to: users[0].email,
+          subject: 'Password Successfully Changed',
+          html: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                          color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+                .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+                .success-icon { font-size: 48px; text-align: center; margin: 20px 0; }
+                .warning { background: #fff3cd; border-left: 4px solid #ffc107; 
+                           padding: 12px; margin: 20px 0; }
+                .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <h1>Password Changed Successfully</h1>
+                </div>
+                <div class="content">
+                  <div class="success-icon">✅</div>
+                  <p>Hello,</p>
+                  <p>Your password has been successfully changed.</p>
+                  <p>You can now log in to your AFP Pension and Gratuity Management Center account using your new password.</p>
+
+                  <div class="warning">
+                    <strong>⚠️ Security Notice:</strong><br>
+                    If you did not make this change, please contact support immediately 
+                    as your account may be compromised.
+                  </div>
+
+                  <p style="margin-top: 30px;">
+                    <strong>Time:</strong> ${new Date().toLocaleString('en-US', { 
+                      timeZone: 'Asia/Manila',
+                      dateStyle: 'full',
+                      timeStyle: 'long'
+                    })}
+                  </p>
+
+                  <p>Best regards,<br>AFP Pension and Gratuity Management Center Team</p>
+                </div>
+                <div class="footer">
+                  <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
+                </div>
+              </div>
+            </body>
+            </html>
+          `
+        };
+
+        transporter.sendMail(confirmationEmail, (error, info) => {
+          if (error) {
+            logger.error('Confirmation email failed:', error);
+          } else {
+            logger.info('Password change confirmation sent:', info.messageId);
+          }
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Password reset successfully",
+        processingTime: `${Date.now() - startTime}ms`
+      });
+
+    } catch (error) {
+      if (connection) await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    logger.error("Reset password error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "Unable to reset password",
+      code: 'PASSWORD_RESET_FAILED',
+      processingTime: `${Date.now() - startTime}ms`
+    });
+
+  } finally {
+    if (connection) {
+      try {
+        connection.release();
+      } catch (e) {
+        logger.error('Connection release failed:', e);
+      }
+    }
+  }
+});
+
+const cleanupExpiredCodes = async () => {
+  try {
+    await executeQuery(
+      'DELETE FROM password_resets WHERE expires_at < NOW() OR (used = 1 AND created_at < DATE_SUB(NOW(), INTERVAL 24 HOUR))'
+    );
+    logger.info('Expired reset codes cleaned up');
+  } catch (error) {
+    logger.error('Cleanup failed:', error);
+  }
+};
+
+setInterval(cleanupExpiredCodes, 60 * 60 * 1000);
+
 router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
@@ -1879,7 +2429,6 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     });
   }
 });
-
 
 // ==================== PUSH NOTIFICATION ROUTES ====================
 

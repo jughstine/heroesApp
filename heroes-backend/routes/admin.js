@@ -20,7 +20,6 @@ const getPool = () => {
   return null;
 };
 
-// Database connection helper (using your existing config)
 const getDbConnection = async () => {
   return await mysql.createConnection({
     host: process.env.DB_HOST || 'localhost',
@@ -33,7 +32,6 @@ const getDbConnection = async () => {
   });
 };
 
-// Execute query helper
 const executeQuery = async (query, params = []) => {
   let connection;
   try {
@@ -50,12 +48,9 @@ const executeQuery = async (query, params = []) => {
   }
 };
 
-// Admin login endpoint (for web dashboard)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    // Validate input
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -63,7 +58,6 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Find admin in admins_tbl
     const query = `
       SELECT id, email, password_hash, name, mobile_number, role, created_at, last_login_at
       FROM admins_tbl 
@@ -82,7 +76,6 @@ router.post('/login', async (req, res) => {
 
     const admin = results[0];
 
-    // Verify password
     const isPasswordValid = await bcrypt.compare(password, admin.password_hash);
 
     if (!isPasswordValid) {
@@ -92,14 +85,12 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Update last login timestamp
     const updateLoginQuery = 'UPDATE admins_tbl SET last_login_at = NOW() WHERE id = ?';
     await executeQuery(updateLoginQuery, [admin.id]);
 
-    // Create JWT payload
     const jwtPayload = {
       adminId: admin.id,
-      id: admin.id, // Add this for compatibility
+      id: admin.id, 
       email: admin.email,
       name: admin.name,
       mobileNumber: admin.mobile_number,
@@ -108,7 +99,6 @@ router.post('/login', async (req, res) => {
       type: 'admin'
     };
 
-    // Generate JWT token
     const token = jwt.sign(
       jwtPayload, 
       process.env.JWT_SECRET,
@@ -119,7 +109,6 @@ router.post('/login', async (req, res) => {
       }
     );
 
-    // Success response
     res.json({
       success: true,
       message: 'Login successful',
@@ -146,7 +135,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Middleware to authenticate admin JWT tokens
 const authenticateAdminToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -179,7 +167,6 @@ const authenticateAdminToken = (req, res, next) => {
   });
 };
 
-// Middleware to check if admin is Super Admin
 const requireSuperAdmin = (req, res, next) => {
   if (req.admin.role !== 'S_ADMIN') {
     return res.status(403).json({
@@ -190,7 +177,6 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
-// Get current admin profile
 router.get('/profile', authenticateAdminToken, (req, res) => {
   res.json({
     success: true,
@@ -205,7 +191,6 @@ router.get('/profile', authenticateAdminToken, (req, res) => {
   });
 });
 
-// Get all admins (Super Admin only)
 router.get('/admins', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   try {
     const query = `
@@ -252,7 +237,6 @@ router.get('/nav-permissions', authenticateAdminToken, async (req, res) => {
   }
 });
 
-// Get all form types
 router.get('/form-types', authenticateAdminToken, async (req, res) => {
   try {
     const query = 'SELECT id, name FROM form_type ORDER BY name';
@@ -271,7 +255,6 @@ router.get('/form-types', authenticateAdminToken, async (req, res) => {
   }
 });
 
-// Get current admin's permissions
 router.get('/my-permissions', authenticateAdminToken, async (req, res) => {
   try {
     const adminId = req.admin.id || req.admin.adminId;
@@ -340,7 +323,6 @@ router.get('/my-permissions', authenticateAdminToken, async (req, res) => {
   }
 });
 
-// Create new admin with permissions (Super Admin only)
 router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   let connection;
   try {
@@ -448,7 +430,6 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (r
   }
 });
 
-// Get admin details with permissions
 router.get('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   try {
     const adminId = req.params.id;
@@ -500,7 +481,98 @@ router.get('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (req, 
   }
 });
 
-// Update admin permissions
+router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
+  let connection;
+  try {
+    const adminId = req.params.id;
+    const { email, password, currentPassword, role } = req.body;
+    
+    connection = await getDbConnection();
+    await connection.beginTransaction();
+
+    // If changing password, verify current one
+    if (password) {
+      if (!currentPassword) {
+        return res.status(400).json({
+          success: false,
+          error: 'Current password is required to set a new password'
+        });
+      }
+
+      const [rows] = await connection.execute(
+        'SELECT password_hash FROM admins_tbl WHERE id = ?',
+        [adminId]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Admin not found' });
+      }
+
+      const isValid = await bcrypt.compare(currentPassword, rows[0].password_hash);
+      if (!isValid) {
+        return res.status(401).json({ success: false, error: 'Current password is incorrect' });
+      }
+    }
+
+    const updates = [];
+    const values = [];
+
+    if (email) {
+      updates.push('email = ?');
+      values.push(email.trim().toLowerCase());
+    }
+
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 12);
+      updates.push('password_hash = ?');
+      values.push(hashedPassword);
+    }
+
+    if (role) {
+      updates.push('role = ?');
+      values.push(role);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, error: 'No fields to update' });
+    }
+
+    values.push(adminId);
+
+    await connection.execute(
+      `UPDATE admins_tbl SET ${updates.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      message: 'Admin settings updated successfully'
+    });
+
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Update admin settings error:', error);
+
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        error: 'Email already in use'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update admin settings'
+    });
+
+  } finally {
+    if (connection) await connection.end();
+  }
+});
+
+
 router.put('/admin/:id/permissions', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   let connection;
   try {
@@ -510,11 +582,9 @@ router.put('/admin/:id/permissions', authenticateAdminToken, requireSuperAdmin, 
     connection = await getDbConnection();
     await connection.beginTransaction();
 
-    // Delete existing permissions
     await connection.execute('DELETE FROM admin_nav_access WHERE admin_id = ?', [adminId]);
     await connection.execute('DELETE FROM admin_form_access WHERE admin_id = ?', [adminId]);
 
-    // Insert new navigation permissions
     if (navPermissions && navPermissions.length > 0) {
       const navValues = navPermissions.map(navId => `(${adminId}, ${navId})`).join(',');
       await connection.execute(
@@ -522,7 +592,6 @@ router.put('/admin/:id/permissions', authenticateAdminToken, requireSuperAdmin, 
       );
     }
 
-    // Insert new form permissions
     if (formPermissions && formPermissions.length > 0) {
       const formValues = formPermissions.map(fp => 
         `(${adminId}, ${fp.formTypeId}, ${fp.canView ? 1 : 0}, ${fp.canCreate ? 1 : 0}, ${fp.canEdit ? 1 : 0}, ${fp.canDelete ? 1 : 0})`
@@ -558,37 +627,52 @@ router.put('/admin/:id/permissions', authenticateAdminToken, requireSuperAdmin, 
   }
 });
 
-// Delete admin
 router.delete('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
+  let connection;
   try {
     const adminId = req.params.id;
     
     // Prevent deleting yourself
-    if (parseInt(adminId) === (req.admin.id || req.admin.adminId)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Cannot delete your own account' 
+    if (req.admin.id === parseInt(adminId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot delete your own account'
       });
     }
-
-    // Delete admin (cascade will handle permissions)
-    await executeQuery('DELETE FROM admins_tbl WHERE id = ?', [adminId]);
-
+    
+    connection = await getDbConnection();
+    await connection.beginTransaction();
+    
+    // Delete related records first
+    await connection.execute('DELETE FROM admin_nav_access WHERE admin_id = ?', [adminId]);
+    await connection.execute('DELETE FROM admin_form_access WHERE admin_id = ?', [adminId]);
+    
+    // Delete the admin
+    await connection.execute('DELETE FROM admins_tbl WHERE id = ?', [adminId]);
+    
+    await connection.commit();
+    
     res.json({ 
       success: true, 
-      message: 'Admin deleted successfully' 
+      message: 'Admin deleted successfully'
     });
-
   } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
     console.error('Delete admin error:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to delete admin' 
     });
+  } finally {
+    if (connection) {
+      await connection.end();
+    }
   }
 });
 
-// Get admin statistics (Super Admin only)
+
 router.get('/stats', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   try {
     const queries = [
@@ -624,7 +708,6 @@ router.get('/stats', authenticateAdminToken, requireSuperAdmin, async (req, res)
   }
 });
 
-// Admin logout (optional - mainly for logging)
 router.post('/logout', authenticateAdminToken, (req, res) => {
   res.json({
     success: true,
@@ -705,7 +788,6 @@ router.get('/admins/same-role', authenticateAdminToken, async (req, res) => {
   }
 });
 
-// Update user status (Admin access required)
 router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => {
   let conn = null;
   
@@ -713,7 +795,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     const { userId } = req.params;
     const { status } = req.body;
 
-    // Validate status
     const validStatuses = ['ACT', 'TAG', 'DEL', 'FOR_PAYROLL', 'AFR', 'AFB', 'AFB2', 'UNV'];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({
@@ -725,7 +806,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     const pool = getPool();
     conn = await pool.getConnection();
 
-    // Get current user status and push token BEFORE updating
     const [currentUser] = await conn.execute(
       'SELECT id, status, push_token FROM users_tbl WHERE id = ?',
       [userId]
@@ -741,7 +821,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
     const user = currentUser[0];
     const oldStatus = user.status;
     
-    // Don't send notification if status hasn't actually changed
     if (oldStatus === status) {
       return res.json({
         success: true,
@@ -754,7 +833,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
       });
     }
 
-    // Update user status
     const [updateResult] = await conn.execute(
       'UPDATE users_tbl SET status = ?, updated_at = NOW() WHERE id = ?',
       [status, userId]
@@ -767,7 +845,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
       });
     }
 
-    // Initialize notification result
     let notificationResult = {
       sent: false,
       reason: null,
@@ -776,14 +853,13 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
 
     if (user.push_token) {
       try {        
-        // Send FCM notification with correct arguments
         const result = await sendStatusChangeNotification(
-          conn,              // Pass the database connection
-          user.id,           // userId
-          oldStatus,         // oldStatus
-          status,            // newStatus
-          user.FIRSTNAME,    // firstName
-          user.LASTNAME      // lastName
+          conn,              
+          user.id,           
+          oldStatus,         
+          status,            
+          user.FIRSTNAME,    
+          user.LASTNAME      
         );
 
         if (result.success) {
@@ -791,7 +867,6 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
         } else {
           notificationResult.error = result.error;
           
-          // If token is invalid, remove it from database
           if (result.shouldRemoveToken) {
             await conn.execute(
               'UPDATE users_tbl SET push_token = NULL WHERE id = ?',
@@ -840,7 +915,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
     try {
         const { userId } = req.params;
 
-        // First, get the pensioner info
         const pensionerInfo = await executeQuery(`
             SELECT 
                 p.id as pensioner_id,
@@ -869,7 +943,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
 
         const pensioner = pensionerInfo[0];
 
-        // Check if already in test_table
         if (pensioner.source_table === 'test_table') {
             return res.status(400).json({
                 success: false,
@@ -879,7 +952,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             });
         }
 
-        // Check if in test_res_table or beneficiaries_table
         if (pensioner.source_table !== 'test_res_table' && pensioner.source_table !== 'beneficiaries_table') {
             return res.status(400).json({
                 success: false,
@@ -891,9 +963,7 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
 
         let hero;
 
-        // Get hero data based on source table
         if (pensioner.source_table === 'test_res_table') {
-            // Get the hero data from test_res_table
             const heroData = await executeQuery(`
                 SELECT 
                     LASTNAME,
@@ -924,7 +994,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             hero = heroData[0];
 
         } else if (pensioner.source_table === 'beneficiaries_table') {
-            // Get the hero data from beneficiaries_table
             const heroData = await executeQuery(`
                 SELECT 
                     LASTNAME,
@@ -955,12 +1024,10 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             hero = heroData[0];
         }
 
-        // Get a connection for transaction
         connection = await getDbConnection();
         await connection.beginTransaction();
 
         try {
-            // Insert hero into test_table (NDX will auto-increment)
             const [insertResult] = await connection.execute(`
                 INSERT INTO test_table (
                     LASTNAME,
@@ -992,16 +1059,12 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             const newHeroNdx = insertResult.insertId;
             let newPrincipalNdx = newHeroNdx;
 
-            // Set principal_ndx appropriately
             if (pensioner.type === 'P') {
-                // If this is a principal, update their principal_ndx to point to themselves
                 newPrincipalNdx = newHeroNdx;
             } else if (pensioner.type === 'B' && pensioner.principal_ndx) {
-                // Keep existing principal_ndx for beneficiaries
                 newPrincipalNdx = pensioner.principal_ndx;
             }
 
-            // Update pensioners_tbl with new hero_ndx and source_table
             await connection.execute(`
                 UPDATE pensioners_tbl
                 SET hero_ndx = ?,
@@ -1010,7 +1073,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
                 WHERE id = ?
             `, [newHeroNdx, newPrincipalNdx, pensioner.pensioner_id]);
 
-            // Update user status to ACT and set status_updated_at
             await connection.execute(`
                 UPDATE users_tbl
                 SET status = 'ACT',
@@ -1018,7 +1080,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
                 WHERE id = ?
             `, [userId]);
 
-            // Delete from source table to complete the transfer
             if (pensioner.source_table === 'test_res_table') {
                 await connection.execute(`
                     DELETE FROM test_res_table
@@ -1031,7 +1092,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
                 `, [pensioner.hero_ndx]);
             }
 
-            // Commit transaction
             await connection.commit();
 
             const processingTime = Date.now() - startTime;
@@ -1055,7 +1115,6 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             });
 
         } catch (error) {
-            // Rollback transaction on error
             await connection.rollback();
             throw error;
         }
@@ -1085,7 +1144,6 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
     try {
         const { userId } = req.params;
 
-        // First, get the pensioner info
         const userInfo = await executeQuery(`
             SELECT 
                 u.id as user_id,
@@ -1111,17 +1169,14 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
 
         const user = userInfo[0];
 
-        // Get a connection for transaction
         connection = await getDbConnection();
         await connection.beginTransaction();
 
         try {
-            // 1. Get all form submissions for this user
             const [formSubmissions] = await connection.execute(`
                 SELECT id FROM form_submission WHERE user_id = ?
             `, [userId]);
 
-            // 2. Delete history logs for each form submission
             if (formSubmissions.length > 0) {
                 const formSubmissionIds = formSubmissions.map(fs => fs.id);
                 const placeholders = formSubmissionIds.map(() => '?').join(',');
@@ -1134,21 +1189,18 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                 console.log(`Deleted history logs for ${formSubmissionIds.length} form submissions`);
             }
 
-            // 3. Delete form submissions
             const [deleteFormsResult] = await connection.execute(`
                 DELETE FROM form_submission WHERE user_id = ?
             `, [userId]);
 
             console.log(`Deleted ${deleteFormsResult.affectedRows} form submissions`);
 
-            // 4. Delete from users_tbl
             const [deleteUserResult] = await connection.execute(`
                 DELETE FROM users_tbl WHERE id = ?
             `, [userId]);
 
             console.log(`Deleted user from users_tbl`);
 
-            // 5. Delete from pensioners_tbl (if exists)
             let deletedPensioner = false;
             if (user.pensioner_id) {
                 const [deletePensionerResult] = await connection.execute(`
@@ -1159,7 +1211,6 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                 console.log(`Deleted pensioner record: ${deletedPensioner}`);
             }
 
-            // 6. Delete from source table (test_table or test_res_table) if hero_ndx exists
             let deletedFromSourceTable = false;
             if (user.hero_ndx && user.source_table) {
                 const sourceTable = user.source_table === 'test_table' ? 'test_table' : 'test_res_table';
@@ -1173,11 +1224,9 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                     console.log(`Deleted from ${sourceTable}: ${deletedFromSourceTable}`);
                 } catch (error) {
                     console.log(`Note: Could not delete from ${sourceTable}:`, error.message);
-                    // Continue anyway - the hero record might not exist
                 }
             }
 
-            // Commit transaction
             await connection.commit();
 
             const processingTime = Date.now() - startTime;
@@ -1205,7 +1254,6 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
             });
 
         } catch (error) {
-            // Rollback transaction on error
             await connection.rollback();
             throw error;
         }

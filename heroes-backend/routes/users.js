@@ -39,7 +39,10 @@ router.get("/", async (req, res) => {
             "POST /api/users/create-account",
             "POST /api/users/login",
             "GET /api/users/health",
-            "POST /api/users/logout"
+            "POST /api/users/logout",
+            "POST /api/users/forgot-password",
+            "POST /api/users/verify-reset-code",
+            "POST /api/users/reset-password"
         ]
     });
 });
@@ -70,6 +73,9 @@ router.get("/health", async (req, res) => {
                     { method: "POST", path: "/api/users/validate-step2", description: "Step 2: Validate personal information" },
                     { method: "POST", path: "/api/users/create-account", description: "Step 3: Create user account" },
                     { method: "POST", path: "/api/users/login", description: "signin" },
+                    { method: "POST", path: "/api/users/forgot-password", description: "forgot password" },
+                    { method: "POST", path: "/api/users/verify-reset-code", description: "verify code for reset password" },
+                    { method: "POST", path: "/api/users/reset-password", description: "reset password" },
                     { method: "GET", path: "/api/users/health", description: "health status" },
                     { method: "POST", path: "/api/users/logout", description: "logout" }
                 ],

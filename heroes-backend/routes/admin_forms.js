@@ -1760,7 +1760,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
         );
       }
 
-      // Conditional approval: UPDATING
       if (formTypeId === 5 && status === 'a') {
         const [updateFormData] = await pool.execute(
           `SELECT value 

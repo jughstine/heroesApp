@@ -14,7 +14,7 @@ const RETRY_DELAY_MS = 100;
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST, 
-  port: process.env.SMTP_PORT || 587,
+  port: process.env.SMTP_PORT || 2525,
   secure: false, 
   auth: {
     user: process.env.SMTP_USER, 

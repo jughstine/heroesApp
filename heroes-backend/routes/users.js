@@ -77,11 +77,7 @@ router.get("/test-smtp", async (req, res) => {
       success: true,
       message: 'SMTP configuration is working',
       messageId: result.messageId,
-      env: {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT,
-        user: process.env.SMTP_USER ? 'set' : 'missing'
-      }
+      from: process.env.SMTP_FROM
     });
     
   } catch (error) {
@@ -89,13 +85,8 @@ router.get("/test-smtp", async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
-      code: error.code,
-      env: {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT,
-        user: process.env.SMTP_USER ? 'set' : 'missing'
-      }
-    });
+      code: error.code
+  });
   }
 });
 

@@ -14,7 +14,7 @@ const RETRY_DELAY_MS = 100;
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST, 
-  port: parseInt(process.env.SMTP_PORT), 
+  port: parseInt(process.env.SMTP_PORT) || 2525, 
   secure: false,
   auth: {
     user: process.env.SMTP_USER, 
@@ -64,7 +64,7 @@ router.get("/test-smtp", async (req, res) => {
     
     // Test email sending
     const testMailOptions = {
-      from: process.env.SMTP_USER,
+      from: process.env.SMTP_FROM,
       to: 'elioliver1976@gmail.com',
       subject: 'SMTP Test from Cloud',
       text: 'This is a test email from your cloud environment',
@@ -1872,7 +1872,7 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
 
       // Send email with reset code
       const mailOptions = {
-        from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+        from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_FROM}>`,
         to: user.email,
         subject: 'Password Reset Code',
         html: `

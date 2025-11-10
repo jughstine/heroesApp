@@ -50,7 +50,8 @@ router.get("/", async (req, res) => {
             "POST /api/users/logout",
             "POST /api/users/forgot-password",
             "POST /api/users/verify-reset-code",
-            "POST /api/users/reset-password"
+            "POST /api/users/reset-password",
+            "POST /api/users/test-smtp"
         ]
     });
 });

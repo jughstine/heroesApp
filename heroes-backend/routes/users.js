@@ -56,11 +56,19 @@ router.get("/", async (req, res) => {
     });
 });
 
-
 router.get("/test-smtp", async (req, res) => {
   try {
+    console.log('SMTP Configuration:', {
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      user: process.env.SMTP_USER,
+      from: process.env.SMTP_FROM,
+      hasPassword: !!process.env.SMTP_PASSWORD
+    });
+
     // Test SMTP connection
     await transporter.verify();
+    console.log('SMTP verification successful');
     
     // Test email sending
     const testMailOptions = {
@@ -72,6 +80,7 @@ router.get("/test-smtp", async (req, res) => {
     };
     
     const result = await transporter.sendMail(testMailOptions);
+    console.log('Email sent successfully:', result.messageId);
     
     res.json({
       success: true,
@@ -81,12 +90,22 @@ router.get("/test-smtp", async (req, res) => {
     });
     
   } catch (error) {
-    logger.error('SMTP test failed:', error);
+    console.error('SMTP test failed with details:', {
+      message: error.message,
+      code: error.code,
+      command: error.command,
+      response: error.response,
+      responseCode: error.responseCode,
+      stack: error.stack
+    });
+    
     res.status(500).json({
       success: false,
       error: error.message,
-      code: error.code
-  });
+      code: error.code,
+      response: error.response,
+      command: error.command
+    });
   }
 });
 

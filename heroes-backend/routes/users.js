@@ -65,7 +65,7 @@ router.get("/test-smtp", async (req, res) => {
     // Test email sending
     const testMailOptions = {
       from: process.env.SMTP_FROM,
-      to: 'elioliver1976@gmail.com',
+      to: 'parchie84@gmail.com',
       subject: 'SMTP Test from Cloud',
       text: 'This is a test email from your cloud environment',
       html: '<p>This is a test email from your <b>cloud environment</b></p>'

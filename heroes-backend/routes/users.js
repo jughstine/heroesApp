@@ -22,7 +22,12 @@ const transporter = nodemailer.createTransport({
   },
   tls: {
     rejectUnauthorized: false
-  }
+  },
+  connectionTimeout: 30000, 
+  greetingTimeout: 15000,   
+  socketTimeout: 30000,     
+  debug: process.env.NODE_ENV === 'development', 
+  logger: process.env.NODE_ENV === 'development'
 });
 
 transporter.verify((error, success) => {
@@ -48,6 +53,49 @@ router.get("/", async (req, res) => {
             "POST /api/users/reset-password"
         ]
     });
+});
+
+
+router.get("/test-smtp", async (req, res) => {
+  try {
+    // Test SMTP connection
+    await transporter.verify();
+    
+    // Test email sending
+    const testMailOptions = {
+      from: process.env.SMTP_USER,
+      to: 'elioliver1976@gmail.com',
+      subject: 'SMTP Test from Cloud',
+      text: 'This is a test email from your cloud environment',
+      html: '<p>This is a test email from your <b>cloud environment</b></p>'
+    };
+    
+    const result = await transporter.sendMail(testMailOptions);
+    
+    res.json({
+      success: true,
+      message: 'SMTP configuration is working',
+      messageId: result.messageId,
+      env: {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        user: process.env.SMTP_USER ? 'set' : 'missing'
+      }
+    });
+    
+  } catch (error) {
+    logger.error('SMTP test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      env: {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        user: process.env.SMTP_USER ? 'set' : 'missing'
+      }
+    });
+  }
 });
 
 // health check

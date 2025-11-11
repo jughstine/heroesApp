@@ -1874,9 +1874,8 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
 
       await connection.commit();
 
-      // Send email with reset code
       const mailOptions = {
-        from: process.env.SMTP_FROM, 
+        from: process.env.SMTP_FROM,
         to: user.email,
         subject: 'Password Reset Code',
         html: `
@@ -2003,8 +2002,6 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
         `
       };
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
       try {
         logger.info('Attempting to send reset code email...', {
           to: user.email,
@@ -2028,22 +2025,12 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
           to: user.email
         });
 
-        // In development, show actual error
         if (process.env.NODE_ENV === 'development') {
           return res.status(500).json({
             success: false,
             error: 'Email sending failed: ' + emailError.message,
             code: 'EMAIL_FAILED'
           });
-=======
-=======
->>>>>>> Stashed changes
-      transporter.sendMail(mailOptions, (error, info) => {
-        if (error) {
-          logger.error('Email sending failed:', error);
-        } else {
-          logger.info('Reset code email sent:', info.messageId);
->>>>>>> Stashed changes
         }
         
         logger.warn('Email failed but continuing for security reasons');
@@ -2080,6 +2067,7 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
     }
   }
 });
+
 router.post("/verify-reset-code", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 

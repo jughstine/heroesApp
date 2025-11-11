@@ -1823,13 +1823,11 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Check if user exists
     const users = await executeQuery(
       'SELECT id, email FROM users_tbl WHERE email = ? AND deleted_at IS NULL',
       [normalizedEmail]
     );
 
-    // Return same response whether user exists or not (security best practice)
     if (users.length === 0) {
       return res.status(200).json({
         success: true,
@@ -1844,7 +1842,6 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
     try {
       await connection.beginTransaction();
 
-      // Check for recent code requests (rate limiting)
       const [recentCodes] = await connection.execute(
         `SELECT created_at FROM password_resets 
          WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE)
@@ -1861,17 +1858,14 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
         });
       }
 
-      // Invalidate all previous unused codes for this user
       await connection.execute(
         'UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0',
         [user.id]
       );
 
-      // Generate 5-digit code
       const resetCode = crypto.randomInt(10000, 99999).toString();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-      // Store reset code
       await connection.execute(
         `INSERT INTO password_resets (user_id, code, expires_at) 
          VALUES (?, ?, ?)`,
@@ -1882,7 +1876,7 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
 
       // Send email with reset code
       const mailOptions = {
-        from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_FROM}>`,
+        from: process.env.SMTP_FROM, 
         to: user.email,
         subject: 'Password Reset Code',
         html: `
@@ -1978,7 +1972,6 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
             <body>
             <div class="container">
                 <div class="header">
-                <!-- Replace with your local image (same folder) -->
                 <img src="https://psahelpline.ph/img/ecert/afp/PGMC.png" alt="AFP Logo" />
                 <h1>Password Change Request</h1>
                 </div>
@@ -2010,14 +2003,40 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
         `
       };
 
-      // Send email asynchronously (don't wait for it)
-      transporter.sendMail(mailOptions, (error, info) => {
-        if (error) {
-          logger.error('Email sending failed:', error);
-        } else {
-          logger.info('Reset code email sent:', info.messageId);
+      try {
+        logger.info('Attempting to send reset code email...', {
+          to: user.email,
+          from: process.env.SMTP_FROM
+        });
+
+        const info = await transporter.sendMail(mailOptions);
+        
+        logger.info('✅ Reset code email sent successfully:', {
+          messageId: info.messageId,
+          to: user.email,
+          response: info.response
+        });
+
+      } catch (emailError) {
+        logger.error('❌ Email sending failed:', {
+          error: emailError.message,
+          code: emailError.code,
+          command: emailError.command,
+          response: emailError.response,
+          to: user.email
+        });
+
+        // In development, show actual error
+        if (process.env.NODE_ENV === 'development') {
+          return res.status(500).json({
+            success: false,
+            error: 'Email sending failed: ' + emailError.message,
+            code: 'EMAIL_FAILED'
+          });
         }
-      });
+        
+        logger.warn('Email failed but continuing for security reasons');
+      }
 
       res.status(200).json({
         success: true,
@@ -2050,7 +2069,6 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
     }
   }
 });
-
 router.post("/verify-reset-code", sanitizeInput, validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 

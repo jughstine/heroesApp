@@ -2003,6 +2003,7 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
         `
       };
 
+<<<<<<< Updated upstream
       try {
         logger.info('Attempting to send reset code email...', {
           to: user.email,
@@ -2033,6 +2034,13 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
             error: 'Email sending failed: ' + emailError.message,
             code: 'EMAIL_FAILED'
           });
+=======
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          logger.error('Email sending failed:', error);
+        } else {
+          logger.info('Reset code email sent:', info.messageId);
+>>>>>>> Stashed changes
         }
         
         logger.warn('Email failed but continuing for security reasons');

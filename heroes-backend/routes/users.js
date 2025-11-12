@@ -51,62 +51,8 @@ router.get("/", async (req, res) => {
             "POST /api/users/forgot-password",
             "POST /api/users/verify-reset-code",
             "POST /api/users/reset-password",
-            "POST /api/users/test-smtp"
         ]
     });
-});
-
-router.get("/test-smtp", async (req, res) => {
-  try {
-    console.log('SMTP Configuration:', {
-      host: process.env.SMTP_HOST,
-      port: process.env.SMTP_PORT,
-      user: process.env.SMTP_USER,
-      from: process.env.SMTP_FROM,
-      hasPassword: !!process.env.SMTP_PASSWORD
-    });
-
-    // Test SMTP connection
-    await transporter.verify();
-    console.log('SMTP verification successful');
-    
-    // Test email sending
-    const testMailOptions = {
-      from: process.env.SMTP_FROM,
-      to: 'parchie84@gmail.com',
-      subject: 'SMTP Test from Cloud',
-      text: 'This is a test email from your cloud environment',
-      html: '<p>This is a test email from your <b>cloud environment</b></p>'
-    };
-    
-    const result = await transporter.sendMail(testMailOptions);
-    console.log('Email sent successfully:', result.messageId);
-    
-    res.json({
-      success: true,
-      message: 'SMTP configuration is working',
-      messageId: result.messageId,
-      from: process.env.SMTP_FROM
-    });
-    
-  } catch (error) {
-    console.error('SMTP test failed with details:', {
-      message: error.message,
-      code: error.code,
-      command: error.command,
-      response: error.response,
-      responseCode: error.responseCode,
-      stack: error.stack
-    });
-    
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      code: error.code,
-      response: error.response,
-      command: error.command
-    });
-  }
 });
 
 // health check
@@ -2712,10 +2658,34 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
           END AS lastname,
 
           CASE 
+              WHEN p.source_table = 'test_res_table' THEN h2.MIDDLENAME
+              WHEN p.source_table = 'beneficiaries_table' THEN h3.MIDDLENAME
+              ELSE h1.MIDDLENAME
+          END AS middlename,
+
+          CASE 
+              WHEN p.source_table = 'test_res_table' THEN h2.SUFFIX
+              WHEN p.source_table = 'beneficiaries_table' THEN h3.SUFFIX
+              ELSE h1.SUFFIX
+          END AS suffix,
+
+          CASE 
               WHEN p.source_table = 'test_res_table' THEN h2.DOB
               WHEN p.source_table = 'beneficiaries_table' THEN h3.DOB
               ELSE h1.DOB
           END AS dob,
+
+          CASE 
+              WHEN p.source_table = 'test_res_table' THEN h2.PRIN_DATE_RET
+              WHEN p.source_table = 'beneficiaries_table' THEN h3.PRIN_DATE_RET
+              ELSE h1.PRIN_DATE_RET
+          END AS prin_date_ret,
+
+          CASE 
+              WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR
+              WHEN p.source_table = 'beneficiaries_table' THEN h3.CTRLNR
+              ELSE h1.CTRLNR
+          END AS ctrlnr,
 
           CASE 
               WHEN p.source_table = 'test_res_table' THEN 
@@ -2743,6 +2713,12 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
               WHEN p.source_table = 'beneficiaries_table' THEN h3.PENRANK
               ELSE h1.PENRANK
           END AS penrank,
+
+          CASE 
+              WHEN p.source_table = 'test_res_table' THEN h2.ACRANK
+              WHEN p.source_table = 'beneficiaries_table' THEN h3.ACRANK
+              ELSE h1.ACRANK
+          END AS acrank,
 
           CASE 
               WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR
@@ -2792,6 +2768,197 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
       success: false,
       error: "Failed to fetch users",
       code: "USERS_FETCH_ERROR",
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const testTableUsers = await executeQuery(`
+      SELECT 
+          'test_table' as source_table,
+          NDX as id,
+          NDX as user_id,
+          AFPSN as afpsn,
+          PENRANK as penrank,
+          ACRANK as acrank,
+          FIRSTNAME as firstname,
+          LASTNAME as lastname,
+          MIDDLENAME as middlename,
+          SUFFIX as suffix,
+          DOB as dob,
+          PRIN_DATE_RET as prin_date_ret,
+          CTRLNR as ctrlnr,
+          MOBILENR as mobile,
+          CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
+          TYPE as type,
+          '' as bos,
+          'ACT' as status,
+          NOW() as status_updated_at
+      FROM test_table
+      ORDER BY LASTNAME, FIRSTNAME
+    `);
+
+    const testResTableUsers = await executeQuery(`
+      SELECT 
+          'test_res_table' as source_table,
+          NDX as id,
+          NDX as user_id,
+          CASE 
+              WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+              THEN CONCAT('O-', REPLACE(AFPSN, 'O-', ''))
+              ELSE AFPSN
+          END as afpsn,
+          PENRANK as penrank,
+          ACRANK as acrank,
+          FIRSTNAME as firstname,
+          LASTNAME as lastname,
+          MIDDLENAME as middlename,
+          SUFFIX as suffix,
+          DOB as dob,
+          PRIN_DATE_RET as prin_date_ret,
+          CTRLNR as ctrlnr,
+          MOBILENR as mobile,
+          CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
+          'P' as type,
+          '' as bos,
+          'AFR' as status,
+          NOW() as status_updated_at
+      FROM test_res_table
+      ORDER BY LASTNAME, FIRSTNAME
+    `);
+
+    const allUsers = [...testTableUsers, ...testResTableUsers];
+
+    const stats = {
+      totalUsers: allUsers.length,
+      testTableUsers: testTableUsers.length,
+      testResTableUsers: testResTableUsers.length,
+    };
+
+    const processingTime = Date.now() - startTime;
+    res.json({
+      success: true,
+      users: allUsers,
+      data: allUsers,
+      stats,
+      count: allUsers.length,
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Fetch alpha list error:", {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+    });
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch alpha list",
+      code: "ALPHA_LIST_FETCH_ERROR",
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const {
+      targetTable,
+      lastname,
+      firstname,
+      middlename,
+      suffix,
+      dob,
+      prin_date_ret,
+      afpsn,
+      acrank,
+      penrank,
+      type,
+      ctrlnr,
+      mobilenr
+    } = req.body;
+
+    if (!lastname || !firstname || !afpsn) {
+      return res.status(400).json({
+        success: false,
+        error: "Last name, first name, and AFPSN are required",
+        code: "VALIDATION_ERROR"
+      });
+    }
+
+    if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid target table",
+        code: "VALIDATION_ERROR"
+      });
+    }
+
+    const result = await executeQuery(`
+      INSERT INTO ${targetTable} (
+        LASTNAME,
+        FIRSTNAME,
+        MIDDLENAME,
+        SUFFIX,
+        DOB,
+        PRIN_DATE_RET,
+        AFPSN,
+        ACRANK,
+        PENRANK,
+        TYPE,
+        CTRLNR,
+        MOBILENR
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      lastname,
+      firstname,
+      middlename || null,
+      suffix || null,
+      dob || null,
+      prin_date_ret || null,
+      afpsn,
+      acrank || null,
+      penrank || null,
+      type || 'P',
+      ctrlnr || null,
+      mobilenr || null
+    ]);
+
+    const processingTime = Date.now() - startTime;
+    res.json({
+      success: true,
+      message: `Record added successfully to ${targetTable}`,
+      insertId: result.insertId,
+      targetTable: targetTable,
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Add to alpha list error:", {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+    });
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to add record to list",
+      code: "ALPHA_LIST_ADD_ERROR",
       processingTime: `${processingTime}ms`,
       timestamp: new Date().toISOString(),
     });

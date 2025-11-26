@@ -387,7 +387,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             const normalizedPrincipalFirstname = principal_first_name.trim().toUpperCase();
             const normalizedPrincipalLastname = principal_last_name.trim().toUpperCase();
 
-            // Age validation for CH (Child) and SB (Sibling) - moved to top
+            // Age validation for CH (Child) and SB (Sibling)
             if (['CH', 'SB'].includes(b_type)) {
                 const beneficiaryDob = new Date(dob);
                 const today = new Date();
@@ -412,78 +412,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 }
             }
 
-            // CRITICAL FIX: For Legal Beneficiary Applications, FIRST verify the principal pensioner exists with TYPE = 'P'
-            // The AFPSN provided should belong to a Type P principal, NOT a Type B beneficiary
-            let principalRecords;
-            try {
-                principalRecords = await executeQuery(
-                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
-                    WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
-                    AND UPPER(TRIM(FIRSTNAME)) = ?
-                    AND UPPER(TRIM(LASTNAME)) = ?
-                    AND TYPE = 'P'`,
-                    [normalizedAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
-                );
-            } catch (regexpError) {
-                // Fallback for MySQL < 8.0
-                logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
-                principalRecords = await executeQuery(
-                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
-                    WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
-                    AND UPPER(TRIM(FIRSTNAME)) = ?
-                    AND UPPER(TRIM(LASTNAME)) = ?
-                    AND TYPE = 'P'`,
-                    [normalizedAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
-                );
-            }
-
-            if (principalRecords.length === 0) {
-                logger.warn('Principal pensioner not found:', { 
-                    afpsn: normalizedAfpsn, 
-                    name: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`,
-                    type: 'P'
-                });
-                return res.status(401).json({ 
-                    success: false, 
-                    error: "Principal pensioner not found in active records. The AFPSN must belong to a Type P (Principal) pensioner.", 
-                    code: 'PRINCIPAL_NOT_FOUND' 
-                });
-            }
-
-            if (principalRecords.length > 1) {
-                return res.status(409).json({ 
-                    success: false, 
-                    error: "Multiple principal records found", 
-                    code: 'DUPLICATE_PRINCIPAL_RECORDS' 
-                });
-            }
-
-            const principalData = principalRecords[0];
-            const penRank = principalData.PENRANK?.trim().toUpperCase();
-            const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
-
-            // Officer validation for principal
-            if (claims_officer && !isOfficer) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: `Principal rank mismatch: ${penRank}`, 
-                    code: 'INVALID_OFFICER_CLAIM', 
-                    rank: penRank 
-                });
-            }
-            if (!claims_officer && isOfficer) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: `Principal pensioner is an officer (${penRank})`, 
-                    code: 'MISSING_OFFICER_CLAIM', 
-                    rank: penRank 
-                });
-            }
-
-            // NOW check if this specific beneficiary already exists in test_table (active payroll)
-            // This checks using the principal's AFPSN that we just validated
+            // STEP 1: Check if this beneficiary EXISTS in test_table as an ACTIVE beneficiary
             let existingBeneficiaryInTestTable;
             try {
                 existingBeneficiaryInTestTable = await executeQuery(
@@ -492,27 +421,87 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     WHERE UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
                     AND DATE(DOB) = DATE(?)
-                    AND REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
                     AND TYPE = 'B'`,
-                    [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric]
+                    [normalizedFirstname, normalizedLastname, dob]
                 );
-            } catch (regexpError) {
-                existingBeneficiaryInTestTable = await executeQuery(
-                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
-                    WHERE UPPER(TRIM(FIRSTNAME)) = ?
-                    AND UPPER(TRIM(LASTNAME)) = ?
-                    AND DATE(DOB) = DATE(?)
-                    AND REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
-                    AND TYPE = 'B'`,
-                    [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric]
-                );
+            } catch (error) {
+                logger.error('Error checking active beneficiary:', error);
+                existingBeneficiaryInTestTable = [];
             }
 
-            // If beneficiary exists in test_table as Type B with the SAME AFPSN, treat them like an active pensioner
+            // If beneficiary is ACTIVE (exists in test_table with Type B)
             if (existingBeneficiaryInTestTable.length > 0) {
                 const heroData = existingBeneficiaryInTestTable[0];
                 
+                // Get the AFPSN from their record (this is the principal's AFPSN they're linked to)
+                const beneficiaryAfpsn = heroData.AFPSN;
+                const beneficiaryAfpsnNumeric = normalizeAfpsnForMatching(beneficiaryAfpsn);
+
+                logger.info('Active beneficiary found in test_table:', { 
+                    name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
+                    afpsn: beneficiaryAfpsn,
+                    ndx: heroData.NDX
+                });
+
+                // NOW verify the principal pensioner exists using the AFPSN from the beneficiary's record
+                let principalRecords;
+                try {
+                    principalRecords = await executeQuery(
+                        `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
+                        FROM test_table
+                        WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
+                        AND UPPER(TRIM(FIRSTNAME)) = ?
+                        AND UPPER(TRIM(LASTNAME)) = ?
+                        AND TYPE = 'P'`,
+                        [beneficiaryAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
+                    );
+                } catch (regexpError) {
+                    logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
+                    principalRecords = await executeQuery(
+                        `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
+                        FROM test_table
+                        WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
+                        AND UPPER(TRIM(FIRSTNAME)) = ?
+                        AND UPPER(TRIM(LASTNAME)) = ?
+                        AND TYPE = 'P'`,
+                        [beneficiaryAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
+                    );
+                }
+
+                if (principalRecords.length === 0) {
+                    logger.warn('Principal pensioner not found for active beneficiary:', { 
+                        beneficiaryAfpsn: beneficiaryAfpsn,
+                        principalName: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`
+                    });
+                    return res.status(401).json({ 
+                        success: false, 
+                        error: "Principal pensioner information does not match our records.", 
+                        code: 'PRINCIPAL_NOT_FOUND' 
+                    });
+                }
+
+                const principalData = principalRecords[0];
+                const penRank = principalData.PENRANK?.trim().toUpperCase();
+                const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
+
+                // Officer validation
+                if (claims_officer && !isOfficer) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: `Principal rank mismatch: ${penRank}`, 
+                        code: 'INVALID_OFFICER_CLAIM', 
+                        rank: penRank 
+                    });
+                }
+                if (!claims_officer && isOfficer) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: `Principal pensioner is an officer (${penRank})`, 
+                        code: 'MISSING_OFFICER_CLAIM', 
+                        rank: penRank 
+                    });
+                }
+
                 // Check for existing account
                 let existingAccount;
                 try {
@@ -540,19 +529,19 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         error: "An account already exists for this beneficiary", 
                         code: 'ACCOUNT_EXISTS',
                         details: {
-                            afpsn: normalizedAfpsn,
+                            afpsn: beneficiaryAfpsn,
                             name: `${normalizedFirstname} ${normalizedLastname}`
                         }
                     });
                 }
 
-                // Generate token for active beneficiary (from test_table)
+                // Generate token for active beneficiary
                 const tokenData = {
                     type: 'B',
-                    afpsn: normalizedAfpsn,
+                    afpsn: beneficiaryAfpsn,
                     bos: null,
                     b_type,
-                    principal_afpsn: normalizedAfpsn,
+                    principal_afpsn: principalData.AFPSN,
                     principal_first_name: normalizedPrincipalFirstname,
                     principal_last_name: normalizedPrincipalLastname,
                     principal_ndx: principalData.NDX,
@@ -584,7 +573,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     },
                     data: {
                         type: 'B',
-                        afpsn: normalizedAfpsn,
+                        afpsn: beneficiaryAfpsn,
                         rank: penRank,
                         isOfficer,
                         account_status: 'active',
@@ -597,7 +586,75 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 });
             }
 
-            // Check for existing beneficiary account in beneficiaries_table
+            // STEP 2: If NOT in test_table, this is a NEW beneficiary application
+            // Verify the principal pensioner exists FIRST
+            let principalRecords;
+            try {
+                principalRecords = await executeQuery(
+                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
+                    FROM test_table
+                    WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
+                    AND UPPER(TRIM(FIRSTNAME)) = ?
+                    AND UPPER(TRIM(LASTNAME)) = ?
+                    AND TYPE = 'P'`,
+                    [normalizedAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
+                );
+            } catch (regexpError) {
+                logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
+                principalRecords = await executeQuery(
+                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
+                    FROM test_table
+                    WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
+                    AND UPPER(TRIM(FIRSTNAME)) = ?
+                    AND UPPER(TRIM(LASTNAME)) = ?
+                    AND TYPE = 'P'`,
+                    [normalizedAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
+                );
+            }
+
+            if (principalRecords.length === 0) {
+                logger.warn('Principal pensioner not found for new beneficiary application:', { 
+                    afpsn: normalizedAfpsn, 
+                    name: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`
+                });
+                return res.status(401).json({ 
+                    success: false, 
+                    error: "Principal pensioner not found in active records. The AFPSN must belong to a Type P (Principal) pensioner.", 
+                    code: 'PRINCIPAL_NOT_FOUND' 
+                });
+            }
+
+            if (principalRecords.length > 1) {
+                return res.status(409).json({ 
+                    success: false, 
+                    error: "Multiple principal records found", 
+                    code: 'DUPLICATE_PRINCIPAL_RECORDS' 
+                });
+            }
+
+            const principalData = principalRecords[0];
+            const penRank = principalData.PENRANK?.trim().toUpperCase();
+            const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
+
+            // Officer validation
+            if (claims_officer && !isOfficer) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: `Principal rank mismatch: ${penRank}`, 
+                    code: 'INVALID_OFFICER_CLAIM', 
+                    rank: penRank 
+                });
+            }
+            if (!claims_officer && isOfficer) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: `Principal pensioner is an officer (${penRank})`, 
+                    code: 'MISSING_OFFICER_CLAIM', 
+                    rank: penRank 
+                });
+            }
+
+            // Check if this beneficiary application already exists
             let existingBeneficiary;
             try {
                 existingBeneficiary = await executeQuery(
@@ -669,7 +726,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 });
             }
 
-            // Generate token for beneficiary with principal's reference data
+            // Generate token for new beneficiary application
             const tokenData = {
                 type: 'B',
                 afpsn: normalizedAfpsn,

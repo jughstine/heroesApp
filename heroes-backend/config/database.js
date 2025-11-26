@@ -29,10 +29,8 @@ const validateConfig = () => {
 
 //  database config
 const createDbConfig = () => {
-  // Get connection limit from env with default fallback
   const connectionLimit = parseInt(process.env.DB_CONNECTION_LIMIT) || 10;
   
-  // Calculate maxIdle based on connection limit (50% of total connections)
   const maxIdle = Math.max(Math.floor(connectionLimit * 0.5), 2);
   
   const config = {
@@ -42,40 +40,32 @@ const createDbConfig = () => {
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
     
-    // Connection Pool Settings - Now configurable
     connectionLimit: connectionLimit,
     queueLimit: 0,
 
-    // Timeout settings
     waitForConnections: true,
-    idleTimeout: 300000,        // 5 minutes
+    idleTimeout: 300000,       
     maxIdle: maxIdle,
-    connectTimeout: 10000,      // 10 seconds
+    connectTimeout: 10000,    
     
-    // Character Set and Timezone
     charset: 'utf8mb4',
     timezone: 'Z',    
     
-    // Number Handling
     supportBigNumbers: true,
     bigNumberStrings: true,
     dateStrings: false,
     
-    // Performance Settings
     typeCast: true,
     nestTables: false,
     rowsAsArray: false,
     multipleStatements: false,
     namedPlaceholders: false,
-    
-    // disable SSL
     ssl: false
   };
   
   return config;
 };
 
-// Global variables
 let pool = null;
 let poolStats = {
   created: null,
@@ -86,7 +76,6 @@ let poolStats = {
   retries: 0
 };
 
-// Initialize database with retry logic
 const initializeDatabase = async (retries = 3) => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -101,10 +90,8 @@ const initializeDatabase = async (retries = 3) => {
 
       pool = mysql.createPool(dbConfig);
       
-      // Test connection immediately
       await testConnectionInternal();
       
-      // Set up event listeners
       pool.on('connection', (connection) => {
         logger.info(`New database connection: ${connection.threadId}`);
       });
@@ -130,7 +117,6 @@ const initializeDatabase = async (retries = 3) => {
         throw error;
       }
       
-      // Wait before retry
       const waitTime = attempt * 2000;
       logger.info(`Retrying in ${waitTime}ms...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
@@ -138,7 +124,6 @@ const initializeDatabase = async (retries = 3) => {
   }
 };
 
-// Internal test function
 const testConnectionInternal = async () => {
   const connection = await pool.getConnection();
   try {
@@ -149,7 +134,6 @@ const testConnectionInternal = async () => {
   }
 };
 
-// Test database connection
 const testConnection = async () => {
   try {
     if (!pool) {
@@ -181,7 +165,6 @@ const testConnection = async () => {
   }
 };
 
-// Enhanced executeQuery with retries
 const executeQuery = async (query, params = [], retries = 1) => {
   const startTime = Date.now();
   poolStats.totalQueries++;
@@ -240,7 +223,6 @@ const executeQuery = async (query, params = [], retries = 1) => {
   }
 };
 
-// Get connection
 const getConnection = async () => {
   if (!pool) {
     await initializeDatabase();
@@ -248,7 +230,6 @@ const getConnection = async () => {
   return await pool.getConnection();
 };
 
-// Pool statistics
 const getPoolStats = () => {
   if (!pool) {
     return { error: 'Database pool not initialized', stats: poolStats };
@@ -275,7 +256,6 @@ const getPoolStats = () => {
   };
 };
 
-// Health check
 const healthCheck = async () => {
   try {
     const connectionTest = await testConnection();

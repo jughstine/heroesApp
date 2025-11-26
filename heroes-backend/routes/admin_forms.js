@@ -816,7 +816,6 @@ router.get('/paginated', async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-    // Optional: define sort columns to prevent SQL injection
     const SORT_COLUMN_MAP = {
       submitted_at: 'fs.submitted_at',
       reviewed_at: 'fs.reviewed_at',
@@ -827,7 +826,6 @@ router.get('/paginated', async (req, res) => {
     const sortColumn = SORT_COLUMN_MAP[sort_by] || SORT_COLUMN_MAP['submitted_at'];
     const sortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
 
-    // Count Query
     const countQuery = `
       SELECT COUNT(*) as total
       FROM form_submission fs
@@ -843,7 +841,6 @@ router.get('/paginated', async (req, res) => {
     const [countResult] = await pool.execute(countQuery, queryParams);
     const totalCount = countResult[0].total;
 
-    // Data Query
     const dataQuery = `
       SELECT 
         fs.id,
@@ -1074,7 +1071,6 @@ router.get('/export/bulk', async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
-    // Separate forms by type
     const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
     const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
     const transferFormIds = forms.filter(f => f.form_type_id === 4).map(f => f.id);
@@ -1083,7 +1079,6 @@ router.get('/export/bulk', async (req, res) => {
 
     const requirementMap = {};
 
-    // --- Get requirements for all types of forms ---
     if (regularFormIds.length > 0) {
       const placeholders = regularFormIds.map(() => '?').join(',');
       const [requirements] = await pool.execute(`
@@ -1167,7 +1162,6 @@ router.get('/export/bulk', async (req, res) => {
       }
     }
 
-    // Combine form + requirement data
     const exportData = forms.map(form => ({
       ...form,
       home_address: requirementMap[form.id]?.home_address || '',
@@ -1453,7 +1447,6 @@ router.get('/:form_id', async (req, res) => {
     const pool = getPool();
     const { form_id } = req.params;
     
-    // Validate form_id
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({ success: false, error: 'Invalid form ID' });
     }
@@ -1652,7 +1645,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
     const formTypeId = existingForm[0].form_type_id;
     const userId = existingForm[0].user_id;
 
-    // For DLB forms (form_type_id = 1), require PDF on approval
     if (formTypeId === 1 && status === 'a' && !req.file) {
       return res.status(400).json({
         success: false,
@@ -1660,16 +1652,13 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
       });
     }
 
-    // Declare these variables outside the transaction try block
     let resolutionFileUrl = null;
     let resolutionFileKey = null;
 
     await pool.query('START TRANSACTION');
 
     try {
-      // Handle PDF upload for DLB forms on approval
       if (formTypeId === 1 && status === 'a' && req.file) {
-        // Get user details for filename - Join through pensioners_tbl
         const [userDetails] = await pool.execute(
           `SELECT 
             COALESCE(b.FIRSTNAME, p.principal_firstname, 'User') as FIRSTNAME,
@@ -1691,7 +1680,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
         const timestamp = Date.now();
         const fileName = `resolutions/${timestamp}-${lastName}_${firstName}_DLB_Resolution.pdf`;
         
-        // Upload to DigitalOcean Spaces
         await minioClient.putObject(
           process.env.SPACES_BUCKET,
           fileName,
@@ -1738,7 +1726,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
         );
       }
 
-      // Conditional approval: If form type is 3 (Restoration) and status is approved
       if (formTypeId === 3 && status === 'a') {
         await pool.execute(
           'UPDATE users_tbl SET status = ?, approved_at = NOW(), status_updated_at = NOW() WHERE id = ?',
@@ -1770,13 +1757,11 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
 
         const homeAddress = updateFormData[0]?.value;
 
-        // Update status
         await pool.execute(
           'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
           ['ACT', userId]
         );
 
-        // Update home address if found
         if (homeAddress) {
           await pool.execute(
             'UPDATE users_tbl SET home_address = ? WHERE id = ?',
@@ -1785,7 +1770,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
         }
       }
 
-      // Delete requirements from appropriate table if status is denied
       if (status === 'd') {
         if (formTypeId === 2) {
           await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
@@ -1800,7 +1784,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
           const tableName = result.tableName;
           await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
           
-          // Delete resolution file from Spaces if exists
           const [formData] = await pool.execute(
             'SELECT resolution_file_key FROM form_submission WHERE id = ?',
             [formId]
@@ -1826,7 +1809,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
 
       await pool.execute('COMMIT');
 
-      // Pass pool as first parameter to notification functions
       let notificationResult = { success: false };
       
       try {
@@ -1871,7 +1853,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
     } catch (transactionError) {
       await pool.execute('ROLLBACK');
       
-      // Clean up uploaded file if transaction failed
       if (resolutionFileKey) {
         try {
           await minioClient.removeObject(
@@ -1889,7 +1870,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
   } catch (error) {
     console.error('Error updating form status:', error);
     
-    // Handle multer errors
     if (error instanceof multer.MulterError) {
       if (error.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ 
@@ -1906,7 +1886,6 @@ router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res)
   }
 });
 
-// Admin notes route
 router.post('/:form_id/notes', async (req, res) => {
   try {
     const pool = getPool();
@@ -1968,7 +1947,6 @@ router.post('/:form_id/notes', async (req, res) => {
 
       await pool.execute('COMMIT');
 
-      // Pass pool as first parameter
       let notificationResult = { success: false };
       
       try {
@@ -2022,7 +2000,6 @@ router.delete('/:form_id', async (req, res) => {
     await pool.execute('START TRANSACTION');
 
     try {
-      // Get form type to determine which requirements table to delete from
       const [formInfo] = await pool.execute(`
         SELECT form_type_id FROM form_submission WHERE id = ?
       `, [formId]);
@@ -2037,29 +2014,23 @@ router.delete('/:form_id', async (req, res) => {
 
       const formTypeId = formInfo[0].form_type_id;
 
-      // Delete from appropriate requirements table
       if (formTypeId === 2) {
-        // Resumption
         await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
       } 
       else if (formTypeId === 3) {
-        // Restoration
         const result = await getRestorationTableForForm(pool, formId);
         const tableName = result.tableName;
         await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
       } 
       else if (formTypeId === 1) {
-        // Declaration of Legal Beneficiary - FIXED: Added await here
         const result = await getDlbForForm(pool, formId);
         const tableName = result.tableName;
         await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
       } 
       else {
-        // Updating (default)
         await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
       }
       
-      // Delete the form submission
       const [result] = await pool.execute('DELETE FROM form_submission WHERE id = ?', [formId]);
 
       if (result.affectedRows === 0) {

@@ -2,7 +2,6 @@ const mysql = require('mysql2/promise');
 const winston = require('winston');
 require('dotenv').config();
 
-// Configure logger
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
@@ -17,7 +16,6 @@ const logger = winston.createLogger({
   ]
 });
 
-// Validate required environment variables
 const validateConfig = () => {
   const required = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
   const missing = required.filter(key => !process.env[key]);
@@ -27,7 +25,6 @@ const validateConfig = () => {
   }
 };
 
-//  database config
 const createDbConfig = () => {
   const connectionLimit = parseInt(process.env.DB_CONNECTION_LIMIT) || 10;
   
@@ -197,12 +194,10 @@ const executeQuery = async (query, params = [], retries = 1) => {
         poolStats.retries++;
         logger.warn(`Retrying query due to connection error: ${error.code}`);
         
-        // Reset pool
         if (pool) {
           try {
             await pool.end();
           } catch (e) {
-            // Ignore close errors
           }
           pool = null;
         }
@@ -295,7 +290,6 @@ const healthCheck = async () => {
   }
 };
 
-// Get connection info
 const getConnectionInfo = async () => {
   try {
     if (!pool) {
@@ -339,7 +333,6 @@ const getConnectionInfo = async () => {
   }
 };
 
-// Close pool
 const closePool = async (timeout = 5000) => {
   if (!pool) {
     logger.info('No database pool to close');
@@ -366,7 +359,6 @@ const closePool = async (timeout = 5000) => {
   }
 };
 
-// Get pool instance
 const getPool = () => {
   if (!pool) {
     throw new Error('Database pool not initialized. Call initializeDatabase() first.');

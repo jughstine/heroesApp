@@ -125,7 +125,7 @@ router.get("/health", async (req, res) => {
 // ===== RATE LIMITERS =====
 const identityLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 500,
     message: { success: false, error: 'Too many identity validation attempts. Please try again later.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -133,7 +133,7 @@ const identityLimiter = rateLimit({
 
 const createAccountLimiter = rateLimit({
     windowMs: 30 * 60 * 1000,
-    max: 100,
+    max: 500,
     message: { success: false, error: 'Too many account creation attempts. Please try again later.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -141,7 +141,7 @@ const createAccountLimiter = rateLimit({
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 500,
     message: { success: false, error: 'Too many login attempts. Please try again after 15 minutes.', code: 'RATE_LIMITED' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -149,7 +149,7 @@ const loginLimiter = rateLimit({
 
 const pushTokenLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 1000,
     message: {
         success: false,
         error: 'Too many push token update attempts. Please try again later.',
@@ -412,7 +412,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 }
             }
 
-            // STEP 1: Check if this beneficiary EXISTS in test_table as an ACTIVE beneficiary
+            // Check if this beneficiary EXISTS in test_table as an ACTIVE beneficiary
             let existingBeneficiaryInTestTable;
             try {
                 existingBeneficiaryInTestTable = await executeQuery(
@@ -421,74 +421,44 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     WHERE UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
                     AND DATE(DOB) = DATE(?)
+                    AND REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
                     AND TYPE = 'B'`,
-                    [normalizedFirstname, normalizedLastname, dob]
+                    [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric]
                 );
-            } catch (error) {
-                logger.error('Error checking active beneficiary:', error);
-                existingBeneficiaryInTestTable = [];
+            } catch (regexpError) {
+                logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
+                existingBeneficiaryInTestTable = await executeQuery(
+                    `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
+                    FROM test_table
+                    WHERE UPPER(TRIM(FIRSTNAME)) = ?
+                    AND UPPER(TRIM(LASTNAME)) = ?
+                    AND DATE(DOB) = DATE(?)
+                    AND REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
+                    AND TYPE = 'B'`,
+                    [normalizedFirstname, normalizedLastname, dob, normalizedAfpsnNumeric]
+                );
             }
 
-            // If beneficiary is ACTIVE (exists in test_table with Type B)
+                        // If beneficiary is ACTIVE (exists in test_table with Type B)
             if (existingBeneficiaryInTestTable.length > 0) {
                 const heroData = existingBeneficiaryInTestTable[0];
                 
-                // Get the AFPSN from their record (this is the principal's AFPSN they're linked to)
-                const beneficiaryAfpsn = heroData.AFPSN;
-                const beneficiaryAfpsnNumeric = normalizeAfpsnForMatching(beneficiaryAfpsn);
-
                 logger.info('Active beneficiary found in test_table:', { 
                     name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
-                    afpsn: beneficiaryAfpsn,
+                    afpsn: heroData.AFPSN,
                     ndx: heroData.NDX
                 });
 
-                // NOW verify the principal pensioner exists using the AFPSN from the beneficiary's record
-                let principalRecords;
-                try {
-                    principalRecords = await executeQuery(
-                        `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                        FROM test_table
-                        WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
-                        AND UPPER(TRIM(FIRSTNAME)) = ?
-                        AND UPPER(TRIM(LASTNAME)) = ?
-                        AND TYPE = 'P'`,
-                        [beneficiaryAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
-                    );
-                } catch (regexpError) {
-                    logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
-                    principalRecords = await executeQuery(
-                        `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                        FROM test_table
-                        WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
-                        AND UPPER(TRIM(FIRSTNAME)) = ?
-                        AND UPPER(TRIM(LASTNAME)) = ?
-                        AND TYPE = 'P'`,
-                        [beneficiaryAfpsnNumeric, normalizedPrincipalFirstname, normalizedPrincipalLastname]
-                    );
-                }
-
-                if (principalRecords.length === 0) {
-                    logger.warn('Principal pensioner not found for active beneficiary:', { 
-                        beneficiaryAfpsn: beneficiaryAfpsn,
-                        principalName: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`
-                    });
-                    return res.status(401).json({ 
-                        success: false, 
-                        error: "Principal pensioner information does not match our records.", 
-                        code: 'PRINCIPAL_NOT_FOUND' 
-                    });
-                }
-
-                const principalData = principalRecords[0];
-                const penRank = principalData.PENRANK?.trim().toUpperCase();
+                // For active beneficiaries, determine rank from their AFPSN
+                // The AFPSN links to the principal, so we check if it has officer designation
+                const penRank = heroData.PENRANK?.trim().toUpperCase();
                 const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
 
-                // Officer validation
+                // Officer validation based on their record
                 if (claims_officer && !isOfficer) {
                     return res.status(400).json({ 
                         success: false, 
-                        error: `Principal rank mismatch: ${penRank}`, 
+                        error: `Rank mismatch: ${penRank}`, 
                         code: 'INVALID_OFFICER_CLAIM', 
                         rank: penRank 
                     });
@@ -496,7 +466,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 if (!claims_officer && isOfficer) {
                     return res.status(400).json({ 
                         success: false, 
-                        error: `Principal pensioner is an officer (${penRank})`, 
+                        error: `You are linked to an officer rank (${penRank})`, 
                         code: 'MISSING_OFFICER_CLAIM', 
                         rank: penRank 
                     });
@@ -529,22 +499,23 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         error: "An account already exists for this beneficiary", 
                         code: 'ACCOUNT_EXISTS',
                         details: {
-                            afpsn: beneficiaryAfpsn,
+                            afpsn: heroData.AFPSN,
                             name: `${normalizedFirstname} ${normalizedLastname}`
                         }
                     });
                 }
 
                 // Generate token for active beneficiary
+                // Store principal name as additional info (not validated, just stored)
                 const tokenData = {
                     type: 'B',
-                    afpsn: beneficiaryAfpsn,
+                    afpsn: heroData.AFPSN, // Their own AFPSN from test_table
                     bos: null,
                     b_type,
-                    principal_afpsn: principalData.AFPSN,
-                    principal_first_name: normalizedPrincipalFirstname,
-                    principal_last_name: normalizedPrincipalLastname,
-                    principal_ndx: principalData.NDX,
+                    principal_afpsn: heroData.AFPSN, // Same as their AFPSN (linked)
+                    principal_first_name: normalizedPrincipalFirstname, // Additional info only
+                    principal_last_name: normalizedPrincipalLastname, // Additional info only
+                    principal_ndx: null, // We don't look up the principal for active beneficiaries
                     firstname: normalizedFirstname,
                     lastname: normalizedLastname,
                     dob,
@@ -567,13 +538,14 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     heroData: {
                         name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
                         afpsn: heroData.AFPSN,
+                        principalName: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`, // Just echoing back what they provided
                         type: 'B',
                         beneficiaryType: b_type,
                         dob: heroData.DOB
                     },
                     data: {
                         type: 'B',
-                        afpsn: beneficiaryAfpsn,
+                        afpsn: heroData.AFPSN,
                         rank: penRank,
                         isOfficer,
                         account_status: 'active',

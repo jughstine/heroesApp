@@ -600,7 +600,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         beneficiaryType: b_type,
                         dob: heroData.DOB,
                         isMinor: isMinor,
-                        guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null
+                        guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null,
+                        guardianEmail: isMinor ? guardianInfo.email : null 
                     },
                     data: {
                         type: 'B',

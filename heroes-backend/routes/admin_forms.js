@@ -733,9 +733,30 @@ router.get('/proxy-file', authenticateAdminToken, async (req, res) => {
   }
 });
 
-router.get('/', async (req, res) => {
+router.get('/', authenticateAdminToken, async (req, res) => {
   try {
     const pool = getPool();
+    const adminId = req.admin.id; // Get admin ID from the JWT token
+    
+    // First, get the admin's form permissions
+    const [permissions] = await pool.execute(`
+      SELECT form_type_id, can_view 
+      FROM admin_form_access 
+      WHERE admin_id = ? AND can_view = 1
+    `, [adminId]);
+    
+    // If admin has no view permissions, return empty array
+    if (!permissions || permissions.length === 0) {
+      return res.json({ 
+        success: true, 
+        data: [],
+        count: 0 
+      });
+    }
+    
+    // Get allowed form type IDs
+    const allowedFormTypeIds = permissions.map(p => p.form_type_id);
+    const placeholders = allowedFormTypeIds.map(() => '?').join(',');
     
     const [rows] = await pool.execute(`
       SELECT 
@@ -824,8 +845,9 @@ router.get('/', async (req, res) => {
       LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
       LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
+      WHERE fs.form_type_id IN (${placeholders})
       ORDER BY fs.submitted_at DESC
-    `);
+    `, allowedFormTypeIds);
 
     res.json({ 
       success: true, 

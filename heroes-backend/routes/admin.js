@@ -408,6 +408,28 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, profileU
       });
     }
 
+    let parsedNavPermissions = [];
+    let parsedFormPermissions = [];
+
+    try {
+      if (navPermissions) {
+        parsedNavPermissions = typeof navPermissions === 'string' 
+          ? JSON.parse(navPermissions) 
+          : navPermissions;
+      }
+      
+      if (formPermissions) {
+        parsedFormPermissions = typeof formPermissions === 'string' 
+          ? JSON.parse(formPermissions) 
+          : formPermissions;
+      }
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid permissions format'
+      });
+    }
+
     connection = await getDbConnection();
     await connection.beginTransaction();
 
@@ -466,17 +488,15 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, profileU
 
     const newAdminId = adminResult.insertId;
 
-    // Insert navigation permissions
-    if (navPermissions && navPermissions.length > 0) {
-      const navValues = navPermissions.map(navId => `(${newAdminId}, ${navId})`).join(',');
+    if (parsedNavPermissions && parsedNavPermissions.length > 0) {
+      const navValues = parsedNavPermissions.map(navId => `(${newAdminId}, ${navId})`).join(',');
       await connection.execute(
         `INSERT INTO admin_nav_access (admin_id, nav_permission_id) VALUES ${navValues}`
       );
     }
 
-    // Insert form permissions
-    if (formPermissions && formPermissions.length > 0) {
-      const formValues = formPermissions.map(fp => 
+    if (parsedFormPermissions && parsedFormPermissions.length > 0) {
+      const formValues = parsedFormPermissions.map(fp => 
         `(${newAdminId}, ${fp.formTypeId}, ${fp.canView ? 1 : 0}, ${fp.canCreate ? 1 : 0}, ${fp.canEdit ? 1 : 0}, ${fp.canDelete ? 1 : 0})`
       ).join(',');
       

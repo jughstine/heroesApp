@@ -10,18 +10,10 @@ const {
 const multer = require('multer');
 const { Client } = require('minio');
 
-const SORT_COLUMN_MAP = {
-  'id': 'fs.id',
-  'submitted_at': 'fs.submitted_at',
-  'status': 'fs.status',
-  'user_email': 'u.email',
-  'form_type_name': 'ft.name'
-};
-
 router.use(authenticateAdminToken);
 const upload = multer({
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit for PDFs
+    fileSize: 10 * 1024 * 1024,
   },
   storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
@@ -273,9 +265,11 @@ router.get('/history-logs/form/:form_id', async (req, res) => {
         hl.action_date,
         a.name as admin_name,
         a.email as admin_email,
-        a.role as admin_role
+        a.role as admin_role,
+        fs.form_reference
       FROM history_logs hl
       LEFT JOIN admins_tbl a ON hl.action_by = a.id
+      LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
       WHERE hl.form_submission_id = ?
       ORDER BY hl.action_date DESC
     `, [formId]);
@@ -284,6 +278,7 @@ router.get('/history-logs/form/:form_id', async (req, res) => {
       success: true,
       data: {
         form_id: formId,
+        form_reference: logs.length > 0 ? logs[0].form_reference : null,
         log_count: logs.length,
         logs: logs
       }
@@ -320,6 +315,7 @@ router.get('/history-logs/admin/:admin_id', async (req, res) => {
         hl.status,
         hl.remarks,
         hl.action_date,
+        fs.form_reference,
         ft.name as form_type_name,
         u.email as user_email,
         u.profile_picture,
@@ -404,11 +400,12 @@ router.get('/history-logs', async (req, res) => {
         hl.remarks LIKE ? OR 
         a.name LIKE ? OR 
         a.email LIKE ? OR 
+        fs.form_reference LIKE ? OR
         CAST(hl.id AS CHAR) LIKE ? OR
         CAST(hl.form_submission_id AS CHAR) LIKE ?
       )`);
       const searchParam = `%${search.trim()}%`;
-      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam);
+      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -417,6 +414,7 @@ router.get('/history-logs', async (req, res) => {
       'action_date': 'hl.action_date',
       'id': 'hl.id',
       'form_id': 'hl.form_submission_id',
+      'form_reference': 'fs.form_reference',
       'status': 'hl.status'
     };
     const sortColumn = sortColumns[sort_by] || sortColumns['action_date'];
@@ -447,6 +445,7 @@ router.get('/history-logs', async (req, res) => {
         a.name as admin_name,
         a.email as admin_email,
         a.role as admin_role,
+        fs.form_reference,
         ft.name as form_type_name,
         u.email as user_email,
         u.profile_picture,
@@ -664,6 +663,76 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
 
 // ==================== FORM SUBMISSION ROUTES ====================
 
+// Add OPTIONS handler for CORS preflight
+router.options('/proxy-file', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.status(200).end();
+});
+
+// Main proxy endpoint
+router.get('/proxy-file', authenticateAdminToken, async (req, res) => {
+  console.log('🎯 PROXY-FILE ENDPOINT HIT!');
+  console.log('Query params:', req.query);
+  console.log('Headers:', req.headers);
+  
+  try {
+    const { url } = req.query;
+    
+    if (!url || typeof url !== 'string') {
+      console.error('❌ No URL provided');
+      return res.status(400).json({ success: false, error: 'URL parameter required' });
+    }
+
+    const decodedUrl = decodeURIComponent(url);
+    console.log('🔓 Decoded URL:', decodedUrl.substring(0, 100));
+
+    if (!decodedUrl.startsWith('https://space-bucket-heroes.sgp1.digitaloceanspaces.com/')) {
+      console.error('❌ Invalid URL domain');
+      return res.status(403).json({ success: false, error: 'Invalid URL domain' });
+    }
+
+    console.log('⬇️ Fetching from DO Spaces...');
+    const response = await fetch(decodedUrl);
+    
+    if (!response.ok) {
+      console.error(`❌ DO Spaces fetch failed: ${response.status} ${response.statusText}`);
+      return res.status(response.status).json({ 
+        success: false, 
+        error: `Failed to fetch file: ${response.statusText}` 
+      });
+    }
+
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    console.log('✅ File fetched successfully:', {
+      contentType,
+      sizeKB: (buffer.length / 1024).toFixed(2)
+    });
+    
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Content-Length', buffer.length);
+    
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('💥 Proxy error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to proxy file',
+      details: error.message 
+    });
+  }
+});
+
 router.get('/', async (req, res) => {
   try {
     const pool = getPool();
@@ -673,6 +742,7 @@ router.get('/', async (req, res) => {
         fs.id,
         fs.user_id,
         fs.form_type_id,
+        fs.form_reference,
         fs.status,
         fs.submitted_at,
         fs.reviewed_at,
@@ -1442,10 +1512,19 @@ router.get('/location/:location_status', async (req, res) => {
   }
 });
 
-router.get('/:form_id', async (req, res) => {
+router.get('/:form_id', authenticateAdminToken, async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
+    const adminId = req.admin?.id;
+    
+    if (!adminId) {
+      console.error('Admin ID not found in request');
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Authentication required' 
+      });
+    }
     
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({ success: false, error: 'Invalid form ID' });
@@ -1458,6 +1537,7 @@ router.get('/:form_id', async (req, res) => {
         fs.id,
         fs.user_id,
         fs.form_type_id,
+        fs.form_reference,
         p.source_table
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
@@ -1480,6 +1560,7 @@ router.get('/:form_id', async (req, res) => {
       SELECT 
         fs.*,
         fs.location AS location_status,
+        fs.form_reference,
         ft.name AS form_type_name,
         u.email AS user_email,
         u.profile_picture,
@@ -1540,7 +1621,11 @@ router.get('/:form_id', async (req, res) => {
           WHEN p.source_table = 'test_res_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
-        END AS TYPE
+        END AS TYPE,
+
+        -- Admin permissions
+        afa.can_edit,
+        afa.can_delete
 
       FROM form_submission fs
       JOIN form_type ft ON fs.form_type_id = ft.id
@@ -1552,8 +1637,10 @@ router.get('/:form_id', async (req, res) => {
         ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
+      LEFT JOIN admin_form_access afa 
+        ON afa.admin_id = ? AND afa.form_type_id = fs.form_type_id
       WHERE fs.id = ?
-    `, [formId]);
+    `, [adminId, formId]);
 
     if (submissionRows.length === 0) {
       return res.status(404).json({ success: false, error: 'Form submission not found' });
@@ -1582,6 +1669,10 @@ router.get('/:form_id', async (req, res) => {
         longitude: submission.longitude,
         latitude: submission.latitude,
         status: submission.location_status
+      },
+      permissions: {
+        can_edit: submission.can_edit === 1 || submission.can_edit === true,
+        can_delete: submission.can_delete === 1 || submission.can_delete === true
       }
     };
 

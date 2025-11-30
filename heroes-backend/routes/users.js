@@ -341,11 +341,30 @@ function normalizeAfpsnForMatching(afpsn) {
 // SIGNUP
 // ========================================
 
+const calculateAge = (birthDate) => {
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  
+  return age;
+};
+
 router.post("/validate-identity", identityLimiter, sanitizeInput, validateDatabaseConnection, async (req, res) => {
     const startTime = Date.now();
 
     try {
-        const { type, afpsn, bos, b_type, principal_first_name, principal_last_name, firstname, lastname, dob, claims_officer } = req.body;
+        const { 
+            type, afpsn, bos, b_type, 
+            principal_first_name, principal_last_name, 
+            firstname, lastname, dob, claims_officer,
+            // Guardian fields
+            guardian_firstname, guardian_lastname, guardian_email, 
+            guardian_relationship, guardian_contact
+        } = req.body;
 
         // Validation
         if (!type || !afpsn || !firstname || !lastname || !dob) {
@@ -368,6 +387,66 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             return res.status(400).json({ success: false, error: "Beneficiary information required", code: 'MISSING_BENEFICIARY_INFO' });
         }
 
+        // Check if minor and validate guardian info EARLY
+        let isMinor = false;
+        let guardianInfo = null;
+        
+        if (type === 'B' && ['CH', 'SB'].includes(b_type)) {
+            const beneficiaryDob = new Date(dob);
+            const age = calculateAge(beneficiaryDob);
+            
+            // Check for minor status
+            if (age <= 13) {
+                isMinor = true;
+                
+                // Validate guardian information
+                if (!guardian_firstname || !guardian_lastname || !guardian_email) {
+                    return res.status(400).json({
+                        success: false,
+                        error: "Guardian information required for minors (13 and below)",
+                        code: 'GUARDIAN_INFO_REQUIRED',
+                        details: { 
+                            beneficiaryAge: age,
+                            requiredFields: ['guardian_firstname', 'guardian_lastname', 'guardian_email']
+                        }
+                    });
+                }
+                
+                // Validate guardian email format
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(guardian_email)) {
+                    return res.status(400).json({
+                        success: false,
+                        error: "Invalid guardian email format",
+                        code: 'INVALID_GUARDIAN_EMAIL'
+                    });
+                }
+                
+                // Store guardian info for token
+                guardianInfo = {
+                    firstname: guardian_firstname.trim().toUpperCase(),
+                    lastname: guardian_lastname.trim().toUpperCase(),
+                    email: guardian_email.trim().toLowerCase(),
+                    relationship: guardian_relationship || null,
+                    contact: guardian_contact || null
+                };
+            }
+            
+            // Age validation for CH (Child) and SB (Sibling) - max 20 years
+            if (age > 20) {
+                return res.status(400).json({
+                    success: false,
+                    error: `${b_type === 'CH' ? 'Child' : 'Sibling'} beneficiaries must be 20 years old or below`,
+                    code: 'AGE_LIMIT_EXCEEDED',
+                    details: {
+                        currentAge: age,
+                        maxAge: 20,
+                        beneficiaryType: b_type
+                    }
+                });
+            }
+        }
+
         // Normalize inputs
         const normalizedAfpsn = afpsn.trim().toUpperCase();
         const normalizedAfpsnNumeric = normalizeAfpsnForMatching(normalizedAfpsn);
@@ -379,38 +458,14 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             original: afpsn, 
             normalized: normalizedAfpsn, 
             numeric: normalizedAfpsnNumeric,
-            type: type 
+            type: type,
+            isMinor: isMinor
         });
 
         // === BENEFICIARY LOGIC (Type B) ===
         if (type === 'B') {
             const normalizedPrincipalFirstname = principal_first_name.trim().toUpperCase();
             const normalizedPrincipalLastname = principal_last_name.trim().toUpperCase();
-
-            // Age validation for CH (Child) and SB (Sibling)
-            if (['CH', 'SB'].includes(b_type)) {
-                const beneficiaryDob = new Date(dob);
-                const today = new Date();
-                let age = today.getFullYear() - beneficiaryDob.getFullYear();
-                const monthDiff = today.getMonth() - beneficiaryDob.getMonth();
-                
-                if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < beneficiaryDob.getDate())) {
-                    age--;
-                }
-
-                if (age > 20) {
-                    return res.status(400).json({
-                        success: false,
-                        error: `${b_type === 'CH' ? 'Child' : 'Sibling'} beneficiaries must be 20 years old or below`,
-                        code: 'AGE_LIMIT_EXCEEDED',
-                        details: {
-                            currentAge: age,
-                            maxAge: 20,
-                            beneficiaryType: b_type
-                        }
-                    });
-                }
-            }
 
             // Check if this beneficiary EXISTS in test_table as an ACTIVE beneficiary
             let existingBeneficiaryInTestTable;
@@ -439,18 +494,18 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 );
             }
 
-                        // If beneficiary is ACTIVE (exists in test_table with Type B)
+            // If beneficiary is ACTIVE (exists in test_table with Type B)
             if (existingBeneficiaryInTestTable.length > 0) {
                 const heroData = existingBeneficiaryInTestTable[0];
                 
                 logger.info('Active beneficiary found in test_table:', { 
                     name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
                     afpsn: heroData.AFPSN,
-                    ndx: heroData.NDX
+                    ndx: heroData.NDX,
+                    isMinor: isMinor
                 });
 
                 // For active beneficiaries, determine rank from their AFPSN
-                // The AFPSN links to the principal, so we check if it has officer designation
                 const penRank = heroData.PENRANK?.trim().toUpperCase();
                 const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
 
@@ -505,17 +560,15 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     });
                 }
 
-                // Generate token for active beneficiary
-                // Store principal name as additional info (not validated, just stored)
                 const tokenData = {
                     type: 'B',
-                    afpsn: heroData.AFPSN, // Their own AFPSN from test_table
+                    afpsn: heroData.AFPSN, 
                     bos: null,
                     b_type,
-                    principal_afpsn: heroData.AFPSN, // Same as their AFPSN (linked)
-                    principal_first_name: normalizedPrincipalFirstname, // Additional info only
-                    principal_last_name: normalizedPrincipalLastname, // Additional info only
-                    principal_ndx: null, // We don't look up the principal for active beneficiaries
+                    principal_afpsn: heroData.AFPSN, 
+                    principal_first_name: normalizedPrincipalFirstname, 
+                    principal_last_name: normalizedPrincipalLastname, 
+                    principal_ndx: null,
                     firstname: normalizedFirstname,
                     lastname: normalizedLastname,
                     dob,
@@ -525,6 +578,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     isOfficer,
                     account_status: 'active',
                     source_table: 'test_table',
+                    is_minor: isMinor,
+                    guardian_info: guardianInfo, // Add guardian info
                     validated_at: new Date().toISOString()
                 };
 
@@ -533,15 +588,19 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
 
                 return res.json({
                     success: true,
-                    message: "Active beneficiary identity verified successfully",
+                    message: isMinor 
+                        ? "Active minor beneficiary identity verified. Guardian will manage account." 
+                        : "Active beneficiary identity verified successfully",
                     identityToken,
                     heroData: {
                         name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
                         afpsn: heroData.AFPSN,
-                        principalName: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`, // Just echoing back what they provided
+                        principalName: `${normalizedPrincipalFirstname} ${normalizedPrincipalLastname}`, 
                         type: 'B',
                         beneficiaryType: b_type,
-                        dob: heroData.DOB
+                        dob: heroData.DOB,
+                        isMinor: isMinor,
+                        guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null
                     },
                     data: {
                         type: 'B',
@@ -549,7 +608,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         rank: penRank,
                         isOfficer,
                         account_status: 'active',
-                        source_table: 'test_table'
+                        source_table: 'test_table',
+                        isMinor: isMinor
                     },
                     meta: {
                         processingTime: `${Date.now() - startTime}ms`,
@@ -558,7 +618,6 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 });
             }
 
-            // STEP 2: If NOT in test_table, this is a NEW beneficiary application
             // Verify the principal pensioner exists FIRST
             let principalRecords;
             try {
@@ -717,6 +776,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 isOfficer,
                 account_status: 'beneficiary_application',
                 source_table: 'beneficiaries_table',
+                is_minor: isMinor,
+                guardian_info: guardianInfo, // Add guardian info
                 validated_at: new Date().toISOString()
             };
 
@@ -725,7 +786,9 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
 
             return res.json({
                 success: true,
-                message: "Beneficiary identity verified successfully",
+                message: isMinor 
+                    ? "Minor beneficiary application verified. Guardian will manage account. Pending approval."
+                    : "Beneficiary identity verified successfully",
                 identityToken,
                 heroData: {
                     beneficiaryName: `${normalizedFirstname} ${normalizedLastname}`,
@@ -733,7 +796,9 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     principalAfpsn: principalData.AFPSN,
                     type: 'B',
                     beneficiaryType: b_type,
-                    beneficiaryDob: dob
+                    beneficiaryDob: dob,
+                    isMinor: isMinor,
+                    guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null
                 },
                 data: {
                     type: 'B',
@@ -741,7 +806,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     rank: penRank,
                     isOfficer,
                     account_status: 'beneficiary_application',
-                    source_table: 'beneficiaries_table'
+                    source_table: 'beneficiaries_table',
+                    isMinor: isMinor
                 },
                 meta: {
                     processingTime: `${Date.now() - startTime}ms`,
@@ -1019,6 +1085,24 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             return res.status(400).json({ success: false, error: "Invalid or expired token", code: 'INVALID_IDENTITY_TOKEN' });
         }
 
+        // For minors, verify the email matches guardian email from validation
+        if (validationData.is_minor && validationData.guardian_info) {
+            const guardianEmail = validationData.guardian_info.email.toLowerCase().trim();
+            const providedEmail = email.toLowerCase().trim();
+            
+            if (providedEmail !== guardianEmail) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Email must match guardian email from validation",
+                    code: 'EMAIL_GUARDIAN_MISMATCH',
+                    details: {
+                        expected: guardianEmail,
+                        provided: providedEmail
+                    }
+                });
+            }
+        }
+
         // Validate email
         if (!validator.isEmail(email)) {
             return res.status(400).json({ success: false, error: "Invalid email format", code: 'INVALID_EMAIL_FORMAT' });
@@ -1058,147 +1142,148 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
                 let pensionerId;
                 let beneficiaryNdx = null;
+                let guardianId = null;
 
                 // === BENEFICIARY (Type B) ===
-// === BENEFICIARY (Type B) === - FIXED VERSION
-if (validationData.type === 'B') {
-    
-    // Check if this is an active beneficiary from test_table or a new application
-    if (validationData.source_table === 'test_table') {
-        // Active beneficiary from test_table (like active pensioner)
-        const [heroCheck] = await connection.execute(
-            `SELECT p.id FROM pensioners_tbl p 
-             WHERE p.hero_ndx = ? AND p.source_table = 'test_table' AND p.type = 'B'
-             FOR UPDATE`,
-            [validationData.hero_ndx]
-        );
+                if (validationData.type === 'B') {
+                    
+                    // Check if this is an active beneficiary from test_table or a new application
+                    if (validationData.source_table === 'test_table') {
+                        // Active beneficiary from test_table (like active pensioner)
+                        const [heroCheck] = await connection.execute(
+                            `SELECT p.id FROM pensioners_tbl p 
+                             WHERE p.hero_ndx = ? AND p.source_table = 'test_table' AND p.type = 'B'
+                             FOR UPDATE`,
+                            [validationData.hero_ndx]
+                        );
 
-        if (heroCheck.length > 0) {
-            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
-        }
+                        if (heroCheck.length > 0) {
+                            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
+                        }
 
-        // Insert pensioner record pointing to test_table
-        const [pensionerResult] = await connection.execute(
-            `INSERT INTO pensioners_tbl 
-             (hero_ndx, source_table, type, bos, b_type, 
-              principal_afpsn, principal_firstname, principal_lastname, account_status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                validationData.hero_ndx,
-                'test_table',
-                'B',
-                null, // bos
-                validationData.b_type || null,
-                validationData.principal_afpsn || null, // Add this
-                validationData.principal_first_name || null,
-                validationData.principal_last_name || null,
-                'active'
-            ]
-        );
+                        // Insert pensioner record pointing to test_table
+                        const [pensionerResult] = await connection.execute(
+                            `INSERT INTO pensioners_tbl 
+                             (hero_ndx, source_table, type, bos, b_type, 
+                              principal_afpsn, principal_firstname, principal_lastname, account_status) 
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            [
+                                validationData.hero_ndx,
+                                'test_table',
+                                'B',
+                                null, // bos
+                                validationData.b_type || null,
+                                validationData.principal_afpsn || null,
+                                validationData.principal_first_name || null,
+                                validationData.principal_last_name || null,
+                                'active'
+                            ]
+                        );
 
-        pensionerId = pensionerResult.insertId;
-        if (!pensionerId) throw new Error('Failed to create pensioner record');
+                        pensionerId = pensionerResult.insertId;
+                        if (!pensionerId) throw new Error('Failed to create pensioner record');
 
-    } else {
-        // New beneficiary application - insert into beneficiaries_table
-        const [existingBeneficiary] = await connection.execute(
-            `SELECT p.id FROM pensioners_tbl p
-             LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
-             WHERE UPPER(TRIM(b.FIRSTNAME)) = ?
-             AND UPPER(TRIM(b.LASTNAME)) = ?
-             AND DATE(b.DOB) = DATE(?)
-             AND UPPER(TRIM(p.principal_firstname)) = ?
-             AND UPPER(TRIM(p.principal_lastname)) = ?
-             AND p.b_type = ?
-             AND p.type = 'B'
-             AND p.source_table = 'beneficiaries_table'
-             FOR UPDATE`,
-            [
-                validationData.firstname,
-                validationData.lastname,
-                validationData.dob,
-                validationData.principal_first_name,
-                validationData.principal_last_name,
-                validationData.b_type
-            ]
-        );
+                    } else {
+                        // New beneficiary application - insert into beneficiaries_table
+                        const [existingBeneficiary] = await connection.execute(
+                            `SELECT p.id FROM pensioners_tbl p
+                             LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
+                             WHERE UPPER(TRIM(b.FIRSTNAME)) = ?
+                             AND UPPER(TRIM(b.LASTNAME)) = ?
+                             AND DATE(b.DOB) = DATE(?)
+                             AND UPPER(TRIM(p.principal_firstname)) = ?
+                             AND UPPER(TRIM(p.principal_lastname)) = ?
+                             AND p.b_type = ?
+                             AND p.type = 'B'
+                             AND p.source_table = 'beneficiaries_table'
+                             FOR UPDATE`,
+                            [
+                                validationData.firstname,
+                                validationData.lastname,
+                                validationData.dob,
+                                validationData.principal_first_name,
+                                validationData.principal_last_name,
+                                validationData.b_type
+                            ]
+                        );
 
-        if (existingBeneficiary.length > 0) {
-            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
-        }
+                        if (existingBeneficiary.length > 0) {
+                            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
+                        }
 
-        // FIXED: Insert beneficiary into beneficiaries_table with proper null handling
-        const [beneficiaryResult] = await connection.execute(
-            `INSERT INTO beneficiaries_table 
-             (FIRSTNAME, LASTNAME, DOB, AFPSN, TYPE, PENRANK, ACRANK) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [
-                validationData.firstname,
-                validationData.lastname,
-                validationData.dob,
-                validationData.afpsn || validationData.principal_afpsn, // Use principal AFPSN if afpsn is not set
-                'B',
-                validationData.penRank || null, // Explicitly handle null
-                validationData.acRank || null    // Explicitly handle null
-            ]
-        );
+                        // Insert beneficiary into beneficiaries_table
+                        const [beneficiaryResult] = await connection.execute(
+                            `INSERT INTO beneficiaries_table 
+                             (FIRSTNAME, LASTNAME, DOB, AFPSN, TYPE, PENRANK, ACRANK) 
+                             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                            [
+                                validationData.firstname,
+                                validationData.lastname,
+                                validationData.dob,
+                                validationData.afpsn || validationData.principal_afpsn,
+                                'B',
+                                validationData.penRank || null,
+                                validationData.acRank || null
+                            ]
+                        );
 
-        beneficiaryNdx = beneficiaryResult.insertId;
-        if (!beneficiaryNdx) throw new Error('Failed to create beneficiary record');
+                        beneficiaryNdx = beneficiaryResult.insertId;
+                        if (!beneficiaryNdx) throw new Error('Failed to create beneficiary record');
 
-        // FIXED: Insert pensioner record with proper null handling
-        const [pensionerResult] = await connection.execute(
-            `INSERT INTO pensioners_tbl 
-             (hero_ndx, source_table, type, bos, b_type, 
-              principal_afpsn, principal_firstname, principal_lastname, 
-             principal_ndx, account_status) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                beneficiaryNdx,
-                'beneficiaries_table',
-                'B',
-                null, // bos is always null for beneficiaries
-                validationData.b_type || null,
-                validationData.principal_afpsn || validationData.afpsn, // Ensure we have principal AFPSN
-                validationData.principal_first_name || null,
-                validationData.principal_last_name || null,
-                validationData.principal_ndx || null,     // Explicitly handle null
-                'beneficiary_application'
-            ]
-        );
+                        // Insert pensioner record
+                        const [pensionerResult] = await connection.execute(
+                            `INSERT INTO pensioners_tbl 
+                             (hero_ndx, source_table, type, bos, b_type, 
+                              principal_afpsn, principal_firstname, principal_lastname, 
+                             principal_ndx, account_status) 
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            [
+                                beneficiaryNdx,
+                                'beneficiaries_table',
+                                'B',
+                                null,
+                                validationData.b_type || null,
+                                validationData.principal_afpsn || validationData.afpsn,
+                                validationData.principal_first_name || null,
+                                validationData.principal_last_name || null,
+                                validationData.principal_ndx || null,
+                                'beneficiary_application'
+                            ]
+                        );
 
-        pensionerId = pensionerResult.insertId;
-        if (!pensionerId) throw new Error('Failed to create pensioner record');
-    }
+                        pensionerId = pensionerResult.insertId;
+                        if (!pensionerId) throw new Error('Failed to create pensioner record');
+                    }
 
-} else {
-    // === PRINCIPAL (Type P) - Use existing hero_ndx from test_table or test_res_table ===
-    const [heroCheck] = await connection.execute(
-        `SELECT p.id FROM pensioners_tbl p 
-         WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
-         FOR UPDATE`,
-        [validationData.hero_ndx, validationData.source_table]
-    );
+                } else {
+                    // === PRINCIPAL (Type P) - Use existing hero_ndx from test_table or test_res_table ===
+                    const [heroCheck] = await connection.execute(
+                        `SELECT p.id FROM pensioners_tbl p 
+                         WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
+                         FOR UPDATE`,
+                        [validationData.hero_ndx, validationData.source_table]
+                    );
 
-    if (heroCheck.length > 0) {
-        throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this record' };
-    }
+                    if (heroCheck.length > 0) {
+                        throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this record' };
+                    }
 
-    const [pensionerResult] = await connection.execute(
-        `INSERT INTO pensioners_tbl (hero_ndx, source_table, type, bos, account_status) 
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-            validationData.hero_ndx,
-            validationData.source_table,
-            'P',
-            validationData.bos || null,
-            validationData.account_status
-        ]
-    );
+                    const [pensionerResult] = await connection.execute(
+                        `INSERT INTO pensioners_tbl (hero_ndx, source_table, type, bos, account_status) 
+                         VALUES (?, ?, ?, ?, ?)`,
+                        [
+                            validationData.hero_ndx,
+                            validationData.source_table,
+                            'P',
+                            validationData.bos || null,
+                            validationData.account_status
+                        ]
+                    );
 
-    pensionerId = pensionerResult.insertId;
-    if (!pensionerId) throw new Error('Failed to create pensioner');
-}
+                    pensionerId = pensionerResult.insertId;
+                    if (!pensionerId) throw new Error('Failed to create pensioner');
+                }
+
                 // Determine initial user status
                 let initialUserStatus;
                 if (validationData.type === 'B') {
@@ -1223,6 +1308,38 @@ if (validationData.type === 'B') {
                 const userId = userResult.insertId;
                 if (!userId) throw new Error('Failed to create user');
 
+                // === CREATE GUARDIAN RECORD IF MINOR ===
+                if (validationData.is_minor && validationData.guardian_info) {
+                    try {
+                        const [guardianResult] = await connection.execute(
+                            `INSERT INTO guardians_tbl 
+                             (pensioner_ndx, firstname, lastname, email, contact_number, relationship) 
+                             VALUES (?, ?, ?, ?, ?, ?)`,
+                            [
+                                pensionerId,
+                                validationData.guardian_info.firstname,
+                                validationData.guardian_info.lastname,
+                                validationData.guardian_info.email,
+                                validationData.guardian_info.contact || null,
+                                validationData.guardian_info.relationship || null
+                            ]
+                        );
+                        
+                        guardianId = guardianResult.insertId;
+                        if (!guardianId) throw new Error('Failed to create guardian record');
+                        
+                        logger.info('Guardian record created:', {
+                            guardianId,
+                            pensionerId,
+                            email: validationData.guardian_info.email,
+                            beneficiary: `${validationData.firstname} ${validationData.lastname}`
+                        });
+                    } catch (guardianError) {
+                        logger.error('Failed to create guardian record:', guardianError);
+                        throw new Error('Failed to create guardian record: ' + guardianError.message);
+                    }
+                }
+
                 // Delete token
                 await connection.execute('DELETE FROM signup_tokens WHERE token = ?', [identityToken]);
 
@@ -1232,10 +1349,13 @@ if (validationData.type === 'B') {
                     userId,
                     pensionerId,
                     beneficiaryNdx,
+                    guardianId,
                     email: normalizedEmail,
                     status: initialUserStatus,
                     account_status: validationData.account_status,
-                    type: validationData.type
+                    type: validationData.type,
+                    isMinor: validationData.is_minor || false,
+                    hasGuardian: !!guardianId
                 };
 
             } catch (error) {
@@ -1251,9 +1371,17 @@ if (validationData.type === 'B') {
             let message;
             if (validationData.type === 'B') {
                 if (validationData.source_table === 'test_table') {
-                    message = "Active beneficiary account created successfully";
+                    if (validationData.is_minor) {
+                        message = "Minor beneficiary account created. Guardian will manage this account.";
+                    } else {
+                        message = "Active beneficiary account created successfully";
+                    }
                 } else {
-                    message = "Beneficiary application submitted. Pending approval.";
+                    if (validationData.is_minor) {
+                        message = "Minor beneficiary application submitted with guardian. Pending approval.";
+                    } else {
+                        message = "Beneficiary application submitted. Pending approval.";
+                    }
                 }
             } else if (validationData.account_status === 'resumption') {
                 message = "Account created. Pending approval for resumption.";
@@ -2371,7 +2499,6 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
       });
     }
 
-    // ✅ Now query using the correct table
     const userProfile = await executeQuery(
       `
         SELECT 
@@ -2442,7 +2569,6 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
 
     const processingTime = Date.now() - startTime;
 
-    // ✅ Unified response
     res.json({
       success: true,
       user_id: profile.user_id,
@@ -2935,6 +3061,30 @@ router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) =
       });
     }
 
+    // Check if AFPSN already exists in the target table
+    const existingRecord = await executeQuery(`
+      SELECT NDX, LASTNAME, FIRSTNAME, MIDDLENAME, AFPSN 
+      FROM ${targetTable} 
+      WHERE AFPSN = ?
+    `, [afpsn]);
+
+    if (existingRecord && existingRecord.length > 0) {
+      const existing = existingRecord[0];
+      const existingName = `${existing.FIRSTNAME} ${existing.MIDDLENAME || ''} ${existing.LASTNAME}`.trim();
+      
+      return res.status(409).json({
+        success: false,
+        error: "AFPSN already exists in the database",
+        code: "DUPLICATE_AFPSN",
+        existingRecord: {
+          ndx: existing.NDX,
+          name: existingName,
+          afpsn: existing.AFPSN
+        },
+        targetTable: targetTable
+      });
+    }
+
     const result = await executeQuery(`
       INSERT INTO ${targetTable} (
         LASTNAME,
@@ -2988,6 +3138,125 @@ router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) =
       success: false,
       error: "Failed to add record to list",
       code: "ALPHA_LIST_ADD_ERROR",
+      processingTime: `${processingTime}ms`,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+router.put("/update-alpha-list/:id", validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const { id } = req.params;
+    const {
+      targetTable,
+      lastname,
+      firstname,
+      middlename,
+      suffix,
+      dob,
+      prin_date_ret,
+      afpsn,
+      acrank,
+      penrank,
+      type,
+      ctrlnr,
+      mobilenr
+    } = req.body;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: "Record ID is required",
+        code: "VALIDATION_ERROR"
+      });
+    }
+
+    if (!lastname || !firstname || !afpsn) {
+      return res.status(400).json({
+        success: false,
+        error: "Last name, first name, and AFPSN are required",
+        code: "VALIDATION_ERROR"
+      });
+    }
+
+    if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid target table",
+        code: "VALIDATION_ERROR"
+      });
+    }
+
+    // Check if record exists using NDX (the primary key)
+    const existingRecord = await executeQuery(`
+      SELECT NDX FROM ${targetTable} WHERE NDX = ?
+    `, [id]);
+
+    if (!existingRecord || existingRecord.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Record not found",
+        code: "RECORD_NOT_FOUND"
+      });
+    }
+
+    // Update the record (column names are UPPERCASE)
+    const result = await executeQuery(`
+      UPDATE ${targetTable} SET
+        LASTNAME = ?,
+        FIRSTNAME = ?,
+        MIDDLENAME = ?,
+        SUFFIX = ?,
+        DOB = ?,
+        PRIN_DATE_RET = ?,
+        AFPSN = ?,
+        ACRANK = ?,
+        PENRANK = ?,
+        TYPE = ?,
+        CTRLNR = ?,
+        MOBILENR = ?
+      WHERE NDX = ?
+    `, [
+      lastname,
+      firstname,
+      middlename || null,
+      suffix || null,
+      dob || null,
+      prin_date_ret || null,
+      afpsn,
+      acrank || null,
+      penrank || null,
+      type || 'P',
+      ctrlnr || null,
+      mobilenr || null,
+      id
+    ]);
+
+    const processingTime = Date.now() - startTime;
+    res.json({
+      success: true,
+      message: `Record updated successfully in ${targetTable}`,
+      affectedRows: result.affectedRows,
+      targetTable: targetTable,
+      meta: {
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    logger.error("Update alpha list error:", {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+    });
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to update record in list",
+      code: "ALPHA_LIST_UPDATE_ERROR",
       processingTime: `${processingTime}ms`,
       timestamp: new Date().toISOString(),
     });

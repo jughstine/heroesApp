@@ -7,6 +7,46 @@ const db = require('../config/database');
 const { 
   sendStatusChangeNotification 
 } = require('../services/pushNotificationService');
+const multer = require('multer');
+const { Client } = require('minio');
+
+const toPHTimeISO = () => {
+  const now = new Date();
+  const phTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Manila' }));
+  
+  const year = phTime.getFullYear();
+  const month = String(phTime.getMonth() + 1).padStart(2, '0');
+  const day = String(phTime.getDate()).padStart(2, '0');
+  const hours = String(phTime.getHours()).padStart(2, '0');
+  const minutes = String(phTime.getMinutes()).padStart(2, '0');
+  const seconds = String(phTime.getSeconds()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+};
+
+const profileUpload = multer({
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit for profile pictures
+  },
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type: ${file.mimetype}. Only JPEG, PNG, and WebP images are allowed.`), false);
+    }
+  }
+});
+
+const minioClient = new Client({
+  endPoint: process.env.SPACES_ENDPOINT.replace('https://', ''),
+  port: 443,
+  useSSL: true,
+  accessKey: process.env.SPACES_KEY,
+  secretKey: process.env.SPACES_SECRET,
+});
 
 const getPool = () => {
   if (typeof db.getPool === 'function') {
@@ -59,7 +99,7 @@ router.post('/login', async (req, res) => {
     }
 
     const query = `
-      SELECT id, email, password_hash, name, mobile_number, role, created_at, last_login_at
+      SELECT id, email, password_hash, name, mobile_number, role, profile_picture, created_at, last_login_at
       FROM admins_tbl 
       WHERE email = ? 
       LIMIT 1
@@ -85,8 +125,35 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    const updateLoginQuery = 'UPDATE admins_tbl SET last_login_at = NOW() WHERE id = ?';
+    // Helper function to convert datetime from DB (assumed UTC) to PH time ISO string
+    const convertToPHTime = (dateInput) => {
+      if (!dateInput) return null;
+      
+      // If it's already a Date object, use it; otherwise create one
+      const utcDate = dateInput instanceof Date ? dateInput : new Date(dateInput);
+      
+      // Add 8 hours to convert UTC to PH time (UTC+8)
+      const phDate = new Date(utcDate.getTime() + (8 * 60 * 60 * 1000));
+      
+      const year = phDate.getUTCFullYear();
+      const month = String(phDate.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(phDate.getUTCDate()).padStart(2, '0');
+      const hours = String(phDate.getUTCHours()).padStart(2, '0');
+      const minutes = String(phDate.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(phDate.getUTCSeconds()).padStart(2, '0');
+      
+      return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
+    };
+
+    // Get current PH time for the login timestamp
+    const currentPHTime = convertToPHTime(new Date());
+
+    // Update last login - use CONVERT_TZ to ensure it's stored in PH time
+    const updateLoginQuery = `UPDATE admins_tbl SET last_login_at = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00') WHERE id = ?`;
     await executeQuery(updateLoginQuery, [admin.id]);
+
+    // Convert createdAt to PH time if it exists
+    const createdAtPH = admin.created_at ? convertToPHTime(new Date(admin.created_at)) : null;
 
     const jwtPayload = {
       adminId: admin.id,
@@ -95,7 +162,7 @@ router.post('/login', async (req, res) => {
       name: admin.name,
       mobileNumber: admin.mobile_number,
       role: admin.role,
-      loginAt: new Date().toISOString(),
+      loginAt: currentPHTime,
       type: 'admin'
     };
 
@@ -118,8 +185,9 @@ router.post('/login', async (req, res) => {
         name: admin.name,
         mobileNumber: admin.mobile_number,
         role: admin.role,
-        createdAt: admin.created_at,
-        lastLoginAt: new Date().toISOString()
+        profile_picture: admin.profile_picture,
+        createdAt: createdAtPH,
+        lastLoginAt: currentPHTime  // Use current PH time since we just updated it
       },
       token: token
     });
@@ -140,29 +208,33 @@ const authenticateAdminToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
+    console.error('❌ No token provided');
     return res.status(401).json({
       success: false,
       error: 'Access token required'
     });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, admin) => {
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      console.error('Admin JWT verification error:', err.message);
+      console.error('❌ JWT verification error:', err.message);
       return res.status(403).json({
         success: false,
-        error: 'Invalid or expired token'
+        error: 'Invalid or expired token',
+        details: err.message
+      });
+    }
+    
+    if (decoded.type !== 'admin') {
+      console.error('❌ Not an admin user. Decoded token:', decoded);
+      return res.status(403).json({
+        success: false,
+        error: 'Admin access required',
+        receivedType: decoded.type // For debugging
       });
     }
 
-    if (admin.type !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Admin access required'
-      });
-    }
-
-    req.admin = admin;
+    req.admin = decoded;
     next();
   });
 };
@@ -194,7 +266,7 @@ router.get('/profile', authenticateAdminToken, (req, res) => {
 router.get('/admins', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   try {
     const query = `
-      SELECT id, email, name, mobile_number, role, created_at, last_login_at
+      SELECT id, email, name, mobile_number, role, created_at, last_login_at, profile_picture
       FROM admins_tbl 
       ORDER BY created_at DESC
     `;
@@ -323,7 +395,7 @@ router.get('/my-permissions', authenticateAdminToken, async (req, res) => {
   }
 });
 
-router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
+router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, profileUpload.single('profilePicture'), async (req, res) => {
   let connection;
   try {
     const { email, password, name, mobileNumber, role, navPermissions, formPermissions } = req.body;
@@ -353,19 +425,42 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (r
       });
     }
 
+    // Upload profile picture if provided
+    let profilePictureUrl = null;
+    if (req.file) {
+      const timestamp = Date.now();
+      const fileName = `admin-profiles/${timestamp}-${req.file.originalname}`;
+      
+      await minioClient.putObject(
+        process.env.SPACES_BUCKET,
+        fileName,
+        req.file.buffer,
+        req.file.size,
+        {
+          'Content-Type': req.file.mimetype,
+          'x-amz-acl': 'public-read',
+          'x-amz-meta-original-name': req.file.originalname,
+          'x-amz-meta-upload-timestamp': timestamp.toString()
+        }
+      );
+      
+      profilePictureUrl = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
+    }
+
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Insert new admin
+    // Insert new admin with profile picture
     const [adminResult] = await connection.execute(
-      `INSERT INTO admins_tbl (email, password_hash, name, mobile_number, role, created_at)
-       VALUES (?, ?, ?, ?, ?, NOW())`,
+      `INSERT INTO admins_tbl (email, password_hash, name, mobile_number, role, profile_picture, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
       [
         email.trim().toLowerCase(),
         hashedPassword,
         name.trim(),
         mobileNumber || null,
-        role || 'ADMIN'
+        role || 'ADMIN',
+        profilePictureUrl
       ]
     );
 
@@ -402,7 +497,8 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (r
         email: email.trim().toLowerCase(),
         name: name.trim(),
         mobileNumber: mobileNumber || null,
-        role: role || 'ADMIN'
+        role: role || 'ADMIN',
+        profilePictureUrl
       }
     });
 
@@ -420,7 +516,7 @@ router.post('/create-admin', authenticateAdminToken, requireSuperAdmin, async (r
     } else {
       res.status(500).json({
         success: false,
-        error: 'Failed to create admin account'
+        error: error.message || 'Failed to create admin account'
       });
     }
   } finally {
@@ -434,9 +530,8 @@ router.get('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (req, 
   try {
     const adminId = req.params.id;
 
-    // Get admin basic info
     const admins = await executeQuery(
-      `SELECT id, email, name, mobile_number, role, created_at, last_login_at 
+      `SELECT id, email, name, mobile_number, role, profile_picture, created_at, last_login_at 
        FROM admins_tbl WHERE id = ?`,
       [adminId]
     );
@@ -481,7 +576,7 @@ router.get('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (req, 
   }
 });
 
-router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
+router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, profileUpload.single('profilePicture'), async (req, res) => {
   let connection;
   try {
     const adminId = req.params.id;
@@ -490,9 +585,9 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, asy
     connection = await getDbConnection();
     await connection.beginTransaction();
 
-    // If changing password, verify current one
     if (password) {
       if (!currentPassword) {
+        await connection.rollback();
         return res.status(400).json({
           success: false,
           error: 'Current password is required to set a new password'
@@ -505,13 +600,57 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, asy
       );
 
       if (rows.length === 0) {
+        await connection.rollback();
         return res.status(404).json({ success: false, error: 'Admin not found' });
       }
 
       const isValid = await bcrypt.compare(currentPassword, rows[0].password_hash);
       if (!isValid) {
+        await connection.rollback();
         return res.status(401).json({ success: false, error: 'Current password is incorrect' });
       }
+    }
+
+    // Handle profile picture upload
+    let profilePictureUrl = null;
+    if (req.file) {
+      // Get existing profile picture to delete
+      const [existingAdmin] = await connection.execute(
+        'SELECT profile_picture FROM admins_tbl WHERE id = ?',
+        [adminId]
+      );
+
+      // Delete old profile picture from Spaces if exists
+      if (existingAdmin.length > 0 && existingAdmin[0].profile_picture) {
+        try {
+          const oldKey = existingAdmin[0].profile_picture.split('.digitaloceanspaces.com/')[1];
+          if (oldKey) {
+            await minioClient.removeObject(process.env.SPACES_BUCKET, oldKey);
+          }
+        } catch (err) {
+          console.error('Error deleting old profile picture:', err);
+          // Continue even if deletion fails
+        }
+      }
+
+      // Upload new profile picture
+      const timestamp = Date.now();
+      const fileName = `admin-profiles/${timestamp}-${req.file.originalname}`;
+      
+      await minioClient.putObject(
+        process.env.SPACES_BUCKET,
+        fileName,
+        req.file.buffer,
+        req.file.size,
+        {
+          'Content-Type': req.file.mimetype,
+          'x-amz-acl': 'public-read',
+          'x-amz-meta-original-name': req.file.originalname,
+          'x-amz-meta-upload-timestamp': timestamp.toString()
+        }
+      );
+      
+      profilePictureUrl = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
     }
 
     const updates = [];
@@ -533,7 +672,13 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, asy
       values.push(role);
     }
 
+    if (profilePictureUrl) {
+      updates.push('profile_picture = ?');
+      values.push(profilePictureUrl);
+    }
+
     if (updates.length === 0) {
+      await connection.rollback();
       return res.status(400).json({ success: false, error: 'No fields to update' });
     }
 
@@ -548,7 +693,10 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, asy
 
     res.json({
       success: true,
-      message: 'Admin settings updated successfully'
+      message: 'Admin settings updated successfully',
+      data: {
+        profilePictureUrl: profilePictureUrl || undefined
+      }
     });
 
   } catch (error) {
@@ -564,14 +712,13 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, asy
 
     res.status(500).json({
       success: false,
-      error: 'Failed to update admin settings'
+      error: error.message || 'Failed to update admin settings'
     });
 
   } finally {
     if (connection) await connection.end();
   }
 });
-
 
 router.put('/admin/:id/permissions', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   let connection;
@@ -671,7 +818,6 @@ router.delete('/admin/:id', authenticateAdminToken, requireSuperAdmin, async (re
     }
   }
 });
-
 
 router.get('/stats', authenticateAdminToken, requireSuperAdmin, async (req, res) => {
   try {
@@ -908,6 +1054,7 @@ router.put('/users/:userId/status', authenticateAdminToken, async (req, res) => 
   }
 });
 
+// ==================== TRANSFER/DELETE TO ALPHA ROUTES ====================
 router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (req, res) => {
     const startTime = Date.now();
     let connection;
@@ -1137,6 +1284,242 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
     }
 });
 
+router.post("/pensioners/:heroNdx/transfer-to-alpha", authenticateAdminToken, async (req, res) => {
+    const startTime = Date.now();
+    let connection;
+
+    try {
+        const { heroNdx } = req.params;
+        const { sourceTable } = req.body; 
+
+        if (!sourceTable || !['test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid or missing source table. Must be 'test_res_table' or 'beneficiaries_table'",
+                code: 'INVALID_SOURCE_TABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const heroData = await executeQuery(`
+            SELECT 
+                NDX,
+                LASTNAME,
+                FIRSTNAME,
+                MIDDLENAME,
+                SUFFIX,
+                DOB,
+                PRIN_DATE_RET,
+                AFPSN,
+                ACRANK,
+                PENRANK,
+                TYPE,
+                CTRLNR,
+                MOBILENR
+            FROM ${sourceTable}
+            WHERE NDX = ?
+            LIMIT 1
+        `, [heroNdx]);
+
+        if (heroData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: `Hero data not found in ${sourceTable}`,
+                code: 'HERO_DATA_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const hero = heroData[0];
+        const existingInAlpha = await executeQuery(`
+            SELECT NDX FROM test_table WHERE AFPSN = ? LIMIT 1
+        `, [hero.AFPSN]);
+
+        if (existingInAlpha.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: "Record with this AFPSN already exists in Alpha List",
+                code: 'ALREADY_IN_ALPHA',
+                existingNdx: existingInAlpha[0].NDX,
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        connection = await getDbConnection();
+        await connection.beginTransaction();
+
+        try {
+            // Insert into test_table (Alpha List)
+            const [insertResult] = await connection.execute(`
+                INSERT INTO test_table (
+                    LASTNAME,
+                    FIRSTNAME,
+                    MIDDLENAME,
+                    SUFFIX,
+                    DOB,
+                    PRIN_DATE_RET,
+                    AFPSN,
+                    ACRANK,
+                    PENRANK,
+                    TYPE,
+                    CTRLNR,
+                    MOBILENR
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                hero.LASTNAME,
+                hero.FIRSTNAME,
+                hero.MIDDLENAME,
+                hero.SUFFIX,
+                hero.DOB,
+                hero.PRIN_DATE_RET,
+                hero.AFPSN,
+                hero.ACRANK,
+                hero.PENRANK,
+                hero.TYPE,
+                hero.CTRLNR,
+                hero.MOBILENR
+            ]);
+
+            const newHeroNdx = insertResult.insertId;
+
+            // Delete from source table
+            await connection.execute(`
+                DELETE FROM ${sourceTable}
+                WHERE NDX = ?
+            `, [heroNdx]);
+
+            await connection.commit();
+
+            const processingTime = Date.now() - startTime;
+
+            res.json({
+                success: true,
+                message: "Record successfully transferred to Alpha List",
+                data: {
+                    oldHeroNdx: parseInt(heroNdx),
+                    newHeroNdx: newHeroNdx,
+                    oldSourceTable: sourceTable,
+                    newSourceTable: 'test_table',
+                    afpsn: hero.AFPSN,
+                    name: `${hero.FIRSTNAME} ${hero.LASTNAME}`
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        console.error("Transfer to Alpha error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to transfer record to Alpha List",
+            code: 'TRANSFER_ERROR',
+            details: error.message,
+            processingTime: `${processingTime}ms`
+        });
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+});
+
+router.delete("/pensioners/:heroNdx", authenticateAdminToken, async (req, res) => {
+    const startTime = Date.now();
+    let connection;
+
+    try {
+        const { heroNdx } = req.params;
+        const { sourceTable } = req.query;
+
+        if (!sourceTable || !['test_table', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid or missing source table",
+                code: 'INVALID_SOURCE_TABLE',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        // Check if record exists
+        const recordCheck = await executeQuery(`
+            SELECT NDX, LASTNAME, FIRSTNAME, AFPSN 
+            FROM ${sourceTable} 
+            WHERE NDX = ? 
+            LIMIT 1
+        `, [heroNdx]);
+
+        if (recordCheck.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: `Record not found in ${sourceTable}`,
+                code: 'RECORD_NOT_FOUND',
+                processingTime: `${Date.now() - startTime}ms`
+            });
+        }
+
+        const record = recordCheck[0];
+
+        connection = await getDbConnection();
+        await connection.beginTransaction();
+
+        try {
+            // Delete the record
+            await connection.execute(`
+                DELETE FROM ${sourceTable}
+                WHERE NDX = ?
+            `, [heroNdx]);
+
+            await connection.commit();
+
+            const processingTime = Date.now() - startTime;
+
+            res.json({
+                success: true,
+                message: "Record successfully deleted",
+                data: {
+                    deletedNdx: parseInt(heroNdx),
+                    sourceTable: sourceTable,
+                    afpsn: record.AFPSN,
+                    name: `${record.FIRSTNAME} ${record.LASTNAME}`
+                },
+                meta: {
+                    processingTime: `${processingTime}ms`,
+                    timestamp: new Date().toISOString()
+                }
+            });
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        console.error("Delete record error:", error);
+
+        res.status(500).json({
+            success: false,
+            error: "Failed to delete record",
+            code: 'DELETE_ERROR',
+            details: error.message,
+            processingTime: `${processingTime}ms`
+        });
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+});
+
 router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, res) => {
     const startTime = Date.now();
     let connection;
@@ -1186,20 +1569,15 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                     WHERE form_submission_id IN (${placeholders})
                 `, formSubmissionIds);
 
-                console.log(`Deleted history logs for ${formSubmissionIds.length} form submissions`);
             }
 
             const [deleteFormsResult] = await connection.execute(`
                 DELETE FROM form_submission WHERE user_id = ?
             `, [userId]);
 
-            console.log(`Deleted ${deleteFormsResult.affectedRows} form submissions`);
-
             const [deleteUserResult] = await connection.execute(`
                 DELETE FROM users_tbl WHERE id = ?
             `, [userId]);
-
-            console.log(`Deleted user from users_tbl`);
 
             let deletedPensioner = false;
             if (user.pensioner_id) {
@@ -1208,7 +1586,6 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                 `, [user.pensioner_id]);
                 
                 deletedPensioner = deletePensionerResult.affectedRows > 0;
-                console.log(`Deleted pensioner record: ${deletedPensioner}`);
             }
 
             let deletedFromSourceTable = false;
@@ -1221,9 +1598,7 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
                     `, [user.hero_ndx]);
                     
                     deletedFromSourceTable = deleteHeroResult.affectedRows > 0;
-                    console.log(`Deleted from ${sourceTable}: ${deletedFromSourceTable}`);
                 } catch (error) {
-                    console.log(`Note: Could not delete from ${sourceTable}:`, error.message);
                 }
             }
 

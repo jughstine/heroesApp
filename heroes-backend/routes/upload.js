@@ -31,7 +31,6 @@ const checkDatabaseHealth = async () => {
   }
 };
 
-// Configure multer for file uploads
 const upload = multer({
   limits: {
     fileSize: 500 * 1024 * 1024, // 500MB limit

@@ -799,7 +799,8 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     beneficiaryType: b_type,
                     beneficiaryDob: dob,
                     isMinor: isMinor,
-                    guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null
+                    guardianName: isMinor ? `${guardianInfo.firstname} ${guardianInfo.lastname}` : null,
+                    guardianEmail: isMinor ? guardianInfo.email : null
                 },
                 data: {
                     type: 'B',
@@ -1074,7 +1075,11 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         const { identityToken, email, password } = req.body;
 
         if (!identityToken || !email || !password) {
-            return res.status(400).json({ success: false, error: "Missing required fields", code: 'MISSING_REQUIRED_FIELDS' });
+            return res.status(400).json({ 
+                success: false,
+                error: "Missing required fields", 
+                code: 'MISSING_REQUIRED_FIELDS' 
+            });
         }
 
         // Validate token

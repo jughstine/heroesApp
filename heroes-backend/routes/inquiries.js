@@ -76,7 +76,7 @@ router.post('/submit', async (req, res) => {
 
     const { name, email, mobilenr, category_id, message } = req.body;
 
-    // Validate required fields (now includes mobilenr)
+    // Validate required fields
     if (!name || !email || !mobilenr || !category_id || !message) {
       return res.status(400).json({
         success: false,
@@ -97,7 +97,7 @@ router.post('/submit', async (req, res) => {
       });
     }
 
-    // Validate mobile number format (optional - add your own validation)
+    // Validate mobile number format
     if (mobilenr.trim().length === 0) {
       return res.status(400).json({
         success: false,
@@ -117,7 +117,36 @@ router.post('/submit', async (req, res) => {
       });
     }
 
-    // Check if email already has a submission
+    // *** NEW: Check monthly submission limit ***
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    
+    const [monthlyCount] = await conn.execute(`
+      SELECT COUNT(*) as count
+      FROM inquiries
+      WHERE email = ?
+      AND created_at >= ?
+      AND created_at <= ?
+    `, [email, firstDay, lastDay]);
+
+    const MAX_MONTHLY_INQUIRIES = 3;
+    if (monthlyCount[0].count >= MAX_MONTHLY_INQUIRIES) {
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      return res.status(429).json({
+        success: false,
+        error: `You have reached the maximum of ${MAX_MONTHLY_INQUIRIES} inquiries per month. Your limit will reset on ${nextMonth.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`,
+        code: 'MONTHLY_LIMIT_REACHED',
+        data: {
+          current_count: monthlyCount[0].count,
+          max_allowed: MAX_MONTHLY_INQUIRIES,
+          reset_date: nextMonth.toISOString()
+        },
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Check if email already has an active submission
     const [existingEmail] = await conn.execute(
       'SELECT id, created_at, status FROM inquiries WHERE email = ? AND status IN (?, ?) LIMIT 1',
       [email, 'pen', 'in_prog']
@@ -135,7 +164,7 @@ router.post('/submit', async (req, res) => {
       });
     }
 
-    // Check if mobile number already has a submission
+    // Check if mobile number already has an active submission
     const [existingMobile] = await conn.execute(
       'SELECT id, created_at, status FROM inquiries WHERE mobilenr = ? AND status IN (?, ?) LIMIT 1',
       [mobilenr, 'pen', 'in_prog']
@@ -201,7 +230,11 @@ router.post('/submit', async (req, res) => {
           code: inquiry[0].category_code
         },
         status: inquiry[0].status,
-        created_at: inquiry[0].created_at
+        created_at: inquiry[0].created_at,
+        monthly_stats: {
+          submissions_this_month: monthlyCount[0].count + 1,
+          remaining: MAX_MONTHLY_INQUIRIES - (monthlyCount[0].count + 1)
+        }
       },
       meta: {
         processingTime: `${processingTime}ms`,
@@ -245,6 +278,7 @@ router.post('/submit', async (req, res) => {
     }
   }
 });
+
 // GET - Fetch all inquiries (with optional filtering)
 router.get('/', async (req, res) => {
   const startTime = Date.now();
@@ -696,5 +730,76 @@ router.get('/analytics/stats', async (req, res) => {
     }
   }
 });
+
+router.get('/user/monthly-count', async (req, res) => {
+  const startTime = Date.now();
+  let conn = null;
+
+  try {
+    const pool = getPool();
+    conn = await pool.getConnection();
+    
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email parameter is required',
+        code: 'MISSING_EMAIL',
+        processingTime: `${Date.now() - startTime}ms`
+      });
+    }
+
+    // Get start and end of current month
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const [rows] = await conn.execute(`
+      SELECT COUNT(*) as count
+      FROM inquiries
+      WHERE email = ?
+      AND created_at >= ?
+      AND created_at <= ?
+    `, [email, firstDay, lastDay]);
+
+    const count = rows[0].count;
+    const maxInquiries = 3;
+
+    res.json({ 
+      success: true, 
+      data: {
+        count: count,
+        remaining: Math.max(0, maxInquiries - count),
+        max_allowed: maxInquiries,
+        period: {
+          start: firstDay.toISOString(),
+          end: lastDay.toISOString()
+        }
+      },
+      meta: {
+        processingTime: `${Date.now() - startTime}ms`
+      }
+    });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error('Error fetching monthly inquiry count:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      code: 'SERVER_ERROR',
+      processingTime: `${processingTime}ms`
+    });
+  } finally {
+    if (conn) {
+      try {
+        conn.release();
+      } catch (releaseError) {
+        console.error("Connection release error:", releaseError);
+      }
+    }
+  }
+});
+
 
 module.exports = router;

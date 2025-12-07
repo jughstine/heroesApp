@@ -730,7 +730,7 @@ router.post('/', upload.single('file'), async (req, res) => {
       if (error.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ 
           success: false, 
-          error: 'File too large. Maximum size is 500MB.',
+          error: 'File too large. Maximum size is 5MB.',
           processingTime: `${processingTime}ms`
         });
       }

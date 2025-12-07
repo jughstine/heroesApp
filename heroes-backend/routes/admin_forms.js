@@ -804,19 +804,19 @@ router.get('/', authenticateAdminToken, async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -971,19 +971,19 @@ router.get('/paginated', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN','COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1101,19 +1101,19 @@ router.get('/export/bulk', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1385,19 +1385,19 @@ router.get('/status/:status', async (req, res) => {
         CASE 
           WHEN p.source_table = 'test_res_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1672,7 +1672,7 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
 
     const formattedAFPSN =
       submission.PENRANK &&
-      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO'].includes(submission.PENRANK)
+      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO'].includes(submission.PENRANK)
         ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
         : submission.AFPSN;
 

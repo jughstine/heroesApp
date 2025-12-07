@@ -326,7 +326,7 @@ const cleanupExpiredTokens = async () => {
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
-const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
+const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
 
 function normalizeAfpsnForMatching(afpsn) {
     if (!afpsn) return '';
@@ -2119,7 +2119,7 @@ router.post("/forgot-password", sanitizeInput, validateDatabaseConnection, async
 
         const info = await transporter.sendMail(mailOptions);
         
-        logger.info('✅ Reset code email sent successfully:', {
+        logger.info('Reset code email sent successfully:', {
           messageId: info.messageId,
           to: user.email,
           response: info.response
@@ -2491,9 +2491,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     }
 
     const pensioner = pensionerInfo[0];
-    const sourceTable = pensioner.source_table || "test_table"; // default
-
-    // ✅ Allow beneficiaries_table
+    const sourceTable = pensioner.source_table || "test_table"; 
     const validTables = ["test_table", "test_res_table", "beneficiaries_table"];
     if (!validTables.includes(sourceTable)) {
       logger.error(`Invalid source_table: ${sourceTable} for user ${userId}`);
@@ -2550,8 +2548,6 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     }
 
     const profile = userProfile[0];
-
-    // ✅ Handle AFPSN formatting based on PENRANK
     const formattedAFPSN =
       profile.PENRANK &&
       [
@@ -2566,6 +2562,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         "BGEN",
         "MGEN",
         "LGEN",
+        "GEN",
         "CDR",
       ].includes(profile.PENRANK)
         ? profile.AFPSN?.startsWith("O-")
@@ -2851,19 +2848,19 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
           CASE 
               WHEN p.source_table = 'test_res_table' THEN 
                   CASE 
-                      WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
                       THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
                       ELSE h2.AFPSN
                   END
               WHEN p.source_table = 'beneficiaries_table' THEN 
                   CASE 
-                      WHEN h3.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h3.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
                       THEN CONCAT('O-', REPLACE(h3.AFPSN, 'O-', ''))
                       ELSE h3.AFPSN
                   END
               ELSE 
                   CASE 
-                      WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
                       THEN CONCAT('O-', REPLACE(h1.AFPSN, 'O-', ''))
                       ELSE h1.AFPSN
                   END
@@ -2970,7 +2967,7 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
           NDX as id,
           NDX as user_id,
           CASE 
-              WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+              WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
               THEN CONCAT('O-', REPLACE(AFPSN, 'O-', ''))
               ELSE AFPSN
           END as afpsn,

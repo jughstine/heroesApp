@@ -7,6 +7,9 @@ const router = express.Router();
 const { getConnection, executeQuery, healthCheck, testConnection, logger } = require('../config/database');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
+const multer = require('multer');
+const XLSX = require('xlsx');
+const Papa = require('papaparse');
 
 const TOKEN_EXPIRY_HOURS = 2;
 const MAX_RETRY_ATTEMPTS = 3;
@@ -121,6 +124,81 @@ router.get("/health", async (req, res) => {
         });
     }
 });
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'text/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype) || 
+        file.originalname.endsWith('.csv') || 
+        file.originalname.endsWith('.xlsx') || 
+        file.originalname.endsWith('.xls')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only CSV and Excel files are allowed.'));
+    }
+  }
+});
+
+// Helper function to parse CSV
+const parseCSV = (buffer) => {
+  const csvString = buffer.toString('utf-8');
+  const result = Papa.parse(csvString, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header) => header.toLowerCase().trim()
+  });
+  
+  return result.data;
+};
+
+// Helper function to parse Excel
+const parseExcel = (buffer) => {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json(worksheet, { 
+    raw: false,
+    defval: ''
+  });
+  
+  // Normalize column names to lowercase
+  return data.map(row => {
+    const normalizedRow = {};
+    Object.keys(row).forEach(key => {
+      normalizedRow[key.toLowerCase().trim()] = row[key];
+    });
+    return normalizedRow;
+  });
+};
+
+// Helper function to format date for database
+const formatDateForDB = (dateStr) => {
+  if (!dateStr || dateStr.trim() === '') return null;
+  
+  try {
+    // Try parsing as YYYY-MM-DD
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return null;
+    
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}`;
+  } catch (error) {
+    return null;
+  }
+};
+
 
 // ===== RATE LIMITERS =====
 const identityLimiter = rateLimit({
@@ -3145,6 +3223,223 @@ router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) =
       timestamp: new Date().toISOString(),
     });
   }
+});
+
+router.post("/bulk-add-to-alpha-list", 
+  validateDatabaseConnection, 
+  upload.single('file'), 
+  async (req, res) => {
+    const startTime = Date.now();
+    
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: "No file uploaded",
+          code: "NO_FILE"
+        });
+      }
+
+      const { targetTable } = req.body;
+
+      if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid target table",
+          code: "VALIDATION_ERROR"
+        });
+      }
+
+      let records;
+      const fileExtension = req.file.originalname.split('.').pop().toLowerCase();
+      
+      if (fileExtension === 'csv') {
+        records = parseCSV(req.file.buffer);
+      } else if (fileExtension === 'xlsx' || fileExtension === 'xls') {
+        records = parseExcel(req.file.buffer);
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: "Unsupported file format",
+          code: "INVALID_FORMAT"
+        });
+      }
+
+      if (!records || records.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "No valid records found in file",
+          code: "EMPTY_FILE"
+        });
+      }
+
+      // Process records
+      const results = {
+        totalRecords: records.length,
+        successCount: 0,
+        errorCount: 0,
+        errors: [],
+        duplicates: []
+      };
+
+      // Get all existing AFPSNs from target table to check for duplicates
+      const existingAFPSNs = await executeQuery(
+        `SELECT AFPSN FROM ${targetTable}`,
+        []
+      );
+      const existingAFPSNSet = new Set(
+        existingAFPSNs.map(r => r.AFPSN?.toString().toUpperCase())
+      );
+
+      // Process each record
+for (let i = 0; i < records.length; i++) {
+  const record = records[i];
+  const rowNumber = i + 2;
+  
+  try {
+    // Map new column names to database fields (supports both formats)
+    const lastname = (record.lastname || record.LASTNAME)?.toString().trim().toUpperCase();
+    const firstname = (record.firstname || record.FIRSTNAME)?.toString().trim().toUpperCase();
+    const afpsn = (record.afpsn || record.AFPSN)?.toString().trim().toUpperCase();
+
+    if (!lastname || !firstname || !afpsn) {
+      results.errorCount++;
+      results.errors.push({
+        row: rowNumber,
+        afpsn: afpsn || 'N/A',
+        name: `${firstname || ''} ${lastname || ''}`.trim() || 'N/A',
+        error: 'Missing required fields (LASTNAME, FIRSTNAME, AFPSN)'
+      });
+      continue;
+    }
+
+    // Check for duplicates
+    if (existingAFPSNSet.has(afpsn)) {
+      results.duplicates.push({
+        row: rowNumber,
+        afpsn: afpsn,
+        name: `${firstname} ${lastname}`
+      });
+      continue;
+    }
+
+    // Prepare data with column mapping
+    const middlename = (record.middlename || record.MIDDLENAME)?.toString().trim().toUpperCase() || null;
+    const suffix = (record.suffix || record.SUFFIX)?.toString().trim().toUpperCase() || null;
+    const dob = formatDateForDB(record.dob || record.birthdate || record.BIRTHDATE);
+    const prin_date_ret = formatDateForDB(record.prin_date_ret || record.PRIN_DATE_RET);
+    const acrank = (record.acrank || record.ACRANK)?.toString().trim().toUpperCase() || null;
+    const penrank = (record.penrank || record.PENRANK)?.toString().trim().toUpperCase() || null;
+    const ctrlnr = (record.ctrlnr || record.ctrlno || record.CTRLNO)?.toString().trim().toUpperCase() || null;
+    const mobilenr = (record.mobilenr || record.pin || record.PIN)?.toString().trim().replace(/\D/g, '') || null;
+        
+    // Handle PRIN/BENE column - normalize both "PRIN" and "BENE" values
+    let typeRaw = (record.type || record['prin/bene'] || record['PRIN/BENE'])?.toString().trim().toUpperCase() || 'P';
+
+    let type = 'P';
+    if (typeRaw.includes('B')) {
+      type = 'B';
+    } else if (typeRaw.includes('P') || typeRaw === 'P') {
+      type = 'P';
+    }
+
+    // Validate type (should always be P or B after normalization, but check anyway)
+    if (type !== 'P' && type !== 'B') {
+      results.errorCount++;
+      results.errors.push({
+        row: rowNumber,
+        afpsn: afpsn,
+        name: `${firstname} ${lastname}`,
+        error: `Invalid type "${typeRaw}". Must contain 'P' (Principal) or 'B' (Beneficiary)`
+      });
+      continue;
+    }
+
+    // Insert record
+    await executeQuery(`
+      INSERT INTO ${targetTable} (
+        LASTNAME, FIRSTNAME, MIDDLENAME, SUFFIX,
+        DOB, PRIN_DATE_RET, AFPSN, ACRANK, PENRANK,
+        TYPE, CTRLNR, MOBILENR
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      lastname,
+      firstname,
+      middlename,
+      suffix,
+      dob,
+      prin_date_ret,
+      afpsn,
+      acrank,
+      penrank,
+      type,
+      ctrlnr,
+      mobilenr
+    ]);
+
+    // Add to existing set to catch duplicates within the same file
+    existingAFPSNSet.add(afpsn);
+    results.successCount++;
+
+  } catch (error) {
+    results.errorCount++;
+    results.errors.push({
+      row: rowNumber,
+      afpsn: (record.afpsn || record.AFPSN) || 'N/A',
+      name: `${(record.firstname || record.FIRSTNAME) || ''} ${(record.lastname || record.LASTNAME) || ''}`.trim() || 'N/A',
+      error: error.message || 'Database insertion failed'
+    });
+  }
+}
+
+      const processingTime = Date.now() - startTime;
+
+      res.json({
+        success: true,
+        message: `Bulk upload completed`,
+        data: results,
+        targetTable: targetTable,
+        meta: {
+          processingTime: `${processingTime}ms`,
+          timestamp: new Date().toISOString(),
+        }
+      });
+
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      logger.error("Bulk upload error:", {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
+
+      res.status(500).json({
+        success: false,
+        error: error.message || "Failed to process bulk upload",
+        code: "BULK_UPLOAD_ERROR",
+        processingTime: `${processingTime}ms`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
+router.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        error: 'File size too large. Maximum size is 10MB',
+        code: 'FILE_TOO_LARGE'
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      error: error.message,
+      code: 'UPLOAD_ERROR'
+    });
+  }
+  next(error);
 });
 
 router.put("/update-alpha-list/:id", validateDatabaseConnection, async (req, res) => {

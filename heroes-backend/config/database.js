@@ -30,6 +30,23 @@ const createDbConfig = () => {
   
   const maxIdle = Math.max(Math.floor(connectionLimit * 0.5), 2);
   
+  // SSL configuration for DigitalOcean Managed Database
+  let sslConfig = null;
+  if (process.env.DB_SSL === 'true') {
+    sslConfig = {
+      rejectUnauthorized: true,
+      ca: process.env.DB_SSL_CA ? require('fs').readFileSync(process.env.DB_SSL_CA) : undefined
+    };
+    
+    // Fallback to system certificates if no specific CA provided
+    if (!process.env.DB_SSL_CA) {
+      sslConfig = {
+        rejectUnauthorized: true
+        // Node.js will use system certificates
+      };
+    }
+  }
+
   const config = {
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT) || 3306,
@@ -43,7 +60,7 @@ const createDbConfig = () => {
     waitForConnections: true,
     idleTimeout: 300000,       
     maxIdle: maxIdle,
-    connectTimeout: 10000,    
+    connectTimeout: 30000,    // Increased timeout for SSL handshake
     
     charset: 'utf8mb4',
     timezone: 'Z',    
@@ -57,7 +74,12 @@ const createDbConfig = () => {
     rowsAsArray: false,
     multipleStatements: false,
     namedPlaceholders: false,
-    ssl: false
+    
+    // SSL CONFIGURATION - FIXED
+    ssl: sslConfig,
+    
+    // Enable debug for troubleshooting
+    debug: process.env.NODE_ENV === 'development' ? ['ComQueryPacket'] : false
   };
   
   return config;

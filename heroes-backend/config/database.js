@@ -1,9 +1,6 @@
 const mysql = require('mysql2/promise');
 const winston = require('winston');
-
-const path = require('path');
-const envPath = path.join(__dirname, '..', '.env');
-require('dotenv').config({ path: envPath });
+require('dotenv').config();
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',

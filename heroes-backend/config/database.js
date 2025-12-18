@@ -37,14 +37,14 @@ const createDbConfig = () => {
   let sslConfig = null;
   if (process.env.DB_SSL === 'true') {
     sslConfig = {
-      rejectUnauthorized: true,
+      rejectUnauthorized: false,
       ca: process.env.DB_SSL_CA ? require('fs').readFileSync(process.env.DB_SSL_CA) : undefined
     };
     
     // Fallback to system certificates if no specific CA provided
     if (!process.env.DB_SSL_CA) {
       sslConfig = {
-        rejectUnauthorized: true
+        rejectUnauthorized: false
         // Node.js will use system certificates
       };
     }

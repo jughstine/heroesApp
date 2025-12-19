@@ -1110,10 +1110,10 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
 
         const pensioner = pensionerInfo[0];
 
-        if (pensioner.source_table === 'test_table') {
+        if (pensioner.source_table === 'heroes_tbl') {
             return res.status(400).json({
                 success: false,
-                error: "User is already in Alpha List (test_table)",
+                error: "User is already in Alpha List (heroes_tbl)",
                 code: 'ALREADY_IN_ALPHA',
                 processingTime: `${Date.now() - startTime}ms`
             });
@@ -1196,7 +1196,7 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
 
         try {
             const [insertResult] = await connection.execute(`
-                INSERT INTO test_table (
+                INSERT INTO heroes_tbl (
                     LASTNAME,
                     FIRSTNAME,
                     MIDDLENAME,
@@ -1235,7 +1235,7 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
             await connection.execute(`
                 UPDATE pensioners_tbl
                 SET hero_ndx = ?,
-                    source_table = 'test_table',
+                    source_table = 'heroes_tbl',
                     principal_ndx = ?
                 WHERE id = ?
             `, [newHeroNdx, newPrincipalNdx, pensioner.pensioner_id]);
@@ -1272,7 +1272,7 @@ router.post("/users/:userId/transfer-to-alpha", authenticateAdminToken, async (r
                     oldHeroNdx: pensioner.hero_ndx,
                     newHeroNdx: newHeroNdx,
                     oldSourceTable: pensioner.source_table,
-                    newSourceTable: 'test_table',
+                    newSourceTable: 'heroes_tbl',
                     status: 'ACT'
                 },
                 meta: {
@@ -1352,7 +1352,7 @@ router.post("/pensioners/:heroNdx/transfer-to-alpha", authenticateAdminToken, as
 
         const hero = heroData[0];
         const existingInAlpha = await executeQuery(`
-            SELECT NDX FROM test_table WHERE AFPSN = ? LIMIT 1
+            SELECT NDX FROM heroes_tbl WHERE AFPSN = ? LIMIT 1
         `, [hero.AFPSN]);
 
         if (existingInAlpha.length > 0) {
@@ -1369,9 +1369,9 @@ router.post("/pensioners/:heroNdx/transfer-to-alpha", authenticateAdminToken, as
         await connection.beginTransaction();
 
         try {
-            // Insert into test_table (Alpha List)
+            // Insert into heroes_tbl (Alpha List)
             const [insertResult] = await connection.execute(`
-                INSERT INTO test_table (
+                INSERT INTO heroes_tbl (
                     LASTNAME,
                     FIRSTNAME,
                     MIDDLENAME,
@@ -1419,7 +1419,7 @@ router.post("/pensioners/:heroNdx/transfer-to-alpha", authenticateAdminToken, as
                     oldHeroNdx: parseInt(heroNdx),
                     newHeroNdx: newHeroNdx,
                     oldSourceTable: sourceTable,
-                    newSourceTable: 'test_table',
+                    newSourceTable: 'heroes_tbl',
                     afpsn: hero.AFPSN,
                     name: `${hero.FIRSTNAME} ${hero.LASTNAME}`
                 },
@@ -1460,7 +1460,7 @@ router.delete("/pensioners/:heroNdx", authenticateAdminToken, async (req, res) =
         const { heroNdx } = req.params;
         const { sourceTable } = req.query;
 
-        if (!sourceTable || !['test_table', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
+        if (!sourceTable || !['heroes_tbl', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
             return res.status(400).json({
                 success: false,
                 error: "Invalid or missing source table",
@@ -1610,7 +1610,7 @@ router.delete("/users/:userId/delete-user", authenticateAdminToken, async (req, 
 
             let deletedFromSourceTable = false;
             if (user.hero_ndx && user.source_table) {
-                const sourceTable = user.source_table === 'test_table' ? 'test_table' : 'test_res_table';
+                const sourceTable = user.source_table === 'heroes_tbl' ? 'heroes_tbl' : 'test_res_table';
                 
                 try {
                     const [deleteHeroResult] = await connection.execute(`

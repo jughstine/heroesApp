@@ -124,8 +124,8 @@ router.get('/profile', async (req, res) => {
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table h ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
-      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl h ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
+      LEFT JOIN resumption_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
       WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFB', 'AFB2', 'AFR', 'FOR_PAYROLL')
       ORDER BY u.created_at DESC
       LIMIT 1
@@ -220,64 +220,64 @@ router.get('/profile/:userId', async (req, res) => {
     const [profiles] = await conn.query(`
       SELECT 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN h2.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN h3.FIRSTNAME
           ELSE h.FIRSTNAME 
         END AS FIRSTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN h2.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN h3.LASTNAME
           ELSE h.LASTNAME 
         END AS LASTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.DOB
+          WHEN p.source_table = 'resumption_table' THEN h2.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN h3.DOB
           ELSE h.DOB 
         END AS DOB,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN 
+          WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
+              WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                 THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
               ELSE h2.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN
             CASE 
-              WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
+              WHEN h3.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                 THEN CONCAT('O-', REPLACE(h3.AFPSN, 'O-', ''))
               ELSE h3.AFPSN
             END
           ELSE 
             CASE 
-              WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN', 'CDR', 'COMMO') 
+              WHEN h.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                 THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', ''))
               ELSE h.AFPSN
             END
         END AS afpsn,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN h2.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN h3.PENRANK
           ELSE h.PENRANK 
         END AS penrank,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.TYPE
+          WHEN p.source_table = 'resumption_table' THEN h2.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN h3.TYPE
           ELSE h.TYPE 
         END AS TYPE,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR
+          WHEN p.source_table = 'resumption_table' THEN h2.CTRLNR
           WHEN p.source_table = 'beneficiaries_table' THEN h3.CTRLNR
           ELSE h.CTRLNR 
         END AS CTRLNR,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR
+          WHEN p.source_table = 'resumption_table' THEN h2.MOBILENR
           WHEN p.source_table = 'beneficiaries_table' THEN h3.MOBILENR
           ELSE h.MOBILENR 
         END AS MOBILENR,
@@ -295,8 +295,8 @@ router.get('/profile/:userId', async (req, res) => {
         u.created_at
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table h ON p.hero_ndx = h.NDX
-      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX
+      LEFT JOIN heroes_tbl h ON p.hero_ndx = h.NDX
+      LEFT JOIN resumption_table h2 ON p.hero_ndx = h2.NDX
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
       WHERE u.id = ? 
         AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')

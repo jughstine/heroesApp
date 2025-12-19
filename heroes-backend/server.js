@@ -74,8 +74,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 app.options('*', cors(corsOptions));
-
-// Add logging middleware to debug requests
 app.use((req, res, next) => {
   next();
 });

@@ -35,9 +35,7 @@ const transporter = nodemailer.createTransport({
 
 transporter.verify((error, success) => {
   if (error) {
-    logger.error('SMTP configuration error:', error);
   } else {
-    logger.info('SMTP server is ready to send emails');
   }
 });
 
@@ -404,7 +402,7 @@ const cleanupExpiredTokens = async () => {
 setInterval(cleanupExpiredTokens, 60 * 60 * 1000);
 
 // SIGNUP 
-const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN'];
+const OFFICER_RANKS = ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS'];
 
 function normalizeAfpsnForMatching(afpsn) {
     if (!afpsn) return '';
@@ -531,26 +529,17 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         const normalizedFirstname = firstname.trim().toUpperCase();
         const normalizedLastname = lastname.trim().toUpperCase();
 
-        // Debug logging
-        logger.info('AFPSN Search:', { 
-            original: afpsn, 
-            normalized: normalizedAfpsn, 
-            numeric: normalizedAfpsnNumeric,
-            type: type,
-            isMinor: isMinor
-        });
-
         // === BENEFICIARY LOGIC (Type B) ===
         if (type === 'B') {
             const normalizedPrincipalFirstname = principal_first_name.trim().toUpperCase();
             const normalizedPrincipalLastname = principal_last_name.trim().toUpperCase();
 
-            // Check if this beneficiary EXISTS in test_table as an ACTIVE beneficiary
+            // Check if this beneficiary EXISTS in heroes_tbl as an ACTIVE beneficiary
             let existingBeneficiaryInTestTable;
             try {
                 existingBeneficiaryInTestTable = await executeQuery(
                     `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
+                    FROM heroes_tbl
                     WHERE UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
                     AND DATE(DOB) = DATE(?)
@@ -562,7 +551,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
                 existingBeneficiaryInTestTable = await executeQuery(
                     `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
+                    FROM heroes_tbl
                     WHERE UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
                     AND DATE(DOB) = DATE(?)
@@ -572,11 +561,11 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 );
             }
 
-            // If beneficiary is ACTIVE (exists in test_table with Type B)
+            // If beneficiary is ACTIVE (exists in heroes_tbl with Type B)
             if (existingBeneficiaryInTestTable.length > 0) {
                 const heroData = existingBeneficiaryInTestTable[0];
                 
-                logger.info('Active beneficiary found in test_table:', { 
+                logger.info('Active beneficiary found in heroes_tbl:', { 
                     name: `${heroData.FIRSTNAME} ${heroData.LASTNAME}`,
                     afpsn: heroData.AFPSN,
                     ndx: heroData.NDX,
@@ -612,9 +601,9 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         `SELECT u.id, u.status, h.FIRSTNAME, h.LASTNAME, h.AFPSN
                         FROM users_tbl u 
                         JOIN pensioners_tbl p ON u.pensioner_ndx = p.id 
-                        LEFT JOIN test_table h ON p.hero_ndx = h.NDX
+                        LEFT JOIN heroes_tbl h ON p.hero_ndx = h.NDX
                         WHERE p.hero_ndx = ?
-                        AND p.source_table = 'test_table'
+                        AND p.source_table = 'heroes_tbl'
                         AND p.type = 'B'
                         AND u.status NOT IN ('DEL')
                         FOR UPDATE`,
@@ -655,9 +644,9 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                     acRank: heroData.ACRANK,
                     isOfficer,
                     account_status: 'active',
-                    source_table: 'test_table',
+                    source_table: 'heroes_tbl',
                     is_minor: isMinor,
-                    guardian_info: guardianInfo, // Add guardian info
+                    guardian_info: guardianInfo,
                     validated_at: new Date().toISOString()
                 };
 
@@ -687,7 +676,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                         rank: penRank,
                         isOfficer,
                         account_status: 'active',
-                        source_table: 'test_table',
+                        source_table: 'heroes_tbl',
                         isMinor: isMinor
                     },
                     meta: {
@@ -702,7 +691,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             try {
                 principalRecords = await executeQuery(
                     `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
+                    FROM heroes_tbl
                     WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ?
                     AND UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
@@ -713,7 +702,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 logger.warn('REGEXP_REPLACE not supported, using REPLACE fallback');
                 principalRecords = await executeQuery(
                     `SELECT NDX, FIRSTNAME, LASTNAME, AFPSN, DOB, TYPE, PENRANK, ACRANK
-                    FROM test_table
+                    FROM heroes_tbl
                     WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ?
                     AND UPPER(TRIM(FIRSTNAME)) = ?
                     AND UPPER(TRIM(LASTNAME)) = ?
@@ -901,11 +890,11 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
         let afpsnRecords = null;
         let penRank = null;
 
-        // Try active table first (test_table)
+        // Try active table first (heroes_tbl)
         try {
             afpsnRecords = await executeQuery(
                 `SELECT COUNT(*) as count, PENRANK, AFPSN 
-                 FROM test_table
+                 FROM heroes_tbl
                  WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ? 
                  AND TYPE = ? 
                  GROUP BY PENRANK, AFPSN`,
@@ -913,7 +902,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             );
 
             if (afpsnRecords.length > 0) {
-                detectedTable = 'test_table';
+                detectedTable = 'heroes_tbl';
                 penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
                 logger.info('Found in active table:', { afpsn: afpsnRecords[0].AFPSN, rank: penRank });
             }
@@ -922,7 +911,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             
             afpsnRecords = await executeQuery(
                 `SELECT COUNT(*) as count, PENRANK, AFPSN 
-                 FROM test_table
+                 FROM heroes_tbl
                  WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ? 
                  AND TYPE = ? 
                  GROUP BY PENRANK, AFPSN`,
@@ -930,17 +919,17 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             );
 
             if (afpsnRecords.length > 0) {
-                detectedTable = 'test_table';
+                detectedTable = 'heroes_tbl';
                 penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
             }
         }
 
-        // Try resumption table if not found (test_res_table)
+        // Try resumption table if not found (resumption_table)
         if (!detectedTable) {
             try {
                 afpsnRecords = await executeQuery(
                     `SELECT COUNT(*) as count, PENRANK, AFPSN 
-                     FROM test_res_table
+                     FROM resumption_table
                      WHERE REGEXP_REPLACE(UPPER(TRIM(AFPSN)), '[^0-9]', '') = ? 
                      AND TYPE = ? 
                      GROUP BY PENRANK, AFPSN`,
@@ -948,14 +937,14 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 );
 
                 if (afpsnRecords.length > 0) {
-                    detectedTable = 'test_res_table';
+                    detectedTable = 'resumption_table';
                     penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
                     logger.info('Found in resumption table:', { afpsn: afpsnRecords[0].AFPSN, rank: penRank });
                 }
             } catch (regexpError) {
                 afpsnRecords = await executeQuery(
                     `SELECT COUNT(*) as count, PENRANK, AFPSN 
-                     FROM test_res_table
+                     FROM resumption_table
                      WHERE REPLACE(REPLACE(REPLACE(REPLACE(UPPER(TRIM(AFPSN)), 'O-', ''), 'X-', ''), ' ', ''), '-', '') = ? 
                      AND TYPE = ? 
                      GROUP BY PENRANK, AFPSN`,
@@ -963,7 +952,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
                 );
 
                 if (afpsnRecords.length > 0) {
-                    detectedTable = 'test_res_table';
+                    detectedTable = 'resumption_table';
                     penRank = afpsnRecords[0].PENRANK?.trim().toUpperCase();
                 }
             }
@@ -978,7 +967,7 @@ router.post("/validate-identity", identityLimiter, sanitizeInput, validateDataba
             });
         }
 
-        const account_status = detectedTable === 'test_table' ? 'active' : 'resumption';
+        const account_status = detectedTable === 'heroes_tbl' ? 'active' : 'resumption';
         const isOfficer = penRank ? OFFICER_RANKS.includes(penRank) : false;
 
         // Officer validation
@@ -1231,12 +1220,12 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 // === BENEFICIARY (Type B) ===
                 if (validationData.type === 'B') {
                     
-                    // Check if this is an active beneficiary from test_table or a new application
-                    if (validationData.source_table === 'test_table') {
-                        // Active beneficiary from test_table (like active pensioner)
+                    // Check if this is an active beneficiary from heroes_tbl or a new application
+                    if (validationData.source_table === 'heroes_tbl') {
+                        // Active beneficiary from heroes_tbl (like active pensioner)
                         const [heroCheck] = await connection.execute(
                             `SELECT p.id FROM pensioners_tbl p 
-                             WHERE p.hero_ndx = ? AND p.source_table = 'test_table' AND p.type = 'B'
+                             WHERE p.hero_ndx = ? AND p.source_table = 'heroes_tbl' AND p.type = 'B'
                              FOR UPDATE`,
                             [validationData.hero_ndx]
                         );
@@ -1245,7 +1234,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                             throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
                         }
 
-                        // Insert pensioner record pointing to test_table
+                        // Insert pensioner record pointing to heroes_tbl
                         const [pensionerResult] = await connection.execute(
                             `INSERT INTO pensioners_tbl 
                              (hero_ndx, source_table, type, bos, b_type, 
@@ -1253,7 +1242,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                             [
                                 validationData.hero_ndx,
-                                'test_table',
+                                'heroes_tbl',
                                 'B',
                                 null, // bos
                                 validationData.b_type || null,
@@ -1340,7 +1329,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                     }
 
                 } else {
-                    // === PRINCIPAL (Type P) - Use existing hero_ndx from test_table or test_res_table ===
+                    // === PRINCIPAL (Type P) - Use existing hero_ndx from heroes_tbl or resumption_table ===
                     const [heroCheck] = await connection.execute(
                         `SELECT p.id FROM pensioners_tbl p 
                          WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
@@ -1371,7 +1360,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 // Determine initial user status
                 let initialUserStatus;
                 if (validationData.type === 'B') {
-                    if (validationData.source_table === 'test_table') {
+                    if (validationData.source_table === 'heroes_tbl') {
                         initialUserStatus = 'TAG'; // Active beneficiary, same as active pensioner
                     } else {
                         initialUserStatus = 'AFB'; // Awaiting approval for new beneficiary application
@@ -1454,7 +1443,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         }).then(result => {
             let message;
             if (validationData.type === 'B') {
-                if (validationData.source_table === 'test_table') {
+                if (validationData.source_table === 'heroes_tbl') {
                     if (validationData.is_minor) {
                         message = "Minor beneficiary account created. Guardian will manage this account.";
                     } else {
@@ -1562,10 +1551,10 @@ router.post("/login", loginLimiter, sanitizeInput, validateDatabaseConnection, a
                 COALESCE(h.AFPSN, h2.AFPSN, h3.AFPSN) AS AFPSN
             FROM users_tbl u
             JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-            LEFT JOIN test_table h 
-                ON p.hero_ndx = h.NDX AND p.source_table = 'test_table'
-            LEFT JOIN test_res_table h2 
-                ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
+            LEFT JOIN heroes_tbl h 
+                ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
+            LEFT JOIN resumption_table h2 
+                ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
             LEFT JOIN beneficiaries_table h3 
                 ON p.hero_ndx = h3.NDX AND p.source_table = 'beneficiaries_table'
             WHERE u.email = ?
@@ -1913,7 +1902,7 @@ router.put("/update-mobile/:userId", profileUpdateLimiter, sanitizeInput, valida
         const { hero_ndx, source_table, type } = pensionerData[0];
 
         // Validate source_table
-        if (!source_table || (source_table !== 'test_table' && source_table !== 'test_res_table')) {
+        if (!source_table || (source_table !== 'heroes_tbl' && source_table !== 'resumption_table')) {
             logger.error(`Invalid source_table: ${source_table} for hero_ndx ${hero_ndx}`);
             return res.status(500).json({
                 success: false,
@@ -2569,8 +2558,8 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
     }
 
     const pensioner = pensionerInfo[0];
-    const sourceTable = pensioner.source_table || "test_table"; 
-    const validTables = ["test_table", "test_res_table", "beneficiaries_table"];
+    const sourceTable = pensioner.source_table || "heroes_tbl"; 
+    const validTables = ["heroes_tbl", "resumption_table", "beneficiaries_table"];
     if (!validTables.includes(sourceTable)) {
       logger.error(`Invalid source_table: ${sourceTable} for user ${userId}`);
       return res.status(500).json({
@@ -2642,6 +2631,14 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
         "LGEN",
         "GEN",
         "CDR",
+        "ADM",
+        "VADM",
+        "RADM",
+        "CAPT",
+        "LCDR",
+        "LTSG",
+        "LTJG",
+        "ENS"
       ].includes(profile.PENRANK)
         ? profile.AFPSN?.startsWith("O-")
           ? profile.AFPSN
@@ -2882,90 +2879,90 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
           p.source_table,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.FIRSTNAME
+              WHEN p.source_table = 'resumption_table' THEN h2.FIRSTNAME
               WHEN p.source_table = 'beneficiaries_table' THEN h3.FIRSTNAME
               ELSE h1.FIRSTNAME
           END AS firstname,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.LASTNAME
+              WHEN p.source_table = 'resumption_table' THEN h2.LASTNAME
               WHEN p.source_table = 'beneficiaries_table' THEN h3.LASTNAME
               ELSE h1.LASTNAME
           END AS lastname,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.MIDDLENAME
+              WHEN p.source_table = 'resumption_table' THEN h2.MIDDLENAME
               WHEN p.source_table = 'beneficiaries_table' THEN h3.MIDDLENAME
               ELSE h1.MIDDLENAME
           END AS middlename,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.SUFFIX
+              WHEN p.source_table = 'resumption_table' THEN h2.SUFFIX
               WHEN p.source_table = 'beneficiaries_table' THEN h3.SUFFIX
               ELSE h1.SUFFIX
           END AS suffix,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.DOB
+              WHEN p.source_table = 'resumption_table' THEN h2.DOB
               WHEN p.source_table = 'beneficiaries_table' THEN h3.DOB
               ELSE h1.DOB
           END AS dob,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.PRIN_DATE_RET
+              WHEN p.source_table = 'resumption_table' THEN h2.PRIN_DATE_RET
               WHEN p.source_table = 'beneficiaries_table' THEN h3.PRIN_DATE_RET
               ELSE h1.PRIN_DATE_RET
           END AS prin_date_ret,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.CTRLNR
+              WHEN p.source_table = 'resumption_table' THEN h2.CTRLNR
               WHEN p.source_table = 'beneficiaries_table' THEN h3.CTRLNR
               ELSE h1.CTRLNR
           END AS ctrlnr,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN 
+              WHEN p.source_table = 'resumption_table' THEN 
                   CASE 
-                      WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h2.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                       THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', ''))
                       ELSE h2.AFPSN
                   END
               WHEN p.source_table = 'beneficiaries_table' THEN 
                   CASE 
-                      WHEN h3.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL', 'GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h3.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                       THEN CONCAT('O-', REPLACE(h3.AFPSN, 'O-', ''))
                       ELSE h3.AFPSN
                   END
               ELSE 
                   CASE 
-                      WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
+                      WHEN h1.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
                       THEN CONCAT('O-', REPLACE(h1.AFPSN, 'O-', ''))
                       ELSE h1.AFPSN
                   END
           END AS afpsn,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.PENRANK
+              WHEN p.source_table = 'resumption_table' THEN h2.PENRANK
               WHEN p.source_table = 'beneficiaries_table' THEN h3.PENRANK
               ELSE h1.PENRANK
           END AS penrank,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.ACRANK
+              WHEN p.source_table = 'resumption_table' THEN h2.ACRANK
               WHEN p.source_table = 'beneficiaries_table' THEN h3.ACRANK
               ELSE h1.ACRANK
           END AS acrank,
 
           CASE 
-              WHEN p.source_table = 'test_res_table' THEN h2.MOBILENR
+              WHEN p.source_table = 'resumption_table' THEN h2.MOBILENR
               WHEN p.source_table = 'beneficiaries_table' THEN h3.MOBILENR
               ELSE h1.MOBILENR
           END AS mobile
 
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table h1 ON p.hero_ndx = h1.NDX AND p.source_table = 'test_table'
-      LEFT JOIN test_res_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl h1 ON p.hero_ndx = h1.NDX AND p.source_table = 'heroes_tbl'
+      LEFT JOIN resumption_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX AND p.source_table = 'beneficiaries_table'
       ORDER BY u.created_at DESC
     `);
@@ -2975,8 +2972,8 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
       principalUsers: users.filter((u) => u.type === 'P').length,
       beneficiaryUsers: users.filter((u) => u.type === 'B').length,
       activeUsers: users.filter((u) => u.status === 'ACT' || u.status === 'TAG').length,
-      testTableUsers: users.filter((u) => u.source_table === 'test_table').length,
-      testResTableUsers: users.filter((u) => u.source_table === 'test_res_table').length,
+      testTableUsers: users.filter((u) => u.source_table === 'heroes_tbl').length,
+      testResTableUsers: users.filter((u) => u.source_table === 'resumption_table').length,
       beneficiariesTableUsers: users.filter((u) => u.source_table === 'beneficiaries_table').length,
     };
 
@@ -3014,74 +3011,150 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const testTableUsers = await executeQuery(`
-      SELECT 
-          'test_table' as source_table,
-          NDX as id,
-          NDX as user_id,
-          AFPSN as afpsn,
-          PENRANK as penrank,
-          ACRANK as acrank,
-          FIRSTNAME as firstname,
-          LASTNAME as lastname,
-          MIDDLENAME as middlename,
-          SUFFIX as suffix,
-          DOB as dob,
-          PRIN_DATE_RET as prin_date_ret,
-          CTRLNR as ctrlnr,
-          MOBILENR as mobile,
-          CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
-          TYPE as type,
-          '' as bos,
-          'ACT' as status,
-          NOW() as status_updated_at
-      FROM test_table
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit) || 100));
+    const offset = (page - 1) * limit;
+    const search = (req.query.search || '').trim();
+    const sourceTable = req.query.source_table || 'all';
+
+    // Build WHERE clause for search - CASE INSENSITIVE using UPPER()
+    let searchCondition = '';
+    if (search) {
+      const searchUpper = search.toUpperCase().replace(/'/g, "''"); // Escape and uppercase
+      searchCondition = `
+        WHERE UPPER(LASTNAME) LIKE '%${searchUpper}%' 
+        OR UPPER(FIRSTNAME) LIKE '%${searchUpper}%' 
+        OR UPPER(MIDDLENAME) LIKE '%${searchUpper}%'
+        OR UPPER(AFPSN) LIKE '%${searchUpper}%'
+        OR UPPER(CTRLNR) LIKE '%${searchUpper}%'
+        OR UPPER(PENRANK) LIKE '%${searchUpper}%'
+      `;
+    }
+
+    // Build queries based on source table filter
+    let heroesQuery = '';
+    let resumptionQuery = '';
+    let unionOperator = '';
+
+    if (sourceTable === 'all' || sourceTable === 'heroes_tbl') {
+      heroesQuery = `
+        SELECT 
+            'heroes_tbl' as source_table,
+            NDX as id,
+            NDX as user_id,
+            AFPSN as afpsn,
+            PENRANK as penrank,
+            ACRANK as acrank,
+            FIRSTNAME as firstname,
+            LASTNAME as lastname,
+            MIDDLENAME as middlename,
+            SUFFIX as suffix,
+            DOB as dob,
+            PRIN_DATE_RET as prin_date_ret,
+            CTRLNR as ctrlnr,
+            MOBILENR as mobile,
+            CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
+            TYPE as type,
+            '' as bos,
+            'ACT' as status,
+            NOW() as status_updated_at
+        FROM heroes_tbl
+        ${searchCondition}
+      `;
+    }
+
+    if (sourceTable === 'all' || sourceTable === 'resumption_table') {
+      resumptionQuery = `
+        SELECT 
+            'resumption_table' as source_table,
+            NDX as id,
+            NDX as user_id,
+            CASE 
+                WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+                THEN CONCAT('O-', REPLACE(AFPSN, 'O-', ''))
+                ELSE AFPSN
+            END as afpsn,
+            PENRANK as penrank,
+            ACRANK as acrank,
+            FIRSTNAME as firstname,
+            LASTNAME as lastname,
+            MIDDLENAME as middlename,
+            SUFFIX as suffix,
+            DOB as dob,
+            PRIN_DATE_RET as prin_date_ret,
+            CTRLNR as ctrlnr,
+            MOBILENR as mobile,
+            CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
+            'P' as type,
+            '' as bos,
+            'AFR' as status,
+            NOW() as status_updated_at
+        FROM resumption_table
+        ${searchCondition}
+      `;
+    }
+
+    // Combine queries with UNION ALL if both tables are selected
+    if (sourceTable === 'all') {
+      unionOperator = 'UNION ALL';
+    }
+
+    const combinedQuery = [heroesQuery, resumptionQuery]
+      .filter(q => q)
+      .join(` ${unionOperator} `);
+
+    // Get total count for pagination (with filters)
+    const countQuery = `SELECT COUNT(*) as total FROM (${combinedQuery}) as combined`;
+    const [countResult] = await executeQuery(countQuery);
+    const totalCount = countResult.total || 0;
+
+    // Fetch paginated data
+    const allUsers = await executeQuery(`
+      ${combinedQuery}
       ORDER BY LASTNAME, FIRSTNAME
+      LIMIT ${limit} OFFSET ${offset}
     `);
 
-    const testResTableUsers = await executeQuery(`
-      SELECT 
-          'test_res_table' as source_table,
-          NDX as id,
-          NDX as user_id,
-          CASE 
-              WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'COMMO', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR') 
-              THEN CONCAT('O-', REPLACE(AFPSN, 'O-', ''))
-              ELSE AFPSN
-          END as afpsn,
-          PENRANK as penrank,
-          ACRANK as acrank,
-          FIRSTNAME as firstname,
-          LASTNAME as lastname,
-          MIDDLENAME as middlename,
-          SUFFIX as suffix,
-          DOB as dob,
-          PRIN_DATE_RET as prin_date_ret,
-          CTRLNR as ctrlnr,
-          MOBILENR as mobile,
-          CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
-          'P' as type,
-          '' as bos,
-          'AFR' as status,
-          NOW() as status_updated_at
-      FROM test_res_table
-      ORDER BY LASTNAME, FIRSTNAME
-    `);
+    // Get individual table counts for stats
+    let heroesCount = 0;
+    let resumptionCount = 0;
 
-    const allUsers = [...testTableUsers, ...testResTableUsers];
+    if (sourceTable === 'all' || sourceTable === 'heroes_tbl') {
+      const [heroesCountResult] = await executeQuery(
+        `SELECT COUNT(*) as count FROM heroes_tbl ${searchCondition}`
+      );
+      heroesCount = heroesCountResult.count || 0;
+    }
 
-    const stats = {
-      totalUsers: allUsers.length,
-      testTableUsers: testTableUsers.length,
-      testResTableUsers: testResTableUsers.length,
-    };
+    if (sourceTable === 'all' || sourceTable === 'resumption_table') {
+      const [resumptionCountResult] = await executeQuery(
+        `SELECT COUNT(*) as count FROM resumption_table ${searchCondition}`
+      );
+      resumptionCount = resumptionCountResult.count || 0;
+    }
 
     const processingTime = Date.now() - startTime;
+    
     res.json({
       success: true,
       users: allUsers,
       data: allUsers,
-      stats,
+      stats: {
+        testTableUsers: heroesCount,
+        testResTableUsers: resumptionCount,
+      },
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+        hasNext: offset + limit < totalCount,
+        hasPrev: page > 1
+      },
+      filters: {
+        search,
+        sourceTable
+      },
       count: allUsers.length,
       meta: {
         processingTime: `${processingTime}ms`,
@@ -3134,7 +3207,7 @@ router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) =
       });
     }
 
-    if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+    if (!targetTable || !['heroes_tbl', 'resumption_table'].includes(targetTable)) {
       return res.status(400).json({
         success: false,
         error: "Invalid target table",
@@ -3142,28 +3215,30 @@ router.post("/add-to-alpha-list", validateDatabaseConnection, async (req, res) =
       });
     }
 
-    // Check if AFPSN already exists in the target table
-    const existingRecord = await executeQuery(`
-      SELECT NDX, LASTNAME, FIRSTNAME, MIDDLENAME, AFPSN 
-      FROM ${targetTable} 
-      WHERE AFPSN = ?
-    `, [afpsn]);
+    // Check if CTRLNR already exists in the target table (if CTRLNR is provided)
+    if (ctrlnr) {
+      const existingRecord = await executeQuery(`
+        SELECT NDX, LASTNAME, FIRSTNAME, MIDDLENAME, CTRLNR 
+        FROM ${targetTable} 
+        WHERE CTRLNR = ?
+      `, [ctrlnr]);
 
-    if (existingRecord && existingRecord.length > 0) {
-      const existing = existingRecord[0];
-      const existingName = `${existing.FIRSTNAME} ${existing.MIDDLENAME || ''} ${existing.LASTNAME}`.trim();
-      
-      return res.status(409).json({
-        success: false,
-        error: "AFPSN already exists in the database",
-        code: "DUPLICATE_AFPSN",
-        existingRecord: {
-          ndx: existing.NDX,
-          name: existingName,
-          afpsn: existing.AFPSN
-        },
-        targetTable: targetTable
-      });
+      if (existingRecord && existingRecord.length > 0) {
+        const existing = existingRecord[0];
+        const existingName = `${existing.FIRSTNAME} ${existing.MIDDLENAME || ''} ${existing.LASTNAME}`.trim();
+        
+        return res.status(409).json({
+          success: false,
+          error: "CTRLNR already exists in the database",
+          code: "DUPLICATE_CTRLNR",
+          existingRecord: {
+            ndx: existing.NDX,
+            name: existingName,
+            ctrlnr: existing.CTRLNR
+          },
+          targetTable: targetTable
+        });
+      }
     }
 
     const result = await executeQuery(`
@@ -3242,7 +3317,7 @@ router.post("/bulk-add-to-alpha-list",
 
       const { targetTable } = req.body;
 
-      if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+      if (!targetTable || !['heroes_tbl', 'resumption_table'].includes(targetTable)) {
         return res.status(400).json({
           success: false,
           error: "Invalid target table",
@@ -3282,16 +3357,14 @@ router.post("/bulk-add-to-alpha-list",
         duplicates: []
       };
 
-      // Get all existing AFPSNs from target table to check for duplicates
-      const existingAFPSNs = await executeQuery(
-        `SELECT AFPSN FROM ${targetTable}`,
-        []
-      );
-      const existingAFPSNSet = new Set(
-        existingAFPSNs.map(r => r.AFPSN?.toString().toUpperCase())
-      );
+const existingCTRLNRs = await executeQuery(
+  `SELECT CTRLNR FROM ${targetTable} WHERE CTRLNR IS NOT NULL`,
+  []
+);
+const existingCTRLNRSet = new Set(
+  existingCTRLNRs.map(r => r.CTRLNR?.toString().toUpperCase())
+);
 
-      // Process each record
 for (let i = 0; i < records.length; i++) {
   const record = records[i];
   const rowNumber = i + 2;
@@ -3313,16 +3386,6 @@ for (let i = 0; i < records.length; i++) {
       continue;
     }
 
-    // Check for duplicates
-    if (existingAFPSNSet.has(afpsn)) {
-      results.duplicates.push({
-        row: rowNumber,
-        afpsn: afpsn,
-        name: `${firstname} ${lastname}`
-      });
-      continue;
-    }
-
     // Prepare data with column mapping
     const middlename = (record.middlename || record.MIDDLENAME)?.toString().trim().toUpperCase() || null;
     const suffix = (record.suffix || record.SUFFIX)?.toString().trim().toUpperCase() || null;
@@ -3332,6 +3395,17 @@ for (let i = 0; i < records.length; i++) {
     const penrank = (record.penrank || record.PENRANK)?.toString().trim().toUpperCase() || null;
     const ctrlnr = (record.ctrlnr || record.ctrlno || record.CTRLNO)?.toString().trim().toUpperCase() || null;
     const mobilenr = (record.mobilenr || record.pin || record.PIN)?.toString().trim().replace(/\D/g, '') || null;
+
+    // Check for duplicate CTRLNR (if CTRLNR is provided)
+    if (ctrlnr && existingCTRLNRSet.has(ctrlnr)) {
+      results.duplicates.push({
+        row: rowNumber,
+        ctrlnr: ctrlnr,
+        name: `${firstname} ${lastname}`,
+        reason: 'Duplicate CTRLNR'
+      });
+      continue;
+    }
         
     // Handle PRIN/BENE column - normalize both "PRIN" and "BENE" values
     let typeRaw = (record.type || record['prin/bene'] || record['PRIN/BENE'])?.toString().trim().toUpperCase() || 'P';
@@ -3343,7 +3417,7 @@ for (let i = 0; i < records.length; i++) {
       type = 'P';
     }
 
-    // Validate type (should always be P or B after normalization, but check anyway)
+    // Validate type
     if (type !== 'P' && type !== 'B') {
       results.errorCount++;
       results.errors.push({
@@ -3378,7 +3452,9 @@ for (let i = 0; i < records.length; i++) {
     ]);
 
     // Add to existing set to catch duplicates within the same file
-    existingAFPSNSet.add(afpsn);
+    if (ctrlnr) {
+      existingCTRLNRSet.add(ctrlnr);
+    }
     results.successCount++;
 
   } catch (error) {
@@ -3479,7 +3555,7 @@ router.put("/update-alpha-list/:id", validateDatabaseConnection, async (req, res
       });
     }
 
-    if (!targetTable || !['test_table', 'test_res_table'].includes(targetTable)) {
+    if (!targetTable || !['heroes_tbl', 'resumption_table'].includes(targetTable)) {
       return res.status(400).json({
         success: false,
         error: "Invalid target table",

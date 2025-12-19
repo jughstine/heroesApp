@@ -454,25 +454,25 @@ router.get('/history-logs', async (req, res) => {
         p.source_table,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as pensioner_firstname,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as pensioner_lastname,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
           WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
         END as AFPSN,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK
@@ -485,10 +485,10 @@ router.get('/history-logs', async (req, res) => {
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
 
       -- main joins for all possible source tables
-      LEFT JOIN test_table t 
-        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr 
-        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
 
@@ -557,25 +557,25 @@ router.get('/history-logs/:log_id', async (req, res) => {
         p.source_table,
         
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END AS pensioner_firstname,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END AS pensioner_lastname,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
           WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
         END AS AFPSN,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END AS PENRANK
@@ -586,12 +586,12 @@ router.get('/history-logs/:log_id', async (req, res) => {
       LEFT JOIN form_type ft ON fs.form_type_id = ft.id
       LEFT JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t 
+      LEFT JOIN heroes_tbl t 
         ON p.hero_ndx = t.NDX 
-        AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr 
+        AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr 
         ON p.hero_ndx = tr.NDX 
-        AND p.source_table = 'test_res_table'
+        AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX 
         AND p.source_table = 'beneficiaries_table'
@@ -777,64 +777,64 @@ router.get('/', authenticateAdminToken, async (req, res) => {
         u.pensioner_ndx,
         p.source_table,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.NDX
+          WHEN p.source_table = 'resumption_table' THEN tr.NDX
           WHEN p.source_table = 'beneficiaries_table' THEN b.NDX
           ELSE t.NDX
-        END as test_table_ndx,
+        END as heroes_tbl_ndx,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'resumption_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN 
+          WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
         END as AFPSN,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'resumption_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END as DOB,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'resumption_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END as TYPE,
         p.type as pensioner_type,
         p.b_type,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK
@@ -842,8 +842,8 @@ router.get('/', authenticateAdminToken, async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.form_type_id IN (${placeholders})
       ORDER BY fs.submitted_at DESC
@@ -924,8 +924,8 @@ router.get('/paginated', async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
     `;
@@ -949,64 +949,64 @@ router.get('/paginated', async (req, res) => {
         u.status_updated_at,
         p.source_table,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'resumption_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN 
+          WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN','COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
         END as AFPSN,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'resumption_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END as TYPE,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.CTRLNR
+          WHEN p.source_table = 'resumption_table' THEN tr.CTRLNR
           WHEN p.source_table = 'beneficiaries_table' THEN b.CTRLNR
           ELSE t.CTRLNR
         END as CTRLNR,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'resumption_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END as DOB,
         p.type as pensioner_type,
         p.b_type,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END as PENRANK
@@ -1014,8 +1014,8 @@ router.get('/paginated', async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
       ORDER BY ${sortColumn} ${sortOrder}
@@ -1087,52 +1087,52 @@ router.get('/export/bulk', async (req, res) => {
         p.b_type,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END AS FIRSTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END AS LASTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN 
+          WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
         END AS AFPSN,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END AS PENRANK,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'resumption_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END AS DOB,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'resumption_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END AS TYPE,
@@ -1149,10 +1149,10 @@ router.get('/export/bulk', async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t 
-        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr 
-        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
@@ -1359,64 +1359,64 @@ router.get('/status/:status', async (req, res) => {
         p.b_type,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END AS FIRSTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END AS LASTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END AS MIDDLENAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'resumption_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END AS SUFFIX,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN 
+          WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COL','BGEN','MGEN','LGEN','CDR','COMMO') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
         END AS AFPSN,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END AS PENRANK,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'resumption_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END AS DOB,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'resumption_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END AS TYPE
@@ -1425,10 +1425,10 @@ router.get('/status/:status', async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t 
-        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr 
-        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.status = ?
@@ -1480,22 +1480,22 @@ router.get('/location/:location_status', async (req, res) => {
         u.status_updated_at,
         p.source_table,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END as FIRSTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'resumption_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END as SUFFIX
@@ -1503,8 +1503,8 @@ router.get('/location/:location_status', async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.location = ?
       ORDER BY fs.submitted_at DESC
@@ -1571,9 +1571,9 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Form submission not found' });
     }
 
-    const sourceTable = formBasicInfo[0].source_table || 'test_table';
+    const sourceTable = formBasicInfo[0].source_table || 'heroes_tbl';
 
-    if (!['test_table', 'test_res_table', 'beneficiaries_table'].includes(sourceTable)) {
+    if (!['heroes_tbl', 'resumption_table', 'beneficiaries_table'].includes(sourceTable)) {
       console.error(`Invalid source_table: ${sourceTable} for form ${formId}`);
       return res.status(500).json({ success: false, error: 'Invalid source table configuration' });
     }
@@ -1594,53 +1594,53 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
 
         -- Name details
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.FIRSTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
           ELSE t.FIRSTNAME
         END AS FIRSTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.LASTNAME
+          WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
           ELSE t.LASTNAME
         END AS LASTNAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END AS MIDDLENAME,
 
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.SUFFIX
+          WHEN p.source_table = 'resumption_table' THEN tr.SUFFIX
           WHEN p.source_table = 'beneficiaries_table' THEN b.SUFFIX
           ELSE t.SUFFIX
         END AS SUFFIX,
 
         -- AFPSN (with officer prefix logic)
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.AFPSN
+          WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
           WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
           ELSE t.AFPSN
         END AS AFPSN,
 
         -- Rank
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.PENRANK
+          WHEN p.source_table = 'resumption_table' THEN tr.PENRANK
           WHEN p.source_table = 'beneficiaries_table' THEN b.PENRANK
           ELSE t.PENRANK
         END AS PENRANK,
 
         -- Date of birth
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.DOB
+          WHEN p.source_table = 'resumption_table' THEN tr.DOB
           WHEN p.source_table = 'beneficiaries_table' THEN b.DOB
           ELSE t.DOB
         END AS DOB,
 
         -- Type
         CASE 
-          WHEN p.source_table = 'test_res_table' THEN tr.TYPE
+          WHEN p.source_table = 'resumption_table' THEN tr.TYPE
           WHEN p.source_table = 'beneficiaries_table' THEN b.TYPE
           ELSE t.TYPE
         END AS TYPE,
@@ -1653,10 +1653,10 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
       JOIN form_type ft ON fs.form_type_id = ft.id
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      LEFT JOIN test_table t 
-        ON p.hero_ndx = t.NDX AND (p.source_table = 'test_table' OR p.source_table IS NULL)
-      LEFT JOIN test_res_table tr 
-        ON p.hero_ndx = tr.NDX AND p.source_table = 'test_res_table'
+      LEFT JOIN heroes_tbl t 
+        ON p.hero_ndx = t.NDX AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+      LEFT JOIN resumption_table tr 
+        ON p.hero_ndx = tr.NDX AND p.source_table = 'resumption_table'
       LEFT JOIN beneficiaries_table b 
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       LEFT JOIN admin_form_access afa 
@@ -1672,7 +1672,7 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
 
     const formattedAFPSN =
       submission.PENRANK &&
-      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL','GEN', 'COL', 'BGEN', 'MGEN', 'LGEN', 'CDR', 'COMMO'].includes(submission.PENRANK)
+      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS'].includes(submission.PENRANK)
         ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
         : submission.AFPSN;
 

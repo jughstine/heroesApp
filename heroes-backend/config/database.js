@@ -166,9 +166,7 @@ const testConnection = async () => {
       const [rows] = await connection.execute('SELECT 1 as test, NOW() as timestamp');
       poolStats.successfulQueries++;
       
-      const duration = Date.now() - startTime;
-      logger.debug(`Connection test successful (${duration}ms)`);
-      
+      const duration = Date.now() - startTime;      
       return {
         success: true,
         duration,

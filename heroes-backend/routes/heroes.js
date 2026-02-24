@@ -521,6 +521,7 @@ router.get('/submissions', async (req, res) => {
     const [submissions] = await conn.query(`
       SELECT 
         fs.id,
+        fs.form_reference,
         fs.form_type_id,
         fs.status,
         fs.submitted_at,
@@ -623,6 +624,7 @@ router.get('/submissions/:userId', async (req, res) => {
     const [submissions] = await conn.query(`
       SELECT 
         fs.id,
+        fs.form_reference,
         fs.form_type_id,
         fs.status,
         CONVERT_TZ(fs.submitted_at, @@session.time_zone, '+00:00') as submitted_at,

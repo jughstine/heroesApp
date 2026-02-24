@@ -1141,60 +1141,134 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
     try {
         const { identityToken, email, password } = req.body;
 
+        // Enhanced logging
+        logger.info('Account creation attempt:', {
+            hasToken: !!identityToken,
+            email: email,
+            hasPassword: !!password
+        });
+
         if (!identityToken || !email || !password) {
+            logger.error('Missing required fields:', { 
+                identityToken: !!identityToken, 
+                email: !!email, 
+                password: !!password 
+            });
             return res.status(400).json({ 
                 success: false,
                 error: "Missing required fields", 
-                code: 'MISSING_REQUIRED_FIELDS' 
+                code: 'MISSING_REQUIRED_FIELDS',
+                details: {
+                    identityToken: !identityToken ? 'missing' : 'present',
+                    email: !email ? 'missing' : 'present',
+                    password: !password ? 'missing' : 'present'
+                }
             });
         }
 
-        // Validate token
+        // Validate token with better error handling
         let validationData;
         try {
             validationData = await getValidationToken(identityToken);
-            if (!validationData) throw new Error('Invalid validation data');
+            if (!validationData) {
+                logger.error('Invalid validation data for token');
+                throw new Error('Invalid validation data');
+            }
+            
+            // Log validation data for debugging
+            logger.info('Validation data retrieved:', {
+                type: validationData.type,
+                isMinor: validationData.is_minor,
+                hasGuardianInfo: !!validationData.guardian_info,
+                guardianInfoEmail: validationData.guardian_info?.email,
+                providedEmail: email
+            });
         } catch (error) {
-            return res.status(400).json({ success: false, error: "Invalid or expired token", code: 'INVALID_IDENTITY_TOKEN' });
+            logger.error('Token validation failed:', error);
+            return res.status(400).json({ 
+                success: false, 
+                error: "Invalid or expired token", 
+                code: 'INVALID_IDENTITY_TOKEN',
+                details: error.message 
+            });
         }
 
         // For minors, verify the email matches guardian email from validation
         if (validationData.is_minor && validationData.guardian_info) {
-            const guardianEmail = validationData.guardian_info.email.toLowerCase().trim();
-            const providedEmail = email.toLowerCase().trim();
+            // Normalize both emails exactly the same way
+            const guardianEmail = (validationData.guardian_info.email || '').toLowerCase().trim();
+            const providedEmail = (email || '').toLowerCase().trim();
+            
+            logger.info('Minor email validation:', {
+                guardianEmail,
+                providedEmail,
+                rawGuardianEmail: validationData.guardian_info.email,
+                rawProvidedEmail: email,
+                match: providedEmail === guardianEmail
+            });
+            
+            if (!guardianEmail) {
+                logger.error('Guardian email missing in validation data');
+                return res.status(400).json({
+                    success: false,
+                    error: "Guardian email not found in validation data. Please start over from identity verification.",
+                    code: 'GUARDIAN_EMAIL_MISSING'
+                });
+            }
             
             if (providedEmail !== guardianEmail) {
+                logger.error('Email mismatch for minor account:', {
+                    expected: guardianEmail,
+                    received: providedEmail,
+                    expectedLength: guardianEmail.length,
+                    receivedLength: providedEmail.length
+                });
                 return res.status(400).json({
                     success: false,
                     error: "Email must match guardian email from validation",
                     code: 'EMAIL_GUARDIAN_MISMATCH',
                     details: {
-                        expected: guardianEmail,
-                        provided: providedEmail
+                        message: "The email address must match the guardian email provided during identity verification",
+                        expectedEmail: guardianEmail,
+                        providedEmail: providedEmail
                     }
                 });
             }
+            
+            logger.info('Guardian email validation passed');
         }
 
-        // Validate email
+        // Validate email format
         if (!validator.isEmail(email)) {
-            return res.status(400).json({ success: false, error: "Invalid email format", code: 'INVALID_EMAIL_FORMAT' });
+            logger.error('Invalid email format:', email);
+            return res.status(400).json({ 
+                success: false, 
+                error: "Invalid email format", 
+                code: 'INVALID_EMAIL_FORMAT' 
+            });
         }
 
         const normalizedEmail = email.toLowerCase().trim();
 
+        // Check for existing email
         const existingEmail = await executeQuery(
             'SELECT id FROM users_tbl WHERE email = ? FOR UPDATE',
             [normalizedEmail]
         );
 
         if (existingEmail.length > 0) {
-            return res.status(409).json({ success: false, error: "Email already exists", code: 'EMAIL_ALREADY_EXISTS' });
+            logger.warn('Email already exists:', normalizedEmail);
+            return res.status(409).json({ 
+                success: false, 
+                error: "Email already exists", 
+                code: 'EMAIL_ALREADY_EXISTS' 
+            });
         }
 
         // Validate password
         const passwordValidation = validatePasswordStrength(password);
         if (!passwordValidation.isValid) {
+            logger.error('Weak password detected');
             return res.status(400).json({
                 success: false,
                 error: "Weak password",
@@ -1205,13 +1279,24 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
         const hashedPassword = await bcrypt.hash(password, 12);
 
-        // Get connection
-        connection = await getConnection();
+        // Get connection with better error handling
+        try {
+            connection = await getConnection();
+            logger.info('Database connection acquired');
+        } catch (dbError) {
+            logger.error('Failed to get database connection:', dbError);
+            throw { 
+                code: 'DB_CONNECTION_FAILED', 
+                statusCode: 503, 
+                message: 'Database connection failed',
+                originalError: dbError.message 
+            };
+        }
 
         await retryWithBackoff(async () => {
             try {
-                await connection.execute('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
                 await connection.beginTransaction();
+                logger.info('Transaction started');
 
                 let pensionerId;
                 let beneficiaryNdx = null;
@@ -1219,10 +1304,13 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
 
                 // === BENEFICIARY (Type B) ===
                 if (validationData.type === 'B') {
+                    logger.info('Processing beneficiary account:', {
+                        sourceTable: validationData.source_table,
+                        isMinor: validationData.is_minor
+                    });
                     
                     // Check if this is an active beneficiary from heroes_tbl or a new application
                     if (validationData.source_table === 'heroes_tbl') {
-                        // Active beneficiary from heroes_tbl (like active pensioner)
                         const [heroCheck] = await connection.execute(
                             `SELECT p.id FROM pensioners_tbl p 
                              WHERE p.hero_ndx = ? AND p.source_table = 'heroes_tbl' AND p.type = 'B'
@@ -1231,7 +1319,12 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
 
                         if (heroCheck.length > 0) {
-                            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
+                            logger.error('Record already claimed:', validationData.hero_ndx);
+                            throw { 
+                                code: 'RECORD_ALREADY_CLAIMED', 
+                                statusCode: 409, 
+                                message: 'Account already exists for this beneficiary' 
+                            };
                         }
 
                         // Insert pensioner record pointing to heroes_tbl
@@ -1244,7 +1337,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                                 validationData.hero_ndx,
                                 'heroes_tbl',
                                 'B',
-                                null, // bos
+                                null,
                                 validationData.b_type || null,
                                 validationData.principal_afpsn || null,
                                 validationData.principal_first_name || null,
@@ -1254,10 +1347,14 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
 
                         pensionerId = pensionerResult.insertId;
-                        if (!pensionerId) throw new Error('Failed to create pensioner record');
+                        if (!pensionerId) {
+                            logger.error('Failed to create pensioner record - no insertId');
+                            throw new Error('Failed to create pensioner record');
+                        }
+                        logger.info('Pensioner record created:', pensionerId);
 
                     } else {
-                        // New beneficiary application - insert into beneficiaries_table
+                        // New beneficiary application
                         const [existingBeneficiary] = await connection.execute(
                             `SELECT p.id FROM pensioners_tbl p
                              LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
@@ -1281,7 +1378,12 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
 
                         if (existingBeneficiary.length > 0) {
-                            throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this beneficiary' };
+                            logger.error('Beneficiary application already exists');
+                            throw { 
+                                code: 'RECORD_ALREADY_CLAIMED', 
+                                statusCode: 409, 
+                                message: 'Account already exists for this beneficiary' 
+                            };
                         }
 
                         // Insert beneficiary into beneficiaries_table
@@ -1301,14 +1403,18 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
 
                         beneficiaryNdx = beneficiaryResult.insertId;
-                        if (!beneficiaryNdx) throw new Error('Failed to create beneficiary record');
+                        if (!beneficiaryNdx) {
+                            logger.error('Failed to create beneficiary record - no insertId');
+                            throw new Error('Failed to create beneficiary record');
+                        }
+                        logger.info('Beneficiary record created:', beneficiaryNdx);
 
                         // Insert pensioner record
                         const [pensionerResult] = await connection.execute(
                             `INSERT INTO pensioners_tbl 
                              (hero_ndx, source_table, type, bos, b_type, 
                               principal_afpsn, principal_firstname, principal_lastname, 
-                             principal_ndx, account_status) 
+                              principal_ndx, account_status) 
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                             [
                                 beneficiaryNdx,
@@ -1325,11 +1431,17 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
 
                         pensionerId = pensionerResult.insertId;
-                        if (!pensionerId) throw new Error('Failed to create pensioner record');
+                        if (!pensionerId) {
+                            logger.error('Failed to create pensioner record - no insertId');
+                            throw new Error('Failed to create pensioner record');
+                        }
+                        logger.info('Pensioner record created:', pensionerId);
                     }
 
                 } else {
-                    // === PRINCIPAL (Type P) - Use existing hero_ndx from heroes_tbl or resumption_table ===
+                    // === PRINCIPAL (Type P) ===
+                    logger.info('Processing principal account');
+                    
                     const [heroCheck] = await connection.execute(
                         `SELECT p.id FROM pensioners_tbl p 
                          WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
@@ -1338,7 +1450,12 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                     );
 
                     if (heroCheck.length > 0) {
-                        throw { code: 'RECORD_ALREADY_CLAIMED', statusCode: 409, message: 'Account already exists for this record' };
+                        logger.error('Principal record already claimed:', validationData.hero_ndx);
+                        throw { 
+                            code: 'RECORD_ALREADY_CLAIMED', 
+                            statusCode: 409, 
+                            message: 'Account already exists for this record' 
+                        };
                     }
 
                     const [pensionerResult] = await connection.execute(
@@ -1354,22 +1471,28 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                     );
 
                     pensionerId = pensionerResult.insertId;
-                    if (!pensionerId) throw new Error('Failed to create pensioner');
+                    if (!pensionerId) {
+                        logger.error('Failed to create pensioner - no insertId');
+                        throw new Error('Failed to create pensioner');
+                    }
+                    logger.info('Principal pensioner record created:', pensionerId);
                 }
 
                 // Determine initial user status
                 let initialUserStatus;
                 if (validationData.type === 'B') {
                     if (validationData.source_table === 'heroes_tbl') {
-                        initialUserStatus = 'TAG'; // Active beneficiary, same as active pensioner
+                        initialUserStatus = 'TAG';
                     } else {
-                        initialUserStatus = 'AFB'; // Awaiting approval for new beneficiary application
+                        initialUserStatus = 'AFB';
                     }
                 } else if (validationData.account_status === 'resumption') {
-                    initialUserStatus = 'AFR'; // Awaiting approval for resumption
+                    initialUserStatus = 'AFR';
                 } else {
-                    initialUserStatus = 'TAG'; // Tagged for active pensioners
+                    initialUserStatus = 'TAG';
                 }
+
+                logger.info('Creating user with status:', initialUserStatus);
 
                 // Insert user
                 const [userResult] = await connection.execute(
@@ -1379,10 +1502,15 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 );
 
                 const userId = userResult.insertId;
-                if (!userId) throw new Error('Failed to create user');
+                if (!userId) {
+                    logger.error('Failed to create user - no insertId');
+                    throw new Error('Failed to create user');
+                }
+                logger.info('User record created:', { userId, email: normalizedEmail });
 
                 // === CREATE GUARDIAN RECORD IF MINOR ===
                 if (validationData.is_minor && validationData.guardian_info) {
+                    logger.info('Creating guardian record for minor');
                     try {
                         const [guardianResult] = await connection.execute(
                             `INSERT INTO guardians_tbl 
@@ -1399,24 +1527,32 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                         );
                         
                         guardianId = guardianResult.insertId;
-                        if (!guardianId) throw new Error('Failed to create guardian record');
+                        if (!guardianId) {
+                            logger.error('Failed to create guardian record - no insertId');
+                            throw new Error('Failed to create guardian record');
+                        }
                         
-                        logger.info('Guardian record created:', {
+                        logger.info('Guardian record created successfully:', {
                             guardianId,
                             pensionerId,
-                            email: validationData.guardian_info.email,
-                            beneficiary: `${validationData.firstname} ${validationData.lastname}`
+                            email: validationData.guardian_info.email
                         });
                     } catch (guardianError) {
-                        logger.error('Failed to create guardian record:', guardianError);
+                        logger.error('Guardian record creation failed:', {
+                            error: guardianError.message,
+                            code: guardianError.code,
+                            sql: guardianError.sql
+                        });
                         throw new Error('Failed to create guardian record: ' + guardianError.message);
                     }
                 }
 
                 // Delete token
                 await connection.execute('DELETE FROM signup_tokens WHERE token = ?', [identityToken]);
+                logger.info('Signup token deleted');
 
                 await connection.commit();
+                logger.info('Transaction committed successfully');
 
                 return {
                     userId,
@@ -1432,9 +1568,15 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 };
 
             } catch (error) {
-                // Rollback on any error
+                logger.error('Transaction error:', {
+                    message: error.message,
+                    code: error.code,
+                    sql: error.sql
+                });
+                
                 try {
                     await connection.rollback();
+                    logger.info('Transaction rolled back');
                 } catch (rollbackError) {
                     logger.error('Rollback failed:', rollbackError);
                 }
@@ -1462,6 +1604,13 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
                 message = "Account created successfully";
             }
 
+            logger.info('Account creation successful:', {
+                userId: result.userId,
+                email: result.email,
+                type: result.type,
+                isMinor: result.isMinor
+            });
+
             res.status(201).json({
                 success: true,
                 message,
@@ -1474,11 +1623,17 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         });
 
     } catch (error) {
-        logger.error("Account creation error:", error);
+        logger.error("Account creation error:", {
+            message: error.message,
+            code: error.code,
+            statusCode: error.statusCode,
+            stack: error.stack
+        });
 
         let statusCode = 500;
         let errorCode = 'ACCOUNT_CREATION_FAILED';
         let errorMessage = "Account creation failed";
+        let errorDetails = error.message;
 
         if (error.code === 'ER_DUP_ENTRY') {
             statusCode = 409;
@@ -1496,12 +1651,18 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
             statusCode = 500;
             errorCode = 'TRANSACTION_ERROR';
             errorMessage = "Database transaction error. Please try again.";
+        } else if (error.code === 'DB_CONNECTION_FAILED') {
+            statusCode = 503;
+            errorCode = 'DB_CONNECTION_FAILED';
+            errorMessage = "Database connection failed. Please try again later.";
+            errorDetails = error.originalError;
         }
 
         res.status(statusCode).json({
             success: false,
             error: errorMessage,
             code: errorCode,
+            details: errorDetails,
             processingTime: `${Date.now() - startTime}ms`
         });
 
@@ -1509,6 +1670,7 @@ router.post("/create-account", createAccountLimiter, sanitizeInput, validateData
         if (connection) {
             try {
                 connection.release();
+                logger.info('Database connection released');
             } catch (e) {
                 logger.error('Connection release failed:', e);
             }

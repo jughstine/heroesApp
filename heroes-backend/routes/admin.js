@@ -600,7 +600,7 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, pro
   let connection;
   try {
     const adminId = req.params.id;
-    const { email, password, currentPassword, role } = req.body;
+    const { email, password, currentPassword, role, name } = req.body;  
     
     connection = await getDbConnection();
     await connection.beginTransaction();
@@ -675,6 +675,11 @@ router.put('/admin/:id/settings', authenticateAdminToken, requireSuperAdmin, pro
 
     const updates = [];
     const values = [];
+
+    if (name) {
+      updates.push('name = ?');
+      values.push(name.trim());
+    }
 
     if (email) {
       updates.push('email = ?');

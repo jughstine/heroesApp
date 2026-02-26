@@ -1,63 +1,62 @@
-const express = require('express');
-const { getPool } = require('../config/database');
+const express = require("express");
+const { getPool } = require("../config/database");
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
   try {
-    const poolInstance = getPool(); 
+    const poolInstance = getPool();
     const conn = await poolInstance.getConnection();
     await conn.ping();
     conn.release();
     return true;
   } catch (error) {
-    console.error('Database health check failed:', error);
+    console.error("Database health check failed:", error);
     return false;
   }
 };
 
 // Health check endpoint
-router.get('/health', async (req, res) => {
+router.get("/health", async (req, res) => {
   const startTime = Date.now();
-  
+
   try {
     const dbHealthy = await checkDatabaseHealth();
     const processingTime = Date.now() - startTime;
-    
+
     res.json({
       success: true,
-      status: 'healthy',
+      status: "healthy",
       services: {
-        database: dbHealthy ? 'healthy' : 'degraded',
-        userProfile: 'operational'
+        database: dbHealthy ? "healthy" : "degraded",
+        userProfile: "operational",
       },
       meta: {
         processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
+        timestamp: new Date().toISOString(),
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    
+
     res.status(500).json({
       success: false,
-      status: 'unhealthy',
-      error: 'Health check failed',
+      status: "unhealthy",
+      error: "Health check failed",
       meta: {
         processingTime: `${processingTime}ms`,
-        timestamp: new Date().toISOString()
-      }
+        timestamp: new Date().toISOString(),
+      },
     });
   }
 });
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, '../uploads/profile-pictures');
+    const uploadDir = path.join(__dirname, "../uploads/profile-pictures");
     // Create directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
@@ -68,16 +67,19 @@ const storage = multer.diskStorage({
     // Create unique filename: userId_timestamp.ext
     const uniqueName = `${req.params.userId}_${Date.now()}${path.extname(file.originalname)}`;
     cb(null, uniqueName);
-  }
+  },
 });
 
 // File filter to accept only images
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+  const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif"];
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only JPEG, PNG and GIF are allowed.'), false);
+    cb(
+      new Error("Invalid file type. Only JPEG, PNG and GIF are allowed."),
+      false,
+    );
   }
 };
 
@@ -85,32 +87,32 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
-  }
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
 });
 
-
 // User Profile endpoint
-router.get('/profile', async (req, res) => {
+router.get("/profile", async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); 
+  const poolInstance = getPool();
   let conn = null;
 
-  try {    
+  try {
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Database service temporarily unavailable. Please try again later.",
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Get database connection
     conn = await poolInstance.getConnection();
-    
+
     const [profiles] = await conn.query(`
       SELECT 
         COALESCE(h.FIRSTNAME, h2.FIRSTNAME) AS FIRSTNAME,
@@ -126,23 +128,22 @@ router.get('/profile', async (req, res) => {
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       LEFT JOIN heroes_tbl h ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
       LEFT JOIN resumption_table h2 ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFB', 'AFB2', 'AFR', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'DECEASED', 'AFB', 'AFB2', 'AFR', 'FOR_PAYROLL')
       ORDER BY u.created_at DESC
       LIMIT 1
     `);
-
 
     if (profiles.length === 0) {
       return res.status(404).json({
         success: false,
         error: "User profile not found",
-        code: 'PROFILE_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "PROFILE_NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     const profile = profiles[0];
-    
+
     const processingTime = Date.now() - startTime;
 
     const profileResponse = {
@@ -154,28 +155,26 @@ router.get('/profile', async (req, res) => {
         TYPE: profile.TYPE,
         MOBILENR: profile.MOBILENR,
         status: profile.status,
-        AFPSN: profile.AFPSN
+        AFPSN: profile.AFPSN,
       },
       meta: {
         processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
+        retrieved: new Date().toISOString(),
+      },
     };
 
     res.json(profileResponse);
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error("=== PROFILE ERROR ==="); 
+    console.error("=== PROFILE ERROR ===");
     console.error("Error details:", error);
 
     res.status(500).json({
       success: false,
       error: "Failed to retrieve user profile",
-      code: 'PROFILE_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "PROFILE_ERROR",
+      processingTime: `${processingTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -188,36 +187,38 @@ router.get('/profile', async (req, res) => {
 });
 
 // Profile endpoint with user ID parameter
-router.get('/profile/:userId', async (req, res) => {
+router.get("/profile/:userId", async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); 
+  const poolInstance = getPool();
   let conn = null;
 
   try {
     const userId = req.params.userId;
-    
+
     if (isNaN(userId) || userId <= 0) {
       return res.status(400).json({
         success: false,
         error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_USER_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
-    
+
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Database service temporarily unavailable. Please try again later.",
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     conn = await poolInstance.getConnection();
-    
-    const [profiles] = await conn.query(`
+
+    const [profiles] = await conn.query(
+      `
       SELECT 
         CASE 
           WHEN p.source_table = 'resumption_table' THEN h2.FIRSTNAME
@@ -299,20 +300,22 @@ router.get('/profile/:userId', async (req, res) => {
       LEFT JOIN resumption_table h2 ON p.hero_ndx = h2.NDX
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
       WHERE u.id = ? 
-        AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'AFR', 'FOR_PAYROLL')
-    `, [userId]);
+        AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'DECEASED', 'AFR', 'FOR_PAYROLL')
+    `,
+      [userId],
+    );
 
     if (profiles.length === 0) {
       return res.status(404).json({
         success: false,
         error: "User profile not found",
-        code: 'PROFILE_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "PROFILE_NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     const profile = profiles[0];
-    
+
     const heroData = {
       FIRSTNAME: profile.FIRSTNAME,
       LASTNAME: profile.LASTNAME,
@@ -321,9 +324,9 @@ router.get('/profile/:userId', async (req, res) => {
       PENRANK: profile.penrank,
       TYPE: profile.TYPE,
       CTRLNR: profile.CTRLNR,
-      MOBILENR: profile.MOBILENR
+      MOBILENR: profile.MOBILENR,
     };
-    
+
     const processingTime = Date.now() - startTime;
 
     const profileResponse = {
@@ -343,21 +346,20 @@ router.get('/profile/:userId', async (req, res) => {
       profile_picture: profile.profile_picture,
       pensioner_type: profile.pensioner_type,
       source_table: profile.source_table,
-      ...(profile.pensioner_type === 'B' && {
+      ...(profile.pensioner_type === "B" && {
         beneficiary_info: {
           b_type: profile.b_type,
           principal_firstname: profile.principal_firstname,
-          principal_lastname: profile.principal_lastname
-        }
+          principal_lastname: profile.principal_lastname,
+        },
       }),
       meta: {
         processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
+        retrieved: new Date().toISOString(),
+      },
     };
 
     res.json(profileResponse);
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== PROFILE ERROR ===");
@@ -366,10 +368,9 @@ router.get('/profile/:userId', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to retrieve user profile",
-      code: 'PROFILE_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "PROFILE_ERROR",
+      processingTime: `${processingTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -381,7 +382,7 @@ router.get('/profile/:userId', async (req, res) => {
   }
 });
 
-router.put('/profile/:userId/picture', async (req, res) => {
+router.put("/profile/:userId/picture", async (req, res) => {
   const startTime = Date.now();
   const poolInstance = getPool();
   let conn = null;
@@ -395,17 +396,17 @@ router.put('/profile/:userId/picture', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_USER_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    if (!profile_picture || typeof profile_picture !== 'string') {
+    if (!profile_picture || typeof profile_picture !== "string") {
       return res.status(400).json({
         success: false,
         error: "Valid profile picture URL is required",
-        code: 'INVALID_URL',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_URL",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -415,8 +416,8 @@ router.put('/profile/:userId/picture', async (req, res) => {
       return res.status(503).json({
         success: false,
         error: "Database service temporarily unavailable",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -425,7 +426,7 @@ router.put('/profile/:userId/picture', async (req, res) => {
     // Verify user exists with better debugging
     const [users] = await conn.query(
       "SELECT id, status FROM users_tbl WHERE id = ?",
-      [userId]
+      [userId],
     );
 
     if (users.length === 0) {
@@ -433,45 +434,56 @@ router.put('/profile/:userId/picture', async (req, res) => {
       return res.status(404).json({
         success: false,
         error: "User not found",
-        code: 'USER_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "USER_NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     const user = users[0];
-    
+
     // Check if user status allows profile updates
-    const allowedStatuses = ['ACT', 'UNV', 'TAG', 'DEL','AFR', 'AFB', 'AFB2', 'FOR_PAYROLL'];
+    const allowedStatuses = [
+      "ACT",
+      "UNV",
+      "TAG",
+      "DEL",
+      "DECEASED",
+      "AFR",
+      "AFB",
+      "AFB2",
+      "FOR_PAYROLL",
+    ];
     if (!allowedStatuses.includes(user.status)) {
-      console.warn(`User status not allowed for update: userId=${userId}, status=${user.status}`);
+      console.warn(
+        `User status not allowed for update: userId=${userId}, status=${user.status}`,
+      );
       return res.status(403).json({
         success: false,
         error: "Your account status does not allow profile updates",
-        code: 'FORBIDDEN_STATUS',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "FORBIDDEN_STATUS",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Update user profile with new picture URL
-    await conn.query(
-      'UPDATE users_tbl SET profile_picture = ? WHERE id = ?',
-      [profile_picture, userId]
-    );
+    await conn.query("UPDATE users_tbl SET profile_picture = ? WHERE id = ?", [
+      profile_picture,
+      userId,
+    ]);
 
     const processingTime = Date.now() - startTime;
 
     res.json({
       success: true,
       data: {
-        profile_picture: profile_picture
+        profile_picture: profile_picture,
       },
-      message: 'Profile picture updated successfully',
+      message: "Profile picture updated successfully",
       meta: {
         processingTime: `${processingTime}ms`,
-        updated: new Date().toISOString()
-      }
+        updated: new Date().toISOString(),
+      },
     });
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== PROFILE PICTURE UPDATE ERROR ===");
@@ -480,10 +492,9 @@ router.put('/profile/:userId/picture', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to update profile picture",
-      code: 'UPDATE_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "UPDATE_ERROR",
+      processingTime: `${processingTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -496,27 +507,27 @@ router.put('/profile/:userId/picture', async (req, res) => {
 });
 
 // Form submissions endpoint
-router.get('/submissions', async (req, res) => {
+router.get("/submissions", async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); 
-  let conn = ll; 
+  const poolInstance = getPool();
+  let conn = ll;
 
   try {
-    
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Database service temporarily unavailable. Please try again later.",
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Get database connection
     conn = await poolInstance.getConnection();
-    
+
     // This gets submissions for the most recent userr
     const [submissions] = await conn.query(`
       SELECT 
@@ -529,7 +540,7 @@ router.get('/submissions', async (req, res) => {
         fs.longitude
       FROM form_submission fs
       JOIN users_tbl u ON fs.user_id = u.id
-      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
+      WHERE u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'DECEASED', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
       AND fs.status IN ('p', 'a', 'd') 
       ORDER BY fs.submitted_at DESC
     `);
@@ -542,12 +553,11 @@ router.get('/submissions', async (req, res) => {
       meta: {
         count: submissions.length,
         processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
+        retrieved: new Date().toISOString(),
+      },
     };
 
     res.json(submissionsResponse);
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== FORM SUBMISSIONS ERROR ===");
@@ -556,10 +566,9 @@ router.get('/submissions', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to retrieve form submissions",
-      code: 'SUBMISSIONS_ERROR',
-      processingTime: `${Date.now() - startTime}ms`
+      code: "SUBMISSIONS_ERROR",
+      processingTime: `${Date.now() - startTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -572,56 +581,61 @@ router.get('/submissions', async (req, res) => {
 });
 
 // Get user submissions endpoint
-router.get('/submissions/:userId', async (req, res) => {
+router.get("/submissions/:userId", async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); 
-  let conn = null; 
+  const poolInstance = getPool();
+  let conn = null;
 
   try {
     const userId = req.params.userId;
-    
+
     // Validate userId
     if (isNaN(userId) || userId <= 0) {
       return res.status(400).json({
         success: false,
         error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_USER_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
-    
+
     // Database health check
     const dbHealthy = await checkDatabaseHealth();
     if (!dbHealthy) {
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Database service temporarily unavailable. Please try again later.",
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     conn = await poolInstance.getConnection();
-    
+
     // Verify user exists (works with both tables)
-    const [userExists] = await conn.query(`
+    const [userExists] = await conn.query(
+      `
       SELECT u.id, p.source_table
       FROM users_tbl u
       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
-    `, [userId]);
+      WHERE u.id = ? AND u.status IN ('ACT', 'UNV', 'TAG', 'DEL', 'DECEASED', 'AFR','AFB', 'AFB2', 'FOR_PAYROLL')
+    `,
+      [userId],
+    );
 
     if (userExists.length === 0) {
       return res.status(404).json({
         success: false,
         error: "User not found",
-        code: 'USER_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "USER_NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Query for specific user's submissions with UTC timezone conversion AND download count
-    const [submissions] = await conn.query(`
+    const [submissions] = await conn.query(
+      `
       SELECT 
         fs.id,
         fs.form_reference,
@@ -642,19 +656,21 @@ router.get('/submissions/:userId', async (req, res) => {
       WHERE fs.user_id = ?
       AND fs.status IN ('p', 'a', 'd')
       ORDER BY fs.submitted_at DESC
-    `, [userId]);
+    `,
+      [userId],
+    );
 
     // Ensure timestamps are in ISO 8601 format
-    const normalizedSubmissions = submissions.map(submission => ({
+    const normalizedSubmissions = submissions.map((submission) => ({
       ...submission,
-      submitted_at: submission.submitted_at 
+      submitted_at: submission.submitted_at
         ? new Date(submission.submitted_at).toISOString()
         : null,
       reviewed_at: submission.reviewed_at
         ? new Date(submission.reviewed_at).toISOString()
         : null,
       has_resolution_file: Boolean(submission.has_resolution_file),
-      resolution_download_count: submission.resolution_download_count || 0
+      resolution_download_count: submission.resolution_download_count || 0,
     }));
 
     const processingTime = Date.now() - startTime;
@@ -667,10 +683,9 @@ router.get('/submissions/:userId', async (req, res) => {
         count: normalizedSubmissions.length,
         source_table: userExists[0].source_table,
         processingTime: `${processingTime}ms`,
-        retrieved: new Date().toISOString()
-      }
+        retrieved: new Date().toISOString(),
+      },
     });
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== USER SUBMISSIONS ERROR ===");
@@ -679,10 +694,9 @@ router.get('/submissions/:userId', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to retrieve user submissions",
-      code: 'USER_SUBMISSIONS_ERROR',
-      processingTime: `${Date.now() - startTime}ms`
+      code: "USER_SUBMISSIONS_ERROR",
+      processingTime: `${Date.now() - startTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -695,22 +709,22 @@ router.get('/submissions/:userId', async (req, res) => {
 });
 
 // secure download resolution file
-router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
+router.get("/submissions/:submissionId/resolution-file", async (req, res) => {
   const startTime = Date.now();
-  const poolInstance = getPool(); 
-  let conn = null; 
+  const poolInstance = getPool();
+  let conn = null;
 
   try {
     const submissionId = req.params.submissionId;
     const userId = req.query.userId;
-    
+
     // Validate parameters
     if (isNaN(submissionId) || submissionId <= 0) {
       return res.status(400).json({
         success: false,
         error: "Invalid submission ID provided",
-        code: 'INVALID_SUBMISSION_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_SUBMISSION_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -718,19 +732,20 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "User ID is required",
-        code: 'USER_ID_REQUIRED',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "USER_ID_REQUIRED",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     conn = await poolInstance.getConnection();
-    
+
     // Start transaction to ensure atomic operations
     await conn.beginTransaction();
-    
+
     // Verify the submission belongs to the user and get current download count
     // SECURITY: Only allow access for APPROVED (status = 'a') Declaration forms (form_type_id = 1)
-    const [submissions] = await conn.query(`
+    const [submissions] = await conn.query(
+      `
       SELECT 
         fs.id,
         fs.user_id,
@@ -743,15 +758,17 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
         AND fs.user_id = ?
         AND fs.form_type_id = 1
         AND fs.status = 'a'
-    `, [submissionId, userId]);
+    `,
+      [submissionId, userId],
+    );
 
     if (submissions.length === 0) {
       await conn.rollback();
       return res.status(403).json({
         success: false,
         error: "Resolution file is only available for approved declarations",
-        code: 'ACCESS_DENIED',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "ACCESS_DENIED",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -764,10 +781,10 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
       return res.status(403).json({
         success: false,
         error: "Download limit reached. You can only download this file once.",
-        code: 'DOWNLOAD_LIMIT_EXCEEDED',
+        code: "DOWNLOAD_LIMIT_EXCEEDED",
         downloadCount: currentDownloadCount,
         maxDownloads: 1,
-        processingTime: `${Date.now() - startTime}ms`
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -777,38 +794,41 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
       return res.status(404).json({
         success: false,
         error: "Resolution file not available for this submission",
-        code: 'NO_RESOLUTION_FILE',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "NO_RESOLUTION_FILE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Increment download count
-    await conn.query(`
+    await conn.query(
+      `
       UPDATE form_submission 
       SET resolution_download_count = resolution_download_count + 1
       WHERE id = ?
-    `, [submissionId]);
+    `,
+      [submissionId],
+    );
 
     // Commit transaction
     await conn.commit();
 
     const newDownloadCount = currentDownloadCount + 1;
     const remainingDownloads = 2 - newDownloadCount;
-    
+
     res.json({
       success: true,
       data: {
         submissionId: submission.id,
         fileUrl: submission.resolution_file_url,
         downloadCount: newDownloadCount,
-        remainingDownloads: remainingDownloads
+        remainingDownloads: remainingDownloads,
       },
-      message: remainingDownloads > 0 
-        ? `You have ${remainingDownloads} download(s) remaining.`
-        : 'This is your last download.',
-      processingTime: `${Date.now() - startTime}ms`
+      message:
+        remainingDownloads > 0
+          ? `You have ${remainingDownloads} download(s) remaining.`
+          : "This is your last download.",
+      processingTime: `${Date.now() - startTime}ms`,
     });
-
   } catch (error) {
     // Rollback transaction on error
     if (conn) {
@@ -825,10 +845,9 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to retrieve resolution file",
-      code: 'RESOLUTION_FILE_ERROR',
-      processingTime: `${Date.now() - startTime}ms`
+      code: "RESOLUTION_FILE_ERROR",
+      processingTime: `${Date.now() - startTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -841,29 +860,30 @@ router.get('/submissions/:submissionId/resolution-file', async (req, res) => {
 });
 
 // Form types reference endpoint
-router.get('/form-types', async (req, res) => {
+router.get("/form-types", async (req, res) => {
   try {
     res.json({
       success: true,
       data: {
         1: "Updating",
-        2: "Restoration", 
+        2: "Restoration",
         3: "Resumption",
         4: "Transfer of Pension",
-        5: "Declaration of Legal Beneficiary"
+        5: "Declaration of Legal Beneficiary",
       },
-      message: "Form type ID mapping. Adjust these IDs based on your form_types table."
+      message:
+        "Form type ID mapping. Adjust these IDs based on your form_types table.",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: "Failed to retrieve form types"
+      error: "Failed to retrieve form types",
     });
   }
 });
 
 // Update user's push token
-router.put('/push-token/:userId', async (req, res) => {
+router.put("/push-token/:userId", async (req, res) => {
   const startTime = Date.now();
   const poolInstance = getPool();
   let conn = null;
@@ -877,17 +897,17 @@ router.put('/push-token/:userId', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_USER_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    if (!push_token || typeof push_token !== 'string') {
+    if (!push_token || typeof push_token !== "string") {
       return res.status(400).json({
         success: false,
         error: "Valid push token is required",
-        code: 'INVALID_TOKEN',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_TOKEN",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -897,8 +917,8 @@ router.put('/push-token/:userId', async (req, res) => {
       return res.status(503).json({
         success: false,
         error: "Database service temporarily unavailable",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -906,35 +926,34 @@ router.put('/push-token/:userId', async (req, res) => {
 
     // Verify user exists
     const [users] = await conn.query(
-      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'AFR', 'AFB', 'AFB2', 'FOR_PAYROLL')",
-      [userId]
+      "SELECT id FROM users_tbl WHERE id = ? AND status IN ('ACT', 'UNV', 'TAG', 'DEL', 'DECEASED', 'AFR', 'AFB', 'AFB2', 'FOR_PAYROLL')",
+      [userId],
     );
 
     if (users.length === 0) {
       return res.status(404).json({
         success: false,
         error: "User not found",
-        code: 'USER_NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "USER_NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Update user's push token
-    await conn.query(
-      'UPDATE users_tbl SET push_token = ? WHERE id = ?',
-      [push_token, userId]
-    );
+    await conn.query("UPDATE users_tbl SET push_token = ? WHERE id = ?", [
+      push_token,
+      userId,
+    ]);
 
     const processingTime = Date.now() - startTime;
     res.json({
       success: true,
-      message: 'Push token saved successfully',
+      message: "Push token saved successfully",
       meta: {
         processingTime: `${processingTime}ms`,
-        updated: new Date().toISOString()
-      }
+        updated: new Date().toISOString(),
+      },
     });
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== PUSH TOKEN UPDATE ERROR ===");
@@ -943,10 +962,9 @@ router.put('/push-token/:userId', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to save push token",
-      code: 'UPDATE_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "UPDATE_ERROR",
+      processingTime: `${processingTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {
@@ -959,7 +977,7 @@ router.put('/push-token/:userId', async (req, res) => {
 });
 
 // Delete user's push token (for logout)
-router.delete('/push-token/:userId', async (req, res) => {
+router.delete("/push-token/:userId", async (req, res) => {
   const startTime = Date.now();
   const poolInstance = getPool();
   let conn = null;
@@ -971,29 +989,27 @@ router.delete('/push-token/:userId', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "Invalid user ID provided",
-        code: 'INVALID_USER_ID',
-        processingTime: `${Date.now() - startTime}ms`
+        code: "INVALID_USER_ID",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     conn = await poolInstance.getConnection();
 
-    await conn.query(
-      'UPDATE users_tbl SET push_token = NULL WHERE id = ?',
-      [userId]
-    );
+    await conn.query("UPDATE users_tbl SET push_token = NULL WHERE id = ?", [
+      userId,
+    ]);
 
     const processingTime = Date.now() - startTime;
 
     res.json({
       success: true,
-      message: 'Push token removed successfully',
+      message: "Push token removed successfully",
       meta: {
         processingTime: `${processingTime}ms`,
-        updated: new Date().toISOString()
-      }
+        updated: new Date().toISOString(),
+      },
     });
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error("=== PUSH TOKEN DELETE ERROR ===");
@@ -1002,10 +1018,9 @@ router.delete('/push-token/:userId', async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to remove push token",
-      code: 'DELETE_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "DELETE_ERROR",
+      processingTime: `${processingTime}ms`,
     });
-
   } finally {
     if (conn) {
       try {

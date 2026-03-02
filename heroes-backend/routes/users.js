@@ -3518,16 +3518,35 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
 
     // Build WHERE clause for search - CASE INSENSITIVE using UPPER()
     let searchCondition = "";
+    let heroesSearchCondition = "";
+    let resumptionSearchCondition = "";
     if (search) {
-      const searchUpper = search.toUpperCase().replace(/'/g, "''"); // Escape and uppercase
+      const searchUpper = search.toUpperCase().replace(/'/g, "''");
+      heroesSearchCondition = `
+    WHERE UPPER(h.LASTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(h.FIRSTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(h.MIDDLENAME) LIKE '%${searchUpper}%'
+    OR UPPER(h.AFPSN) LIKE '%${searchUpper}%'
+    OR UPPER(h.CTRLNR) LIKE '%${searchUpper}%'
+    OR UPPER(h.PENRANK) LIKE '%${searchUpper}%'
+  `;
+      resumptionSearchCondition = `
+    WHERE UPPER(r.LASTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(r.FIRSTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(r.MIDDLENAME) LIKE '%${searchUpper}%'
+    OR UPPER(r.AFPSN) LIKE '%${searchUpper}%'
+    OR UPPER(r.CTRLNR) LIKE '%${searchUpper}%'
+    OR UPPER(r.PENRANK) LIKE '%${searchUpper}%'
+  `;
+      // Keep original for count queries (no alias)
       searchCondition = `
-        WHERE UPPER(LASTNAME) LIKE '%${searchUpper}%' 
-        OR UPPER(FIRSTNAME) LIKE '%${searchUpper}%' 
-        OR UPPER(MIDDLENAME) LIKE '%${searchUpper}%'
-        OR UPPER(AFPSN) LIKE '%${searchUpper}%'
-        OR UPPER(CTRLNR) LIKE '%${searchUpper}%'
-        OR UPPER(PENRANK) LIKE '%${searchUpper}%'
-      `;
+    WHERE UPPER(LASTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(FIRSTNAME) LIKE '%${searchUpper}%' 
+    OR UPPER(MIDDLENAME) LIKE '%${searchUpper}%'
+    OR UPPER(AFPSN) LIKE '%${searchUpper}%'
+    OR UPPER(CTRLNR) LIKE '%${searchUpper}%'
+    OR UPPER(PENRANK) LIKE '%${searchUpper}%'
+  `;
     }
 
     // Build queries based on source table filter
@@ -3537,66 +3556,70 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
 
     if (sourceTable === "all" || sourceTable === "heroes_tbl") {
       heroesQuery = `
-        SELECT 
-            'heroes_tbl' as source_table,
-            NDX as id,
-            NDX as user_id,
-            NDX as ndx,
-            AFPSN as afpsn,
-            PENRANK as penrank,
-            ACRANK as acrank,
-            FIRSTNAME as firstname,
-            LASTNAME as lastname,
-            MIDDLENAME as middlename,
-            SUFFIX as suffix,
-            DOB as dob,
-            PRIN_DATE_RET as prin_date_ret,
-            CTRLNR as ctrlnr,
-            MOBILENR as mobile,
-            CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
-            TYPE as type,
-            '' as bos,
-            'ACT' as status,
-            NOW() as status_updated_at,
-            is_deceased,
-            date_deceased        
-        FROM heroes_tbl
-        ${searchCondition}
-      `;
+    SELECT 
+        'heroes_tbl' as source_table,
+        h.NDX as id,
+        h.NDX as user_id,
+        h.NDX as ndx,
+        h.AFPSN as afpsn,
+        h.PENRANK as penrank,
+        h.ACRANK as acrank,
+        h.FIRSTNAME as firstname,
+        h.LASTNAME as lastname,
+        h.MIDDLENAME as middlename,
+        h.SUFFIX as suffix,
+        h.DOB as dob,
+        h.PRIN_DATE_RET as prin_date_ret,
+        h.CTRLNR as ctrlnr,
+        h.MOBILENR as mobile,
+        CONCAT(LOWER(h.FIRSTNAME), '.', LOWER(h.LASTNAME), '@placeholder.com') as email,
+        h.TYPE as type,
+        '' as bos,
+        'ACT' as status,
+        NOW() as status_updated_at,
+        h.is_deceased,
+        h.date_deceased,
+        CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END as has_account
+    FROM heroes_tbl h
+    LEFT JOIN pensioners_tbl p ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
+    ${heroesSearchCondition}
+  `;
     }
 
     if (sourceTable === "all" || sourceTable === "resumption_table") {
       resumptionQuery = `
-        SELECT 
-            'resumption_table' as source_table,
-            NDX as id,
-            NDX as user_id,
-            NDX as ndx,
-            CASE 
-                WHEN PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
-                THEN CONCAT('O-', REPLACE(AFPSN, 'O-', ''))
-                ELSE AFPSN
-            END as afpsn,
-            PENRANK as penrank,
-            ACRANK as acrank,
-            FIRSTNAME as firstname,
-            LASTNAME as lastname,
-            MIDDLENAME as middlename,
-            SUFFIX as suffix,
-            DOB as dob,
-            PRIN_DATE_RET as prin_date_ret,
-            CTRLNR as ctrlnr,
-            MOBILENR as mobile,
-            CONCAT(LOWER(FIRSTNAME), '.', LOWER(LASTNAME), '@placeholder.com') as email,
-            'P' as type,
-            '' as bos,
-            'AFR' as status,
-            NOW() as status_updated_at,
-            0 as is_deceased,    
-            NULL as date_deceased          
-        FROM resumption_table
-        ${searchCondition}
-      `;
+    SELECT 
+        'resumption_table' as source_table,
+        r.NDX as id,
+        r.NDX as user_id,
+        r.NDX as ndx,
+        CASE 
+            WHEN r.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+            THEN CONCAT('O-', REPLACE(r.AFPSN, 'O-', ''))
+            ELSE r.AFPSN
+        END as afpsn,
+        r.PENRANK as penrank,
+        r.ACRANK as acrank,
+        r.FIRSTNAME as firstname,
+        r.LASTNAME as lastname,
+        r.MIDDLENAME as middlename,
+        r.SUFFIX as suffix,
+        r.DOB as dob,
+        r.PRIN_DATE_RET as prin_date_ret,
+        r.CTRLNR as ctrlnr,
+        r.MOBILENR as mobile,
+        CONCAT(LOWER(r.FIRSTNAME), '.', LOWER(r.LASTNAME), '@placeholder.com') as email,
+        'P' as type,
+        '' as bos,
+        'AFR' as status,
+        NOW() as status_updated_at,
+        0 as is_deceased,    
+        NULL as date_deceased,
+        CASE WHEN p.id IS NOT NULL THEN 1 ELSE 0 END as has_account
+    FROM resumption_table r
+    LEFT JOIN pensioners_tbl p ON p.hero_ndx = r.NDX AND p.source_table = 'resumption_table'
+    ${resumptionSearchCondition}
+  `;
     }
 
     // Combine queries with UNION ALL if both tables are selected
@@ -3614,10 +3637,10 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
 
     // Fetch paginated data
     const allUsers = await executeQuery(`
-      ${combinedQuery}
-      ORDER BY LASTNAME, FIRSTNAME
-      LIMIT ${limit} OFFSET ${offset}
-    `);
+  ${combinedQuery}
+  ORDER BY has_account DESC, LASTNAME, FIRSTNAME
+  LIMIT ${limit} OFFSET ${offset}
+`);
 
     // Get individual table counts for stats
     let heroesCount = 0;

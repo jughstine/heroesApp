@@ -10,22 +10,6 @@ const {
 const multer = require("multer");
 const { Client } = require("minio");
 
-const toPHTimeISO = () => {
-  const now = new Date();
-  const phTime = new Date(
-    now.toLocaleString("en-US", { timeZone: "Asia/Manila" }),
-  );
-
-  const year = phTime.getFullYear();
-  const month = String(phTime.getMonth() + 1).padStart(2, "0");
-  const day = String(phTime.getDate()).padStart(2, "0");
-  const hours = String(phTime.getHours()).padStart(2, "0");
-  const minutes = String(phTime.getMinutes()).padStart(2, "0");
-  const seconds = String(phTime.getSeconds()).padStart(2, "0");
-
-  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+08:00`;
-};
-
 const profileUpload = multer({
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit for profile pictures
@@ -1261,13 +1245,13 @@ router.post(
       }
 
       if (
-        pensioner.source_table !== "test_res_table" &&
+        pensioner.source_table !== "resumption_table" &&
         pensioner.source_table !== "beneficiaries_table"
       ) {
         return res.status(400).json({
           success: false,
           error:
-            "User is not in Resumption List (test_res_table) or Beneficiaries Table",
+            "User is not in Resumption List (resumption_table) or Beneficiaries Table",
           code: "INVALID_SOURCE_TABLE",
           processingTime: `${Date.now() - startTime}ms`,
         });
@@ -1275,7 +1259,7 @@ router.post(
 
       let hero;
 
-      if (pensioner.source_table === "test_res_table") {
+      if (pensioner.source_table === "resumption_table") {
         const heroData = await executeQuery(
           `
                 SELECT 
@@ -1290,7 +1274,7 @@ router.post(
                     TYPE,
                     CTRLNR,
                     MOBILENR
-                FROM test_res_table
+                FROM resumption_table
                 WHERE NDX = ?
                 LIMIT 1
             `,
@@ -1300,7 +1284,7 @@ router.post(
         if (heroData.length === 0) {
           return res.status(404).json({
             success: false,
-            error: "Hero data not found in test_res_table",
+            error: "Hero data not found in resumption_table",
             code: "HERO_DATA_NOT_FOUND",
             processingTime: `${Date.now() - startTime}ms`,
           });
@@ -1406,10 +1390,10 @@ router.post(
           [userId],
         );
 
-        if (pensioner.source_table === "test_res_table") {
+        if (pensioner.source_table === "resumption_table") {
           await connection.execute(
             `
-                    DELETE FROM test_res_table
+                    DELETE FROM resumption_table
                     WHERE NDX = ?
                 `,
             [pensioner.hero_ndx],
@@ -1481,12 +1465,12 @@ router.post(
 
       if (
         !sourceTable ||
-        !["test_res_table", "beneficiaries_table"].includes(sourceTable)
+        !["resumption_table", "beneficiaries_table"].includes(sourceTable)
       ) {
         return res.status(400).json({
           success: false,
           error:
-            "Invalid or missing source table. Must be 'test_res_table' or 'beneficiaries_table'",
+            "Invalid or missing source table. Must be 'resumption_table' or 'beneficiaries_table'",
           code: "INVALID_SOURCE_TABLE",
           processingTime: `${Date.now() - startTime}ms`,
         });
@@ -1647,7 +1631,7 @@ router.delete(
 
       if (
         !sourceTable ||
-        !["heroes_tbl", "test_res_table", "beneficiaries_table"].includes(
+        !["heroes_tbl", "resumption_table", "beneficiaries_table"].includes(
           sourceTable,
         )
       ) {
@@ -1828,7 +1812,7 @@ router.delete(
           const sourceTable =
             user.source_table === "heroes_tbl"
               ? "heroes_tbl"
-              : "test_res_table";
+              : "resumption_table";
 
           try {
             const [deleteHeroResult] = await connection.execute(

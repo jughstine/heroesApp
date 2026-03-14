@@ -3146,7 +3146,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
       ACRANK: profile.ACRANK,
       PENRANK: profile.PENRANK,
       ...(profile.type === "B" && {
-        B_TYPE: profile.b_type,
+        b_type: profile.b_type,
         PRINCIPAL_FIRSTNAME: profile.principal_firstname,
         PRINCIPAL_LASTNAME: profile.principal_lastname,
       }),
@@ -3574,6 +3574,7 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
         h.MOBILENR as mobile,
         CONCAT(LOWER(h.FIRSTNAME), '.', LOWER(h.LASTNAME), '@placeholder.com') as email,
         h.TYPE as type,
+        p.b_type as b_type,
         '' as bos,
         'ACT' as status,
         NOW() as status_updated_at,
@@ -3610,6 +3611,7 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
         r.MOBILENR as mobile,
         CONCAT(LOWER(r.FIRSTNAME), '.', LOWER(r.LASTNAME), '@placeholder.com') as email,
         'P' as type,
+        NULL as b_type,
         '' as bos,
         'AFR' as status,
         NOW() as status_updated_at,
@@ -4126,6 +4128,7 @@ router.put(
         acrank,
         penrank,
         type,
+        b_type,
         ctrlnr,
         mobilenr,
         is_deceased,
@@ -4178,47 +4181,57 @@ router.put(
       const isDeceasedValue = is_deceased ? 1 : 0;
       const dateDeceasedValue =
         is_deceased && date_deceased ? date_deceased : null;
-      const result = await executeQuery(
-        `
-      UPDATE ${targetTable} SET
-        LASTNAME = ?,
-        FIRSTNAME = ?,
-        MIDDLENAME = ?,
-        SUFFIX = ?,
-        DOB = ?,
-        PRIN_DATE_RET = ?,
-        AFPSN = ?,
-        ACRANK = ?,
-        PENRANK = ?,
-        TYPE = ?,
-        CTRLNR = ?,
-        MOBILENR = ?,
-        is_deceased = ?,
-        date_deceased = ?
-      WHERE NDX = ?
-    `,
-        [
-          lastname,
-          firstname,
-          middlename || null,
-          suffix || null,
-          dob || null,
-          prin_date_ret || null,
-          afpsn,
-          acrank || null,
-          penrank || null,
-          type || "P",
-          ctrlnr || null,
-          mobilenr || null,
-          isDeceasedValue,
-          dateDeceasedValue,
-          id,
-        ],
-      );
+
+      const isHeroesTbl = targetTable === "heroes_tbl";
+
+      const updateQuery = `
+        UPDATE ${targetTable} SET
+          LASTNAME = ?,
+          FIRSTNAME = ?,
+          MIDDLENAME = ?,
+          SUFFIX = ?,
+          DOB = ?,
+          PRIN_DATE_RET = ?,
+          AFPSN = ?,
+          ACRANK = ?,
+          PENRANK = ?,
+          TYPE = ?,
+          CTRLNR = ?,
+          MOBILENR = ?,
+          is_deceased = ?,
+          date_deceased = ?
+        WHERE NDX = ?
+      `;
+
+      const updateParams = [
+        lastname,
+        firstname,
+        middlename || null,
+        suffix || null,
+        dob || null,
+        prin_date_ret || null,
+        afpsn,
+        acrank || null,
+        penrank || null,
+        type || "P",
+        ctrlnr || null,
+        mobilenr || null,
+        isDeceasedValue,
+        dateDeceasedValue,
+        id,
+      ];
+
+      const result = await executeQuery(updateQuery, updateParams);
+
+      if (type === "B" && b_type) {
+        await executeQuery(
+          `UPDATE pensioners_tbl SET b_type = ? WHERE hero_ndx = ?`,
+          [b_type, id],
+        );
+      }
 
       if (targetTable === "heroes_tbl") {
         if (isDeceasedValue === 1) {
-          // Mark linked user as DECEASED when pensioner is deceased
           await executeQuery(
             `
       UPDATE users_tbl u
@@ -4230,7 +4243,6 @@ router.put(
             [id],
           );
         } else {
-          // Restore user if un-marking deceased (only if date_deceased is null)
           await executeQuery(
             `
       UPDATE users_tbl u

@@ -301,6 +301,8 @@ router.get("/profile/:userId", async (req, res) => {
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
       WHERE u.id = ? 
         AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'DECEASED', 'AFR', 'FOR_PAYROLL')
+          AND p.b_type 
+
     `,
       [userId],
     );
@@ -344,6 +346,7 @@ router.get("/profile/:userId", async (req, res) => {
       status: profile.status,
       status_updated_at: profile.status_updated_at,
       profile_picture: profile.profile_picture,
+      b_type: profile.b_type,
       pensioner_type: profile.pensioner_type,
       source_table: profile.source_table,
       ...(profile.pensioner_type === "B" && {

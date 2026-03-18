@@ -232,14 +232,7 @@ router.post("/submit", async (req, res) => {
         )
       ) {
         applies_to_location = "abr";
-      } else if (
-        [
-          "unified_id",
-          "photo_2x2",
-          "video_submission",
-          "home_address",
-        ].includes(requirement_type)
-      ) {
+      } else if (["unified_id", "photo_2x2"].includes(requirement_type)) {
         applies_to_location = abroad_status ? "abr" : "loc";
       }
 

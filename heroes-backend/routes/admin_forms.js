@@ -1,14 +1,14 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { getPool } = require('../config/database');
-const { authenticateAdminToken, requireSuperAdmin } = require('./admin'); 
+const { getPool } = require("../config/database");
+const { authenticateAdminToken, requireSuperAdmin } = require("./admin");
 const {
   sendFormApprovalNotification,
   sendFormDenialNotification,
-  sendAdminNotesNotification
-} = require('../services/pushNotificationService');
-const multer = require('multer');
-const { Client } = require('minio');
+  sendAdminNotesNotification,
+} = require("../services/pushNotificationService");
+const multer = require("multer");
+const { Client } = require("minio");
 
 router.use(authenticateAdminToken);
 const upload = multer({
@@ -17,16 +17,19 @@ const upload = multer({
   },
   storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
+    if (file.mimetype === "application/pdf") {
       cb(null, true);
     } else {
-      cb(new Error('Only PDF files are allowed for resolution documents'), false);
+      cb(
+        new Error("Only PDF files are allowed for resolution documents"),
+        false,
+      );
     }
-  }
+  },
 });
 
 const minioClient = new Client({
-  endPoint: process.env.SPACES_ENDPOINT.replace('https://', ''),
+  endPoint: process.env.SPACES_ENDPOINT.replace("https://", ""),
   port: 443,
   useSSL: true,
   accessKey: process.env.SPACES_KEY,
@@ -34,155 +37,155 @@ const minioClient = new Client({
 });
 
 const RESTORATION_TABLES = [
-  'rst_widow_requirements',
-  'rst_bi_principal_requirements',
-  'rst_bi_bene_requirements',
-  'rst_re_entitle_requirements',
-  'rst_principal_requirements'
+  "rst_widow_requirements",
+  "rst_bi_principal_requirements",
+  "rst_bi_bene_requirements",
+  "rst_re_entitle_requirements",
+  "rst_principal_requirements",
 ];
 
 const getRestorationTableForForm = async (pool, formId) => {
   const tableTypeMap = {
-    'rst_widow_requirements': 'widow',
-    'rst_bi_principal_requirements': 'bi_principal',
-    'rst_bi_bene_requirements': 'bi_bene',
-    'rst_re_entitle_requirements': 're_entitle',
-    'rst_principal_requirements': 'principal'
+    rst_widow_requirements: "widow",
+    rst_bi_principal_requirements: "bi_principal",
+    rst_bi_bene_requirements: "bi_bene",
+    rst_re_entitle_requirements: "re_entitle",
+    rst_principal_requirements: "principal",
   };
 
   for (const tableName of RESTORATION_TABLES) {
     try {
       const [rows] = await pool.execute(
         `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
-        [formId]
+        [formId],
       );
-      
+
       if (rows[0].count > 0) {
         return {
           tableName,
-          subtype: tableTypeMap[tableName]
+          subtype: tableTypeMap[tableName],
         };
       }
     } catch (error) {
       console.error(`Error checking table ${tableName}:`, error);
     }
   }
-  
+
   return {
-    tableName: 'rst_principal_requirements',
-    subtype: 'principal'
+    tableName: "rst_principal_requirements",
+    subtype: "principal",
   };
 };
 
 const DLB_TYPES_TABLES = [
-  'dlb_child_requirements',
-  'dlb_parent_requirements',
-  'dlb_sibling_requirements',
-  'dlb_spouse_requirements'
+  "dlb_child_requirements",
+  "dlb_parent_requirements",
+  "dlb_sibling_requirements",
+  "dlb_spouse_requirements",
 ];
 
 const getDlbForForm = async (pool, formId) => {
   const tableTypeMap = {
-    'dlb_child_requirements': 'child',
-    'dlb_parent_requirements': 'parent',
-    'dlb_sibling_requirements': 'sibling',
-    'dlb_spouse_requirements': 'spouse'
+    dlb_child_requirements: "child",
+    dlb_parent_requirements: "parent",
+    dlb_sibling_requirements: "sibling",
+    dlb_spouse_requirements: "spouse",
   };
 
   for (const tableName of DLB_TYPES_TABLES) {
     try {
       const [rows] = await pool.execute(
         `SELECT COUNT(*) as count FROM ${tableName} WHERE form_id = ?`,
-        [formId]
+        [formId],
       );
-      
+
       if (rows[0].count > 0) {
         return {
           tableName,
-          subtype: tableTypeMap[tableName]
+          subtype: tableTypeMap[tableName],
         };
       }
     } catch (error) {
       console.error(`Error checking table ${tableName}:`, error);
     }
   }
-  
+
   return {
-    tableName: 'dlb_child_requirements',
-    subtype: 'child'
+    tableName: "dlb_child_requirements",
+    subtype: "child",
   };
 };
 
 const getFormRequirements = async (pool, formId, formTypeId) => {
-  
   if (formTypeId === 2) {
     const [requirements] = await pool.execute(
-      'SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type',
-      [formId]
+      "SELECT * FROM rsm_requirements WHERE form_id = ? ORDER BY requirement_type",
+      [formId],
     );
-    return { 
-      requirements, 
-      tableName: 'rsm_requirements',
+    return {
+      requirements,
+      tableName: "rsm_requirements",
     };
   } else if (formTypeId === 3) {
-    const { tableName, subtype } = await getRestorationTableForForm(pool, formId);    
+    const { tableName, subtype } = await getRestorationTableForForm(
+      pool,
+      formId,
+    );
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
-      [formId]
+      [formId],
     );
-    return { 
-      requirements, 
+    return {
+      requirements,
       tableName,
-      rst_subtype: subtype
+      rst_subtype: subtype,
     };
   } else if (formTypeId === 4) {
     const [requirements] = await pool.execute(
-      'SELECT * FROM top_requirements WHERE form_id = ? ORDER BY requirement_type',
-      [formId]
+      "SELECT * FROM top_requirements WHERE form_id = ? ORDER BY requirement_type",
+      [formId],
     );
-    return { 
-      requirements, 
-      tableName: 'top_requirements',
+    return {
+      requirements,
+      tableName: "top_requirements",
     };
   } else if (formTypeId === 1) {
-    const { tableName, subtype } = await getDlbForForm(pool, formId);    
+    const { tableName, subtype } = await getDlbForForm(pool, formId);
     const [requirements] = await pool.execute(
       `SELECT * FROM ${tableName} WHERE form_id = ? ORDER BY applies_to_location, requirement_type`,
-      [formId]
+      [formId],
     );
-    return { 
-      requirements, 
+    return {
+      requirements,
       tableName,
-      dlb_subtype: subtype
+      dlb_subtype: subtype,
     };
-  } 
-  
-  else if (formTypeId === 5) {
+  } else if (formTypeId === 5) {
     const [requirements] = await pool.execute(
-      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
-      [formId]
+      "SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type",
+      [formId],
     );
-    return { 
-      requirements, 
-      tableName: 'upd_requirements',
-      rst_subtype: null
+    return {
+      requirements,
+      tableName: "upd_requirements",
+      rst_subtype: null,
     };
   } else {
     const [requirements] = await pool.execute(
-      'SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type',
-      [formId]
+      "SELECT * FROM upd_requirements WHERE form_id = ? ORDER BY applies_to_location, requirement_type",
+      [formId],
     );
-    return { 
-      requirements, 
-      tableName: 'upd_requirements',
-      rst_subtype: null
+    return {
+      requirements,
+      tableName: "upd_requirements",
+      rst_subtype: null,
     };
   }
 };
 
 // ==================== HISTORY LOGS ROUTES ====================
 
-router.get('/history-logs/stats', async (req, res) => {
+router.get("/history-logs/stats", async (req, res) => {
   try {
     const pool = getPool();
 
@@ -228,34 +231,34 @@ router.get('/history-logs/stats', async (req, res) => {
       stats: {
         ...stats[0],
         activeAdmins: activeAdmins,
-        weeklyTrend: trend
-      }
+        weeklyTrend: trend,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching history log stats:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch history log statistics' 
+    console.error("Error fetching history log stats:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch history log statistics",
     });
   }
 });
 
-router.get('/history-logs/form/:form_id', async (req, res) => {
+router.get("/history-logs/form/:form_id", async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
 
     if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid form ID' 
+      return res.status(400).json({
+        success: false,
+        error: "Invalid form ID",
       });
     }
 
     const formId = parseInt(form_id);
 
-    const [logs] = await pool.execute(`
+    const [logs] = await pool.execute(
+      `
       SELECT 
         hl.id,
         hl.form_submission_id,
@@ -272,7 +275,9 @@ router.get('/history-logs/form/:form_id', async (req, res) => {
       LEFT JOIN form_submission fs ON hl.form_submission_id = fs.id
       WHERE hl.form_submission_id = ?
       ORDER BY hl.action_date DESC
-    `, [formId]);
+    `,
+      [formId],
+    );
 
     res.json({
       success: true,
@@ -280,34 +285,34 @@ router.get('/history-logs/form/:form_id', async (req, res) => {
         form_id: formId,
         form_reference: logs.length > 0 ? logs[0].form_reference : null,
         log_count: logs.length,
-        logs: logs
-      }
+        logs: logs,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching form history logs:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch form history logs' 
+    console.error("Error fetching form history logs:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch form history logs",
     });
   }
 });
 
-router.get('/history-logs/admin/:admin_id', async (req, res) => {
+router.get("/history-logs/admin/:admin_id", async (req, res) => {
   try {
     const pool = getPool();
     const { admin_id } = req.params;
 
     if (!admin_id || isNaN(parseInt(admin_id))) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid admin ID' 
+      return res.status(400).json({
+        success: false,
+        error: "Invalid admin ID",
       });
     }
 
     const adminId = parseInt(admin_id);
 
-    const [logs] = await pool.execute(`
+    const [logs] = await pool.execute(
+      `
       SELECT 
         hl.id,
         hl.form_submission_id,
@@ -327,17 +332,19 @@ router.get('/history-logs/admin/:admin_id', async (req, res) => {
       LEFT JOIN users_tbl u ON fs.user_id = u.id
       WHERE hl.action_by = ?
       ORDER BY hl.action_date DESC
-    `, [adminId]);
+    `,
+      [adminId],
+    );
 
     const [adminInfo] = await pool.execute(
-      'SELECT id, name, email, role FROM admins_tbl WHERE id = ?',
-      [adminId]
+      "SELECT id, name, email, role FROM admins_tbl WHERE id = ?",
+      [adminId],
     );
 
     if (adminInfo.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Admin not found'
+        error: "Admin not found",
       });
     }
 
@@ -346,20 +353,19 @@ router.get('/history-logs/admin/:admin_id', async (req, res) => {
       data: {
         admin: adminInfo[0],
         log_count: logs.length,
-        logs: logs
-      }
+        logs: logs,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching admin history logs:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch admin history logs' 
+    console.error("Error fetching admin history logs:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch admin history logs",
     });
   }
 });
 
-router.get('/history-logs', async (req, res) => {
+router.get("/history-logs", async (req, res) => {
   try {
     const pool = getPool();
     const {
@@ -369,8 +375,8 @@ router.get('/history-logs', async (req, res) => {
       search,
       form_id,
       admin_id,
-      sort_by = 'action_date',
-      sort_order = 'DESC'
+      sort_by = "action_date",
+      sort_order = "DESC",
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page) || 1);
@@ -380,18 +386,18 @@ router.get('/history-logs', async (req, res) => {
     let whereConditions = [];
     let queryParams = [];
 
-    if (status && ['p', 'a', 'd', 'n'].includes(status)) {
-      whereConditions.push('hl.status = ?');
+    if (status && ["p", "a", "d", "n"].includes(status)) {
+      whereConditions.push("hl.status = ?");
       queryParams.push(status);
     }
 
     if (form_id && !isNaN(parseInt(form_id, 10))) {
-      whereConditions.push('hl.form_submission_id = ?');
+      whereConditions.push("hl.form_submission_id = ?");
       queryParams.push(parseInt(form_id, 10));
     }
 
     if (admin_id && !isNaN(parseInt(admin_id, 10))) {
-      whereConditions.push('hl.action_by = ?');
+      whereConditions.push("hl.action_by = ?");
       queryParams.push(parseInt(admin_id, 10));
     }
 
@@ -405,20 +411,32 @@ router.get('/history-logs', async (req, res) => {
         CAST(hl.form_submission_id AS CHAR) LIKE ?
       )`);
       const searchParam = `%${search.trim()}%`;
-      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
+      queryParams.push(
+        searchParam,
+        searchParam,
+        searchParam,
+        searchParam,
+        searchParam,
+        searchParam,
+      );
     }
 
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(" AND ")}`
+        : "";
 
     const sortColumns = {
-      'action_date': 'hl.action_date',
-      'id': 'hl.id',
-      'form_id': 'hl.form_submission_id',
-      'form_reference': 'fs.form_reference',
-      'status': 'hl.status'
+      action_date: "hl.action_date",
+      id: "hl.id",
+      form_id: "hl.form_submission_id",
+      form_reference: "fs.form_reference",
+      status: "hl.status",
     };
-    const sortColumn = sortColumns[sort_by] || sortColumns['action_date'];
-    const sortOrderSafe = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
+    const sortColumn = sortColumns[sort_by] || sortColumns["action_date"];
+    const sortOrderSafe = ["ASC", "DESC"].includes(sort_order.toUpperCase())
+      ? sort_order.toUpperCase()
+      : "DESC";
 
     const countQuery = `
       SELECT COUNT(*) as total
@@ -510,34 +528,34 @@ router.get('/history-logs', async (req, res) => {
         total_count: totalCount,
         per_page: limitNum,
         has_next: pageNum < totalPages,
-        has_prev: pageNum > 1
-      }
+        has_prev: pageNum > 1,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching history logs:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch history logs' 
+    console.error("Error fetching history logs:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch history logs",
     });
   }
 });
 
-router.get('/history-logs/:log_id', async (req, res) => {
+router.get("/history-logs/:log_id", async (req, res) => {
   try {
     const pool = getPool();
     const { log_id } = req.params;
 
     if (!log_id || isNaN(parseInt(log_id))) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid log ID' 
+      return res.status(400).json({
+        success: false,
+        error: "Invalid log ID",
       });
     }
 
     const logId = parseInt(log_id);
 
-    const [logs] = await pool.execute(`
+    const [logs] = await pool.execute(
+      `
       SELECT 
         hl.id,
         hl.form_submission_id,
@@ -596,30 +614,31 @@ router.get('/history-logs/:log_id', async (req, res) => {
         ON p.hero_ndx = b.NDX 
         AND p.source_table = 'beneficiaries_table'
       WHERE hl.id = ?
-    `, [logId]);
+    `,
+      [logId],
+    );
 
     if (logs.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'History log not found'
+        error: "History log not found",
       });
     }
 
     res.json({
       success: true,
-      data: logs[0]
+      data: logs[0],
     });
-
   } catch (error) {
-    console.error('Error fetching history log details:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch history log details' 
+    console.error("Error fetching history log details:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch history log details",
     });
   }
 });
 
-router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
+router.delete("/history-logs/:log_id", requireSuperAdmin, async (req, res) => {
   try {
     const pool = getPool();
     const { log_id } = req.params;
@@ -627,36 +646,35 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
     if (!log_id || isNaN(parseInt(log_id))) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid log ID'
+        error: "Invalid log ID",
       });
     }
 
     const logId = parseInt(log_id);
 
     const [logExists] = await pool.execute(
-      'SELECT id FROM history_logs WHERE id = ?',
-      [logId]
+      "SELECT id FROM history_logs WHERE id = ?",
+      [logId],
     );
 
     if (logExists.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'History log not found'
+        error: "History log not found",
       });
     }
 
-    await pool.execute('DELETE FROM history_logs WHERE id = ?', [logId]);
+    await pool.execute("DELETE FROM history_logs WHERE id = ?", [logId]);
 
     res.json({
       success: true,
-      message: 'History log deleted successfully'
+      message: "History log deleted successfully",
     });
-
   } catch (error) {
-    console.error('Error deleting history log:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete history log' 
+    console.error("Error deleting history log:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to delete history log",
     });
   }
 });
@@ -664,101 +682,115 @@ router.delete('/history-logs/:log_id', requireSuperAdmin, async (req, res) => {
 // ==================== FORM SUBMISSION ROUTES ====================
 
 // Add OPTIONS handler for CORS preflight
-router.options('/proxy-file', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+router.options("/proxy-file", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.status(200).end();
 });
 
 // Main proxy endpoint
-router.get('/proxy-file', authenticateAdminToken, async (req, res) => {
-  console.log('🎯 PROXY-FILE ENDPOINT HIT!');
-  console.log('Query params:', req.query);
-  console.log('Headers:', req.headers);
-  
+router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
+  console.log("🎯 PROXY-FILE ENDPOINT HIT!");
+  console.log("Query params:", req.query);
+  console.log("Headers:", req.headers);
+
   try {
     const { url } = req.query;
-    
-    if (!url || typeof url !== 'string') {
-      console.error('❌ No URL provided');
-      return res.status(400).json({ success: false, error: 'URL parameter required' });
+
+    if (!url || typeof url !== "string") {
+      console.error("❌ No URL provided");
+      return res
+        .status(400)
+        .json({ success: false, error: "URL parameter required" });
     }
 
     const decodedUrl = decodeURIComponent(url);
-    console.log('🔓 Decoded URL:', decodedUrl.substring(0, 100));
+    console.log("🔓 Decoded URL:", decodedUrl.substring(0, 100));
 
-    if (!decodedUrl.startsWith('https://space-bucket-heroes.sgp1.digitaloceanspaces.com/')) {
-      console.error('❌ Invalid URL domain');
-      return res.status(403).json({ success: false, error: 'Invalid URL domain' });
+    if (
+      !decodedUrl.startsWith(
+        "https://space-bucket-heroes.sgp1.digitaloceanspaces.com/",
+      )
+    ) {
+      console.error("❌ Invalid URL domain");
+      return res
+        .status(403)
+        .json({ success: false, error: "Invalid URL domain" });
     }
 
-    console.log('⬇️ Fetching from DO Spaces...');
+    console.log("⬇️ Fetching from DO Spaces...");
     const response = await fetch(decodedUrl);
-    
+
     if (!response.ok) {
-      console.error(`❌ DO Spaces fetch failed: ${response.status} ${response.statusText}`);
-      return res.status(response.status).json({ 
-        success: false, 
-        error: `Failed to fetch file: ${response.statusText}` 
+      console.error(
+        `❌ DO Spaces fetch failed: ${response.status} ${response.statusText}`,
+      );
+      return res.status(response.status).json({
+        success: false,
+        error: `Failed to fetch file: ${response.statusText}`,
       });
     }
 
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const contentType =
+      response.headers.get("content-type") || "application/octet-stream";
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    
-    console.log('✅ File fetched successfully:', {
+
+    console.log("✅ File fetched successfully:", {
       contentType,
-      sizeKB: (buffer.length / 1024).toFixed(2)
+      sizeKB: (buffer.length / 1024).toFixed(2),
     });
-    
+
     // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.setHeader('Content-Length', buffer.length);
-    
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Content-Length", buffer.length);
+
     res.send(buffer);
-    
   } catch (error) {
-    console.error('💥 Proxy error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to proxy file',
-      details: error.message 
+    console.error("💥 Proxy error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to proxy file",
+      details: error.message,
     });
   }
 });
 
-router.get('/', authenticateAdminToken, async (req, res) => {
+router.get("/", authenticateAdminToken, async (req, res) => {
   try {
     const pool = getPool();
     const adminId = req.admin.id; // Get admin ID from the JWT token
-    
+
     // First, get the admin's form permissions
-    const [permissions] = await pool.execute(`
+    const [permissions] = await pool.execute(
+      `
       SELECT form_type_id, can_view 
       FROM admin_form_access 
       WHERE admin_id = ? AND can_view = 1
-    `, [adminId]);
-    
+    `,
+      [adminId],
+    );
+
     // If admin has no view permissions, return empty array
     if (!permissions || permissions.length === 0) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         data: [],
-        count: 0 
+        count: 0,
       });
     }
-    
+
     // Get allowed form type IDs
-    const allowedFormTypeIds = permissions.map(p => p.form_type_id);
-    const placeholders = allowedFormTypeIds.map(() => '?').join(',');
-    
-    const [rows] = await pool.execute(`
+    const allowedFormTypeIds = permissions.map((p) => p.form_type_id);
+    const placeholders = allowedFormTypeIds.map(() => "?").join(",");
+
+    const [rows] = await pool.execute(
+      `
       SELECT 
         fs.id,
         fs.user_id,
@@ -847,24 +879,25 @@ router.get('/', authenticateAdminToken, async (req, res) => {
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.form_type_id IN (${placeholders})
       ORDER BY fs.submitted_at DESC
-    `, allowedFormTypeIds);
+    `,
+      allowedFormTypeIds,
+    );
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: rows,
-      count: rows.length 
+      count: rows.length,
     });
-
   } catch (error) {
-    console.error('Error fetching admin forms:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch form submissions' 
+    console.error("Error fetching admin forms:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch form submissions",
     });
   }
 });
 
-router.get('/paginated', async (req, res) => {
+router.get("/paginated", async (req, res) => {
   try {
     const pool = getPool();
     const {
@@ -873,24 +906,24 @@ router.get('/paginated', async (req, res) => {
       status,
       location_status,
       search,
-      sort_by = 'submitted_at',
-      sort_order = 'DESC'
+      sort_by = "submitted_at",
+      sort_order = "DESC",
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page) || 1);
     const limitNum = Math.max(1, parseInt(limit, 10) || 50);
     const offset = (pageNum - 1) * limitNum;
-    
+
     let whereConditions = [];
     let queryParams = [];
 
-    if (status && ['p', 'a', 'd'].includes(status)) {
-      whereConditions.push('fs.status = ?');
+    if (status && ["p", "a", "d"].includes(status)) {
+      whereConditions.push("fs.status = ?");
       queryParams.push(status);
     }
 
-    if (location_status && ['loc', 'abr'].includes(location_status)) {
-      whereConditions.push('fs.location = ?');
+    if (location_status && ["loc", "abr"].includes(location_status)) {
+      whereConditions.push("fs.location = ?");
       queryParams.push(location_status);
     }
 
@@ -903,20 +936,32 @@ router.get('/paginated', async (req, res) => {
         CAST(fs.id AS CHAR) LIKE ?
       )`);
       const searchParam = `%${search.trim()}%`;
-      queryParams.push(searchParam, searchParam, searchParam, searchParam, searchParam);
+      queryParams.push(
+        searchParam,
+        searchParam,
+        searchParam,
+        searchParam,
+        searchParam,
+      );
     }
 
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(" AND ")}`
+        : "";
 
     const SORT_COLUMN_MAP = {
-      submitted_at: 'fs.submitted_at',
-      reviewed_at: 'fs.reviewed_at',
-      status: 'fs.status',
-      form_type_name: 'ft.name'
+      submitted_at: "fs.submitted_at",
+      reviewed_at: "fs.reviewed_at",
+      status: "fs.status",
+      form_type_name: "ft.name",
     };
 
-    const sortColumn = SORT_COLUMN_MAP[sort_by] || SORT_COLUMN_MAP['submitted_at'];
-    const sortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'DESC';
+    const sortColumn =
+      SORT_COLUMN_MAP[sort_by] || SORT_COLUMN_MAP["submitted_at"];
+    const sortOrder = ["ASC", "DESC"].includes(sort_order.toUpperCase())
+      ? sort_order.toUpperCase()
+      : "DESC";
 
     const countQuery = `
       SELECT COUNT(*) as total
@@ -1036,20 +1081,19 @@ router.get('/paginated', async (req, res) => {
         total_count: totalCount,
         per_page: limitNum,
         has_next: pageNum < totalPages,
-        has_prev: pageNum > 1
-      }
+        has_prev: pageNum > 1,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching paginated admin forms:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch paginated form submissions' 
+    console.error("Error fetching paginated admin forms:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch paginated form submissions",
     });
   }
 });
 
-router.get('/export/bulk', async (req, res) => {
+router.get("/export/bulk", async (req, res) => {
   try {
     const pool = getPool();
     const { status, location_status, form_type } = req.query;
@@ -1057,24 +1101,28 @@ router.get('/export/bulk', async (req, res) => {
     let whereConditions = ["(fs.status = 'a' OR fs.status = 'd')"];
     let queryParams = [];
 
-    if (status && ['a', 'd'].includes(status)) {
+    if (status && ["a", "d"].includes(status)) {
       whereConditions = [`fs.status = ?`];
       queryParams.push(status);
     }
 
-    if (location_status && ['loc', 'abr'].includes(location_status)) {
-      whereConditions.push('fs.location = ?');
+    if (location_status && ["loc", "abr"].includes(location_status)) {
+      whereConditions.push("fs.location = ?");
       queryParams.push(location_status);
     }
 
     if (form_type) {
-      whereConditions.push('ft.name = ?');
+      whereConditions.push("ft.name = ?");
       queryParams.push(form_type);
     }
 
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(" AND ")}`
+        : "";
 
-    const [forms] = await pool.execute(`
+    const [forms] = await pool.execute(
+      `
       SELECT 
         fs.id,
         fs.form_type_id,
@@ -1157,60 +1205,81 @@ router.get('/export/bulk', async (req, res) => {
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       ${whereClause}
       ORDER BY fs.submitted_at DESC
-    `, queryParams);
+    `,
+      queryParams,
+    );
 
     if (forms.length === 0) {
       return res.json({ success: true, data: [] });
     }
 
-    const regularFormIds = forms.filter(f => f.form_type_id !== 2 && f.form_type_id !== 3).map(f => f.id);
-    const resumptionFormIds = forms.filter(f => f.form_type_id === 2).map(f => f.id);
-    const transferFormIds = forms.filter(f => f.form_type_id === 4).map(f => f.id);
-    const restorationFormIds = forms.filter(f => f.form_type_id === 3).map(f => f.id);
-    const dlbFormIds = forms.filter(f => f.form_type_id === 1).map(f => f.id);
+    const regularFormIds = forms
+      .filter((f) => f.form_type_id !== 2 && f.form_type_id !== 3)
+      .map((f) => f.id);
+    const resumptionFormIds = forms
+      .filter((f) => f.form_type_id === 2)
+      .map((f) => f.id);
+    const transferFormIds = forms
+      .filter((f) => f.form_type_id === 4)
+      .map((f) => f.id);
+    const restorationFormIds = forms
+      .filter((f) => f.form_type_id === 3)
+      .map((f) => f.id);
+    const dlbFormIds = forms
+      .filter((f) => f.form_type_id === 1)
+      .map((f) => f.id);
 
     const requirementMap = {};
 
     if (regularFormIds.length > 0) {
-      const placeholders = regularFormIds.map(() => '?').join(',');
-      const [requirements] = await pool.execute(`
+      const placeholders = regularFormIds.map(() => "?").join(",");
+      const [requirements] = await pool.execute(
+        `
         SELECT form_id, requirement_type, value
         FROM upd_requirements
         WHERE form_id IN (${placeholders})
           AND requirement_type IN ('home_address', 'mobile_number')
-      `, regularFormIds);
+      `,
+        regularFormIds,
+      );
 
-      requirements.forEach(req => {
+      requirements.forEach((req) => {
         if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
     }
 
     if (resumptionFormIds.length > 0) {
-      const placeholders = resumptionFormIds.map(() => '?').join(',');
-      const [rsmRequirements] = await pool.execute(`
+      const placeholders = resumptionFormIds.map(() => "?").join(",");
+      const [rsmRequirements] = await pool.execute(
+        `
         SELECT form_id, requirement_type, value
         FROM rsm_requirements
         WHERE form_id IN (${placeholders})
           AND requirement_type IN ('home_address', 'mobile_number')
-      `, resumptionFormIds);
+      `,
+        resumptionFormIds,
+      );
 
-      rsmRequirements.forEach(req => {
+      rsmRequirements.forEach((req) => {
         if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
     }
 
     if (transferFormIds.length > 0) {
-      const placeholders = transferFormIds.map(() => '?').join(',');
-      const [topRequirements] = await pool.execute(`
+      const placeholders = transferFormIds.map(() => "?").join(",");
+      const [topRequirements] = await pool.execute(
+        `
         SELECT form_id, requirement_type, value
         FROM top_requirements
         WHERE form_id IN (${placeholders})
           AND requirement_type IN ('mobile_number')
-      `, transferFormIds);
+      `,
+        transferFormIds,
+      );
 
-      topRequirements.forEach(req => {
+      topRequirements.forEach((req) => {
         if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
         requirementMap[req.form_id][req.requirement_type] = req.value;
       });
@@ -1220,18 +1289,24 @@ router.get('/export/bulk', async (req, res) => {
       const result = await getRestorationTableForForm(pool, formId);
       const tableName = result.tableName;
       try {
-        const [type3Requirements] = await pool.execute(`
+        const [type3Requirements] = await pool.execute(
+          `
           SELECT form_id, requirement_type, value
           FROM ${tableName}
           WHERE form_id = ?
             AND requirement_type IN ('home_address', 'mobile_number')
-        `, [formId]);
-        type3Requirements.forEach(req => {
+        `,
+          [formId],
+        );
+        type3Requirements.forEach((req) => {
           if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
           requirementMap[req.form_id][req.requirement_type] = req.value;
         });
       } catch (tableError) {
-        console.error(`Error fetching requirements from ${tableName}:`, tableError);
+        console.error(
+          `Error fetching requirements from ${tableName}:`,
+          tableError,
+        );
       }
     }
 
@@ -1239,49 +1314,50 @@ router.get('/export/bulk', async (req, res) => {
       const result = await getDlbForForm(pool, formId);
       const tableName = result.tableName;
       try {
-        const [dlbRequirements] = await pool.execute(`
+        const [dlbRequirements] = await pool.execute(
+          `
           SELECT form_id, requirement_type, value
           FROM ${tableName}
           WHERE form_id = ?
             AND requirement_type IN ('home_address', 'mobile_number')
-        `, [formId]);
-        dlbRequirements.forEach(req => {
+        `,
+          [formId],
+        );
+        dlbRequirements.forEach((req) => {
           if (!requirementMap[req.form_id]) requirementMap[req.form_id] = {};
           requirementMap[req.form_id][req.requirement_type] = req.value;
         });
       } catch (tableError) {
-        console.error(`Error fetching requirements from ${tableName}:`, tableError);
+        console.error(
+          `Error fetching requirements from ${tableName}:`,
+          tableError,
+        );
       }
     }
 
-    const exportData = forms.map(form => ({
+    const exportData = forms.map((form) => ({
       ...form,
-      home_address: requirementMap[form.id]?.home_address || '',
-      mobilenr: requirementMap[form.id]?.mobile_number || '',
+      home_address: requirementMap[form.id]?.home_address || "",
+      mobilenr: requirementMap[form.id]?.mobile_number || "",
     }));
 
     res.json({ success: true, data: exportData });
-
   } catch (error) {
-    console.error('Error fetching bulk export:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch export data' 
+    console.error("Error fetching bulk export:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch export data",
     });
   }
 });
 
-router.get('/analytics/dashboard-stats', async (req, res) => {
+router.get("/analytics/dashboard-stats", async (req, res) => {
   try {
     const pool = getPool();
 
-    const [
-      [overallStats],
-      [recentStats], 
-      formTypeStats,
-      trendStats
-    ] = await Promise.all([
-      pool.execute(`
+    const [[overallStats], [recentStats], formTypeStats, trendStats] =
+      await Promise.all([
+        pool.execute(`
         SELECT 
           COUNT(*) as total_submissions,
           COUNT(CASE WHEN status = 'p' THEN 1 END) as pending_count,
@@ -1291,12 +1367,12 @@ router.get('/analytics/dashboard-stats', async (req, res) => {
           COUNT(CASE WHEN location = 'abr' THEN 1 END) as abroad_count
         FROM form_submission
       `),
-      pool.execute(`
+        pool.execute(`
         SELECT COUNT(*) as recent_submissions
         FROM form_submission
         WHERE submitted_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
       `),
-      pool.execute(`
+        pool.execute(`
         SELECT 
           ft.name as form_type,
           COUNT(*) as count
@@ -1305,7 +1381,7 @@ router.get('/analytics/dashboard-stats', async (req, res) => {
         GROUP BY ft.id, ft.name
         ORDER BY count DESC
       `),
-      pool.execute(`
+        pool.execute(`
         SELECT 
           DATE(submitted_at) as date,
           COUNT(*) as count
@@ -1313,8 +1389,8 @@ router.get('/analytics/dashboard-stats', async (req, res) => {
         WHERE submitted_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
         GROUP BY DATE(submitted_at)
         ORDER BY date DESC
-      `)
-    ]);
+      `),
+      ]);
 
     res.json({
       success: true,
@@ -1322,32 +1398,33 @@ router.get('/analytics/dashboard-stats', async (req, res) => {
         overall: overallStats[0],
         recent: recentStats[0],
         by_form_type: formTypeStats[0],
-        trend: trendStats[0]
-      }
+        trend: trendStats[0],
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching dashboard statistics:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch dashboard statistics' 
+    console.error("Error fetching dashboard statistics:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch dashboard statistics",
     });
   }
 });
 
-router.get('/status/:status', async (req, res) => {
+router.get("/status/:status", async (req, res) => {
   try {
     const pool = getPool();
     const { status } = req.params;
 
-    if (!['p', 'a', 'd'].includes(status)) {
+    if (!["p", "a", "d"].includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)',
+        error:
+          "Invalid status. Must be p (pending), a (approved), or d (denied)",
       });
     }
 
-    const [rows] = await pool.execute(`
+    const [rows] = await pool.execute(
+      `
       SELECT 
         fs.*,
         ft.name AS form_type_name,
@@ -1433,12 +1510,14 @@ router.get('/status/:status', async (req, res) => {
         ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.status = ?
       ORDER BY fs.submitted_at DESC
-    `, [status]);
+    `,
+      [status],
+    );
 
     const statusNames = {
-      p: 'pending',
-      a: 'approved',
-      d: 'denied',
+      p: "pending",
+      a: "approved",
+      d: "denied",
     };
 
     res.json({
@@ -1449,29 +1528,30 @@ router.get('/status/:status', async (req, res) => {
         submissions: rows,
       },
     });
-
   } catch (error) {
-    console.error('Error fetching forms by status:', error);
+    console.error("Error fetching forms by status:", error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch forms by status',
+      error: "Failed to fetch forms by status",
     });
   }
 });
 
-router.get('/location/:location_status', async (req, res) => {
+router.get("/location/:location_status", async (req, res) => {
   try {
     const pool = getPool();
     const { location_status } = req.params;
 
-    if (!['loc', 'abr'].includes(location_status)) {
+    if (!["loc", "abr"].includes(location_status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid location_status. Must be "loc" (local) or "abr" (abroad)'
+        error:
+          'Invalid location_status. Must be "loc" (local) or "abr" (abroad)',
       });
     }
 
-    const [rows] = await pool.execute(`
+    const [rows] = await pool.execute(
+      `
       SELECT 
         fs.*,
         ft.name as form_type_name,
@@ -1508,11 +1588,13 @@ router.get('/location/:location_status', async (req, res) => {
       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX AND p.source_table = 'beneficiaries_table'
       WHERE fs.location = ?
       ORDER BY fs.submitted_at DESC
-    `, [location_status]);
+    `,
+      [location_status],
+    );
 
     const locationNames = {
-      'loc': 'local',
-      'abr': 'abroad'
+      loc: "local",
+      abr: "abroad",
     };
 
     res.json({
@@ -1521,40 +1603,40 @@ router.get('/location/:location_status', async (req, res) => {
         location_status: location_status,
         location_name: locationNames[location_status],
         count: rows.length,
-        submissions: rows
-      }
+        submissions: rows,
+      },
     });
-
   } catch (error) {
-    console.error('Error fetching forms by location status:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch forms by location status' 
+    console.error("Error fetching forms by location status:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch forms by location status",
     });
   }
 });
 
-router.get('/:form_id', authenticateAdminToken, async (req, res) => {
+router.get("/:form_id", authenticateAdminToken, async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
     const adminId = req.admin?.id;
-    
+
     if (!adminId) {
-      console.error('Admin ID not found in request');
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Authentication required' 
+      console.error("Admin ID not found in request");
+      return res.status(401).json({
+        success: false,
+        error: "Authentication required",
       });
     }
-    
+
     if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ success: false, error: 'Invalid form ID' });
+      return res.status(400).json({ success: false, error: "Invalid form ID" });
     }
 
     const formId = parseInt(form_id);
 
-    const [formBasicInfo] = await pool.execute(`
+    const [formBasicInfo] = await pool.execute(
+      `
       SELECT 
         fs.id,
         fs.user_id,
@@ -1565,20 +1647,31 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
       JOIN users_tbl u ON fs.user_id = u.id
       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
       WHERE fs.id = ?
-    `, [formId]);
+    `,
+      [formId],
+    );
 
     if (formBasicInfo.length === 0) {
-      return res.status(404).json({ success: false, error: 'Form submission not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: "Form submission not found" });
     }
 
-    const sourceTable = formBasicInfo[0].source_table || 'heroes_tbl';
+    const sourceTable = formBasicInfo[0].source_table || "heroes_tbl";
 
-    if (!['heroes_tbl', 'resumption_table', 'beneficiaries_table'].includes(sourceTable)) {
+    if (
+      !["heroes_tbl", "resumption_table", "beneficiaries_table"].includes(
+        sourceTable,
+      )
+    ) {
       console.error(`Invalid source_table: ${sourceTable} for form ${formId}`);
-      return res.status(500).json({ success: false, error: 'Invalid source table configuration' });
+      return res
+        .status(500)
+        .json({ success: false, error: "Invalid source table configuration" });
     }
 
-    const [submissionRows] = await pool.execute(`
+    const [submissionRows] = await pool.execute(
+      `
       SELECT 
         fs.*,
         fs.location AS location_status,
@@ -1662,21 +1755,54 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
       LEFT JOIN admin_form_access afa 
         ON afa.admin_id = ? AND afa.form_type_id = fs.form_type_id
       WHERE fs.id = ?
-    `, [adminId, formId]);
+    `,
+      [adminId, formId],
+    );
 
     if (submissionRows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Form submission not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: "Form submission not found" });
     }
 
     const submission = submissionRows[0];
 
     const formattedAFPSN =
       submission.PENRANK &&
-      ['2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS'].includes(submission.PENRANK)
-        ? (submission.AFPSN?.startsWith('O-') ? submission.AFPSN : `O-${submission.AFPSN}`)
+      [
+        "2LT",
+        "1LT",
+        "CPT",
+        "MAJ",
+        "LTC",
+        "LTCOL",
+        "GEN",
+        "COMMO",
+        "COL",
+        "CDR",
+        "BGEN",
+        "MGEN",
+        "LGEN",
+        "ADM",
+        "VADM",
+        "RADM",
+        "CAPT",
+        "CDR",
+        "LCDR",
+        "LTSG",
+        "LTJG",
+        "ENS",
+      ].includes(submission.PENRANK)
+        ? submission.AFPSN?.startsWith("O-")
+          ? submission.AFPSN
+          : `O-${submission.AFPSN}`
         : submission.AFPSN;
 
-    const result = await getFormRequirements(pool, formId, submission.form_type_id);
+    const result = await getFormRequirements(
+      pool,
+      formId,
+      submission.form_type_id,
+    );
 
     const formData = {
       ...submission,
@@ -1690,316 +1816,354 @@ router.get('/:form_id', authenticateAdminToken, async (req, res) => {
       location: {
         longitude: submission.longitude,
         latitude: submission.latitude,
-        status: submission.location_status
+        status: submission.location_status,
       },
       permissions: {
         can_edit: submission.can_edit === 1 || submission.can_edit === true,
-        can_delete: submission.can_delete === 1 || submission.can_delete === true
-      }
+        can_delete:
+          submission.can_delete === 1 || submission.can_delete === true,
+      },
     };
 
     res.json({ success: true, data: formData });
-
   } catch (error) {
-    console.error('Error fetching admin form details:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch form details',
-      details: error.message
+    console.error("Error fetching admin form details:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch form details",
+      details: error.message,
     });
   }
 });
 
-router.put('/:form_id/status', upload.single('resolution_pdf'), async (req, res) => {
-  try {
-    const pool = getPool();
-    const { form_id } = req.params;
-    const { status, admin_notes } = req.body;
-
-    if (!form_id || isNaN(parseInt(form_id))) {
-      return res.status(400).json({ success: false, error: 'Invalid form ID' });
-    }
-
-    const adminId = req.admin.adminId;
-
-    if (!adminId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Admin authentication required'
-      });
-    }
-
-    const formId = parseInt(form_id);
-    const validStatuses = ['p', 'a', 'd'];
-
-    if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid status. Must be p (pending), a (approved), or d (denied)'
-      });
-    }
-
-    if (admin_notes && admin_notes.length > 1000) {
-      return res.status(400).json({
-        success: false,
-        error: 'Admin notes cannot exceed 1000 characters'
-      });
-    }
-
-    const [existingForm] = await pool.execute(
-      'SELECT id, status, form_type_id, user_id FROM form_submission WHERE id = ?',
-      [formId]
-    );
-
-    if (existingForm.length === 0) {
-      return res.status(404).json({ success: false, error: 'Form submission not found' });
-    }
-
-    const formTypeId = existingForm[0].form_type_id;
-    const userId = existingForm[0].user_id;
-
-    if (formTypeId === 1 && status === 'a' && !req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'Resolution PDF is required for approving Declaration of Legal Beneficiary forms'
-      });
-    }
-
-    let resolutionFileUrl = null;
-    let resolutionFileKey = null;
-
-    await pool.query('START TRANSACTION');
-
+router.put(
+  "/:form_id/status",
+  upload.single("resolution_pdf"),
+  async (req, res) => {
     try {
-      if (formTypeId === 1 && status === 'a' && req.file) {
-        const [userDetails] = await pool.execute(
-          `SELECT 
+      const pool = getPool();
+      const { form_id } = req.params;
+      const { status, admin_notes } = req.body;
+
+      if (!form_id || isNaN(parseInt(form_id))) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid form ID" });
+      }
+
+      const adminId = req.admin.adminId;
+
+      if (!adminId) {
+        return res.status(401).json({
+          success: false,
+          error: "Admin authentication required",
+        });
+      }
+
+      const formId = parseInt(form_id);
+      const validStatuses = ["p", "a", "d"];
+
+      if (!status || !validStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Invalid status. Must be p (pending), a (approved), or d (denied)",
+        });
+      }
+
+      if (admin_notes && admin_notes.length > 1000) {
+        return res.status(400).json({
+          success: false,
+          error: "Admin notes cannot exceed 1000 characters",
+        });
+      }
+
+      const [existingForm] = await pool.execute(
+        "SELECT id, status, form_type_id, user_id FROM form_submission WHERE id = ?",
+        [formId],
+      );
+
+      if (existingForm.length === 0) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Form submission not found" });
+      }
+
+      const formTypeId = existingForm[0].form_type_id;
+      const userId = existingForm[0].user_id;
+
+      if (formTypeId === 1 && status === "a" && !req.file) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Resolution PDF is required for approving Declaration of Legal Beneficiary forms",
+        });
+      }
+
+      let resolutionFileUrl = null;
+      let resolutionFileKey = null;
+
+      await pool.query("START TRANSACTION");
+
+      try {
+        if (formTypeId === 1 && status === "a" && req.file) {
+          const [userDetails] = await pool.execute(
+            `SELECT 
             COALESCE(b.FIRSTNAME, p.principal_firstname, 'User') as FIRSTNAME,
             COALESCE(b.LASTNAME, p.principal_lastname, 'Unknown') as LASTNAME
           FROM users_tbl u
           LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
           LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
           WHERE u.id = ?`,
-          [userId]
-        );
+            [userId],
+          );
 
-        if (userDetails.length === 0) {
-          throw new Error('User not found in users_tbl');
+          if (userDetails.length === 0) {
+            throw new Error("User not found in users_tbl");
+          }
+
+          const user = userDetails[0];
+          const lastName = user.LASTNAME || "Unknown";
+          const firstName = user.FIRSTNAME || "User";
+          const timestamp = Date.now();
+          const fileName = `resolutions/${timestamp}-${lastName}_${firstName}_DLB_Resolution.pdf`;
+
+          await minioClient.putObject(
+            process.env.SPACES_BUCKET,
+            fileName,
+            req.file.buffer,
+            req.file.size,
+            {
+              "Content-Type": "application/pdf",
+              "x-amz-acl": "public-read",
+              "x-amz-meta-original-name": `${lastName}_${firstName}_DLB_Resolution.pdf`,
+              "x-amz-meta-upload-timestamp": timestamp.toString(),
+              "x-amz-meta-form-id": formId.toString(),
+              "x-amz-meta-user-id": userId.toString(),
+              "x-amz-meta-uploaded-by": adminId.toString(),
+            },
+          );
+
+          resolutionFileUrl = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || "sgp1"}.digitaloceanspaces.com/${fileName}`;
+          resolutionFileKey = fileName;
         }
 
-        const user = userDetails[0];
-        const lastName = user.LASTNAME || 'Unknown';
-        const firstName = user.FIRSTNAME || 'User';
-        const timestamp = Date.now();
-        const fileName = `resolutions/${timestamp}-${lastName}_${firstName}_DLB_Resolution.pdf`;
-        
-        await minioClient.putObject(
-          process.env.SPACES_BUCKET,
-          fileName,
-          req.file.buffer,
-          req.file.size,
-          {
-            'Content-Type': 'application/pdf',
-            'x-amz-acl': 'public-read',
-            'x-amz-meta-original-name': `${lastName}_${firstName}_DLB_Resolution.pdf`,
-            'x-amz-meta-upload-timestamp': timestamp.toString(),
-            'x-amz-meta-form-id': formId.toString(),
-            'x-amz-meta-user-id': userId.toString(),
-            'x-amz-meta-uploaded-by': adminId.toString()
-          }
-        );
+        let updateQuery =
+          "UPDATE form_submission SET status = ?, reviewed_at = NOW()";
+        let updateParams = [status];
 
-        resolutionFileUrl = `https://${process.env.SPACES_BUCKET}.${process.env.SPACES_REGION || 'sgp1'}.digitaloceanspaces.com/${fileName}`;
-        resolutionFileKey = fileName;
-      }
+        if (admin_notes !== undefined) {
+          updateQuery += ", admin_notes = ?";
+          updateParams.push(admin_notes);
+        }
 
-      let updateQuery = 'UPDATE form_submission SET status = ?, reviewed_at = NOW()';
-      let updateParams = [status];
+        if (resolutionFileUrl) {
+          updateQuery += ", resolution_file_url = ?, resolution_file_key = ?";
+          updateParams.push(resolutionFileUrl, resolutionFileKey);
+        }
 
-      if (admin_notes !== undefined) {
-        updateQuery += ', admin_notes = ?';
-        updateParams.push(admin_notes);
-      }
+        updateQuery += " WHERE id = ?";
+        updateParams.push(formId);
 
-      if (resolutionFileUrl) {
-        updateQuery += ', resolution_file_url = ?, resolution_file_key = ?';
-        updateParams.push(resolutionFileUrl, resolutionFileKey);
-      }
+        await pool.execute("SET @current_admin_id = ?", [adminId]);
+        await pool.execute(updateQuery, updateParams);
 
-      updateQuery += ' WHERE id = ?';
-      updateParams.push(formId);
+        if (formTypeId === 1 && status === "a") {
+          await pool.execute(
+            "UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?",
+            ["AFB2", userId],
+          );
+        }
 
-      await pool.execute('SET @current_admin_id = ?', [adminId]);
-      await pool.execute(updateQuery, updateParams);
+        if (formTypeId === 3 && status === "a") {
+          await pool.execute(
+            "UPDATE users_tbl SET status = ?, approved_at = NOW(), status_updated_at = NOW() WHERE id = ?",
+            ["ACT", userId],
+          );
+        }
 
-      if (formTypeId === 1 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
-          ['AFB2', userId]
-        );
-      }
+        if (formTypeId === 2 && status === "a") {
+          await pool.execute(
+            "UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?",
+            ["FOR_PAYROLL", userId],
+          );
+        }
 
-      if (formTypeId === 3 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, approved_at = NOW(), status_updated_at = NOW() WHERE id = ?',
-          ['ACT', userId]
-        );
-      }
+        if (formTypeId === 4 && status === "a") {
+          await pool.execute(
+            "UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?",
+            ["FOR_PAYROLL", userId],
+          );
+        }
 
-      if (formTypeId === 2 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
-          ['FOR_PAYROLL', userId]
-        );
-      }
-
-      if (formTypeId === 4 && status === 'a') {
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, approved_at = NOW() WHERE id = ?',
-          ['FOR_PAYROLL', userId]
-        );
-      }
-
-      if (formTypeId === 5 && status === 'a') {
-        const [updateFormData] = await pool.execute(
-          `SELECT value 
+        if (formTypeId === 5 && status === "a") {
+          const [updateFormData] = await pool.execute(
+            `SELECT value 
           FROM upd_requirements 
           WHERE form_id = ? AND requirement_type = 'home_address'`,
-          [formId]
-        );
+            [formId],
+          );
 
-        const homeAddress = updateFormData[0]?.value;
+          const homeAddress = updateFormData[0]?.value;
 
-        await pool.execute(
-          'UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?',
-          ['ACT', userId]
-        );
-
-        if (homeAddress) {
           await pool.execute(
-            'UPDATE users_tbl SET home_address = ? WHERE id = ?',
-            [homeAddress, userId]
+            "UPDATE users_tbl SET status = ?, status_updated_at = NOW() WHERE id = ?",
+            ["ACT", userId],
           );
-        }
-      }
 
-      if (status === 'd') {
-        if (formTypeId === 2) {
-          await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
-        } 
-        else if (formTypeId === 3) {
-          const result = await getRestorationTableForForm(pool, formId);
-          const tableName = result.tableName;
-          await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-        }
-        else if (formTypeId === 1) {
-          const result = await getDlbForForm(pool, formId);
-          const tableName = result.tableName;
-          await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-          
-          const [formData] = await pool.execute(
-            'SELECT resolution_file_key FROM form_submission WHERE id = ?',
-            [formId]
-          );
-          if (formData[0]?.resolution_file_key) {
-            try {
-              await minioClient.removeObject(
-                process.env.SPACES_BUCKET,
-                formData[0].resolution_file_key
-              );
-              console.log('✅ Deleted resolution file:', formData[0].resolution_file_key);
-            } catch (deleteErr) {
-              console.error('⚠️ Error deleting resolution file (continuing anyway):', deleteErr.message);
-            }
+          if (homeAddress) {
+            await pool.execute(
+              "UPDATE users_tbl SET home_address = ? WHERE id = ?",
+              [homeAddress, userId],
+            );
           }
         }
-         else if (formTypeId === 5) {
-          await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
-        } else {
-          await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
+
+        if (status === "d") {
+          if (formTypeId === 2) {
+            await pool.execute(
+              "DELETE FROM rsm_requirements WHERE form_id = ?",
+              [formId],
+            );
+          } else if (formTypeId === 3) {
+            const result = await getRestorationTableForForm(pool, formId);
+            const tableName = result.tableName;
+            await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [
+              formId,
+            ]);
+          } else if (formTypeId === 1) {
+            const result = await getDlbForForm(pool, formId);
+            const tableName = result.tableName;
+            await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [
+              formId,
+            ]);
+
+            const [formData] = await pool.execute(
+              "SELECT resolution_file_key FROM form_submission WHERE id = ?",
+              [formId],
+            );
+            if (formData[0]?.resolution_file_key) {
+              try {
+                await minioClient.removeObject(
+                  process.env.SPACES_BUCKET,
+                  formData[0].resolution_file_key,
+                );
+                console.log(
+                  "✅ Deleted resolution file:",
+                  formData[0].resolution_file_key,
+                );
+              } catch (deleteErr) {
+                console.error(
+                  "⚠️ Error deleting resolution file (continuing anyway):",
+                  deleteErr.message,
+                );
+              }
+            }
+          } else if (formTypeId === 5) {
+            await pool.execute(
+              "DELETE FROM upd_requirements WHERE form_id = ?",
+              [formId],
+            );
+          } else {
+            await pool.execute(
+              "DELETE FROM upd_requirements WHERE form_id = ?",
+              [formId],
+            );
+          }
         }
-      }
 
-      await pool.execute('COMMIT');
+        await pool.execute("COMMIT");
 
-      let notificationResult = { success: false };
-      
-      try {
-        if (status === 'a') {
-          notificationResult = await sendFormApprovalNotification(pool, userId, {
-            form_id: formId,
-            form_type_id: formTypeId
-          });
-        } else if (status === 'd') {
-          notificationResult = await sendFormDenialNotification(pool, userId, {
-            form_id: formId,
-            form_type_id: formTypeId
-          });
-        }
-      } catch (notifError) {
-        console.error('⚠️ Notification failed but continuing:', notifError);
-      }
+        let notificationResult = { success: false };
 
-      const response = { 
-        success: true, 
-        message: 'Form status updated successfully',
-        requirements_deleted: status === 'd',
-        form_type_id: formTypeId,
-        notification_sent: notificationResult.success,
-        notification_error: notificationResult.error || null,
-        resolution_uploaded: !!resolutionFileUrl,
-        resolution_file_url: resolutionFileUrl,
-        resolution_file_key: resolutionFileKey,
-        updated_by: {
-          admin_id: adminId,
-          admin_email: req.admin.email,
-          admin_name: req.admin.name
-        }
-      };
-
-      if (formTypeId === 3 && status === 'a') {
-        response.user_status_updated = true;
-        response.new_user_status = 'ACT';
-      }
-
-      res.json(response);
-    } catch (transactionError) {
-      await pool.execute('ROLLBACK');
-      
-      if (resolutionFileKey) {
         try {
-          await minioClient.removeObject(
-            process.env.SPACES_BUCKET,
-            resolutionFileKey
-          );
-          console.log('🧹 Cleaned up file after transaction failure:', resolutionFileKey);
-        } catch (cleanupErr) {
-          console.error('⚠️ Error cleaning up file:', cleanupErr.message);
+          if (status === "a") {
+            notificationResult = await sendFormApprovalNotification(
+              pool,
+              userId,
+              {
+                form_id: formId,
+                form_type_id: formTypeId,
+              },
+            );
+          } else if (status === "d") {
+            notificationResult = await sendFormDenialNotification(
+              pool,
+              userId,
+              {
+                form_id: formId,
+                form_type_id: formTypeId,
+              },
+            );
+          }
+        } catch (notifError) {
+          console.error("⚠️ Notification failed but continuing:", notifError);
+        }
+
+        const response = {
+          success: true,
+          message: "Form status updated successfully",
+          requirements_deleted: status === "d",
+          form_type_id: formTypeId,
+          notification_sent: notificationResult.success,
+          notification_error: notificationResult.error || null,
+          resolution_uploaded: !!resolutionFileUrl,
+          resolution_file_url: resolutionFileUrl,
+          resolution_file_key: resolutionFileKey,
+          updated_by: {
+            admin_id: adminId,
+            admin_email: req.admin.email,
+            admin_name: req.admin.name,
+          },
+        };
+
+        if (formTypeId === 3 && status === "a") {
+          response.user_status_updated = true;
+          response.new_user_status = "ACT";
+        }
+
+        res.json(response);
+      } catch (transactionError) {
+        await pool.execute("ROLLBACK");
+
+        if (resolutionFileKey) {
+          try {
+            await minioClient.removeObject(
+              process.env.SPACES_BUCKET,
+              resolutionFileKey,
+            );
+            console.log(
+              "🧹 Cleaned up file after transaction failure:",
+              resolutionFileKey,
+            );
+          } catch (cleanupErr) {
+            console.error("⚠️ Error cleaning up file:", cleanupErr.message);
+          }
+        }
+
+        throw transactionError;
+      }
+    } catch (error) {
+      console.error("Error updating form status:", error);
+
+      if (error instanceof multer.MulterError) {
+        if (error.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({
+            success: false,
+            error: "PDF file too large. Maximum size is 10MB.",
+          });
         }
       }
-      
-      throw transactionError;
-    }
-  } catch (error) {
-    console.error('Error updating form status:', error);
-    
-    if (error instanceof multer.MulterError) {
-      if (error.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'PDF file too large. Maximum size is 10MB.' 
-        });
-      }
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: error.message || 'Failed to update form status' 
-    });
-  }
-});
 
-router.post('/:form_id/notes', async (req, res) => {
+      res.status(500).json({
+        success: false,
+        error: error.message || "Failed to update form status",
+      });
+    }
+  },
+);
+
+router.post("/:form_id/notes", async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
@@ -2008,95 +2172,94 @@ router.post('/:form_id/notes', async (req, res) => {
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid form ID'
+        error: "Invalid form ID",
       });
     }
     const formId = parseInt(form_id);
     const adminId = req.admin.adminId;
 
-    if (!notes || typeof notes !== 'string' || notes.trim().length === 0) {
+    if (!notes || typeof notes !== "string" || notes.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Notes are required and must be non-empty'
+        error: "Notes are required and must be non-empty",
       });
     }
 
     if (notes.length > 1000) {
       return res.status(400).json({
         success: false,
-        error: 'Notes cannot exceed 1000 characters'
+        error: "Notes cannot exceed 1000 characters",
       });
     }
 
     const [existingForm] = await pool.execute(
-      'SELECT id, user_id, form_type_id FROM form_submission WHERE id = ?',
-      [formId]
+      "SELECT id, user_id, form_type_id FROM form_submission WHERE id = ?",
+      [formId],
     );
 
     if (existingForm.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Form submission not found' 
+      return res.status(404).json({
+        success: false,
+        error: "Form submission not found",
       });
     }
 
     const userId = existingForm[0].user_id;
     const formTypeId = existingForm[0].form_type_id;
 
-    await pool.query('START TRANSACTION');
+    await pool.query("START TRANSACTION");
 
     try {
       await pool.execute(
-        'UPDATE form_submission SET admin_notes = ?, reviewed_at = NOW() WHERE id = ?',
-        [notes.trim(), formId]
+        "UPDATE form_submission SET admin_notes = ?, reviewed_at = NOW() WHERE id = ?",
+        [notes.trim(), formId],
       );
 
       await pool.execute(
         `INSERT INTO history_logs 
           (form_submission_id, action_by, status, remarks, action_date)
          VALUES (?, ?, ?, ?, NOW())`,
-        [formId, adminId, 'n', `NOTE: ${notes.trim()}`] 
+        [formId, adminId, "n", `NOTE: ${notes.trim()}`],
       );
 
-      await pool.execute('COMMIT');
+      await pool.execute("COMMIT");
 
       let notificationResult = { success: false };
-      
+
       try {
         notificationResult = await sendAdminNotesNotification(pool, userId, {
           form_id: formId,
-          form_type_id: formTypeId
+          form_type_id: formTypeId,
         });
       } catch (notifError) {
-        console.error('⚠️ Admin note notification failed:', notifError);
+        console.error("⚠️ Admin note notification failed:", notifError);
       }
 
-      res.json({ 
-        success: true, 
-        message: 'Admin notes added and logged successfully',
+      res.json({
+        success: true,
+        message: "Admin notes added and logged successfully",
         notification_sent: notificationResult.success,
         notification_error: notificationResult.error || null,
         added_by: {
           admin_id: adminId,
           admin_email: req.admin.email,
-          admin_name: req.admin.name
-        }
+          admin_name: req.admin.name,
+        },
       });
     } catch (transactionError) {
-      await pool.execute('ROLLBACK');
+      await pool.execute("ROLLBACK");
       throw transactionError;
     }
-
   } catch (error) {
-    console.error('Error adding admin notes:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to add admin notes' 
+    console.error("Error adding admin notes:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to add admin notes",
     });
   }
 });
 
-router.delete('/:form_id', async (req, res) => {
+router.delete("/:form_id", async (req, res) => {
   try {
     const pool = getPool();
     const { form_id } = req.params;
@@ -2104,74 +2267,83 @@ router.delete('/:form_id', async (req, res) => {
     if (!form_id || isNaN(parseInt(form_id))) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid form ID'
+        error: "Invalid form ID",
       });
     }
 
     const formId = parseInt(form_id);
 
-    await pool.execute('START TRANSACTION');
+    await pool.execute("START TRANSACTION");
 
     try {
-      const [formInfo] = await pool.execute(`
+      const [formInfo] = await pool.execute(
+        `
         SELECT form_type_id FROM form_submission WHERE id = ?
-      `, [formId]);
+      `,
+        [formId],
+      );
 
       if (formInfo.length === 0) {
-        await pool.execute('ROLLBACK');
+        await pool.execute("ROLLBACK");
         return res.status(404).json({
           success: false,
-          error: 'Form submission not found'
+          error: "Form submission not found",
         });
       }
 
       const formTypeId = formInfo[0].form_type_id;
 
       if (formTypeId === 2) {
-        await pool.execute('DELETE FROM rsm_requirements WHERE form_id = ?', [formId]);
-      } 
-      else if (formTypeId === 3) {
+        await pool.execute("DELETE FROM rsm_requirements WHERE form_id = ?", [
+          formId,
+        ]);
+      } else if (formTypeId === 3) {
         const result = await getRestorationTableForForm(pool, formId);
         const tableName = result.tableName;
-        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-      } 
-      else if (formTypeId === 1) {
+        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [
+          formId,
+        ]);
+      } else if (formTypeId === 1) {
         const result = await getDlbForForm(pool, formId);
         const tableName = result.tableName;
-        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [formId]);
-      } 
-      else {
-        await pool.execute('DELETE FROM upd_requirements WHERE form_id = ?', [formId]);
+        await pool.execute(`DELETE FROM ${tableName} WHERE form_id = ?`, [
+          formId,
+        ]);
+      } else {
+        await pool.execute("DELETE FROM upd_requirements WHERE form_id = ?", [
+          formId,
+        ]);
       }
-      
-      const [result] = await pool.execute('DELETE FROM form_submission WHERE id = ?', [formId]);
+
+      const [result] = await pool.execute(
+        "DELETE FROM form_submission WHERE id = ?",
+        [formId],
+      );
 
       if (result.affectedRows === 0) {
-        await pool.execute('ROLLBACK');
+        await pool.execute("ROLLBACK");
         return res.status(404).json({
           success: false,
-          error: 'Form submission not found'
+          error: "Form submission not found",
         });
       }
 
-      await pool.execute('COMMIT');
+      await pool.execute("COMMIT");
 
       res.json({
         success: true,
-        message: 'Form submission deleted successfully',
-        form_type_id: formTypeId
+        message: "Form submission deleted successfully",
+        form_type_id: formTypeId,
       });
-
     } catch (transactionError) {
-      await pool.execute('ROLLBACK');
+      await pool.execute("ROLLBACK");
       throw transactionError;
     }
-
   } catch (error) {
-    console.error('Error deleting form submission:', error);
+    console.error("Error deleting form submission:", error);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete form submission'
+      error: "Failed to delete form submission",
     });
   }
 });

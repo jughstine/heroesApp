@@ -2,7 +2,6 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 require("dotenv").config();
-
 const {
   initializeDatabase,
   testConnection,
@@ -235,13 +234,15 @@ const startServer = async () => {
     await initializeDatabase();
     await testConnection();
 
-    // Schedule automatic status updates (Calendar Cycle-based)
+    // Start worker only after DB is ready
+    require("./services/psaWorker");
+
+    // Schedule automatic status updates
     scheduleStatusUpdates();
 
     app.listen(PORT, "0.0.0.0", () => {});
   } catch (error) {
     console.error("❌ Failed to start server:", error.message);
-    console.error("Full error:", error);
     process.exit(1);
   }
 };

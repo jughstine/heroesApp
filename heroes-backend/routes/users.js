@@ -16,7 +16,7 @@ require("dotenv").config();
 const multer = require("multer");
 const XLSX = require("xlsx");
 const Papa = require("papaparse");
-
+const { authenticateAdminToken } = require("./admin");
 const TOKEN_EXPIRY_HOURS = 2;
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 100;
@@ -501,6 +501,41 @@ function normalizeAfpsnForMatching(afpsn) {
   const numericOnly = afpsn.toString().replace(/\D/g, "");
 
   return numericOnly;
+}
+
+async function insertAuditLog(
+  action,
+  req,
+  {
+    afpsn,
+    firstname,
+    lastname,
+    sourceTable,
+    recordNdx = null,
+    oldData = null,
+    newData = null,
+  },
+) {
+  await executeQuery(
+    `INSERT INTO audit_logs (
+      action, source_table,
+      performed_by_id, performed_by,
+      record_ndx, afpsn, firstname, lastname,
+      old_data, new_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      action,
+      sourceTable ?? null,
+      req.admin?.id ?? null,
+      req.admin?.name ?? "unknown",
+      recordNdx ?? null,
+      afpsn ?? null,
+      firstname ?? null,
+      lastname ?? null,
+      oldData ? JSON.stringify(oldData) : null,
+      newData ? JSON.stringify(newData) : null,
+    ],
+  );
 }
 
 // ========================================
@@ -3058,6 +3093,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
             u.home_address,
             u.created_at,
             u.last_login,
+            u.device_token_type,
             u.updated_at,
             u.profile_picture,
             u.pensioner_ndx as pensioner_id,
@@ -3152,6 +3188,7 @@ router.get("/profile/:userId", validateDatabaseConnection, async (req, res) => {
       }),
       created_at: profile.created_at,
       last_login: profile.last_login,
+      device_token_type: profile.device_token_type,
       updated_at: profile.updated_at,
       meta: {
         processingTime: `${processingTime}ms`,
@@ -3234,22 +3271,21 @@ router.post(
         });
       }
 
-      // Update push tokens (store both)
       const result = await executeQuery(
         `UPDATE users_tbl 
-                 SET push_token = ?, 
-                     fcm_token = ?, 
-                     platform = ?,
-                     device_token = ?,
-                     device_token_type = ?,
-                     updated_at = NOW() 
-                 WHERE id = ?`,
+          SET push_token = COALESCE(?, push_token),
+              fcm_token = COALESCE(?, fcm_token),
+              platform = ?,
+              device_token = ?,
+              device_token_type = ?,
+              updated_at = NOW()
+          WHERE id = ?`,
         [
           push_token || null,
           fcm_token || null,
-          platform || null,
-          device_token || null,
-          device_token_type || null,
+          platform || null, // always overwrite
+          device_token || null, // always overwrite
+          device_token_type || null, // always overwrite
           userId,
         ],
       );
@@ -3711,6 +3747,7 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
 router.post(
   "/add-to-alpha-list",
   validateDatabaseConnection,
+  authenticateAdminToken,
   async (req, res) => {
     const startTime = Date.now();
 
@@ -3750,53 +3787,32 @@ router.post(
         });
       }
 
-      // Check if CTRLNR already exists in the target table (if CTRLNR is provided)
       if (ctrlnr) {
         const existingRecord = await executeQuery(
-          `
-        SELECT NDX, LASTNAME, FIRSTNAME, MIDDLENAME, CTRLNR 
-        FROM ${targetTable} 
-        WHERE CTRLNR = ?
-      `,
+          `SELECT NDX, LASTNAME, FIRSTNAME, MIDDLENAME, CTRLNR FROM ${targetTable} WHERE CTRLNR = ?`,
           [ctrlnr],
         );
 
-        if (existingRecord && existingRecord.length > 0) {
+        if (existingRecord?.length > 0) {
           const existing = existingRecord[0];
-          const existingName =
-            `${existing.FIRSTNAME} ${existing.MIDDLENAME || ""} ${existing.LASTNAME}`.trim();
-
           return res.status(409).json({
             success: false,
             error: "CTRLNR already exists in the database",
             code: "DUPLICATE_CTRLNR",
             existingRecord: {
               ndx: existing.NDX,
-              name: existingName,
+              name: `${existing.FIRSTNAME} ${existing.MIDDLENAME || ""} ${existing.LASTNAME}`.trim(),
               ctrlnr: existing.CTRLNR,
             },
-            targetTable: targetTable,
+            targetTable,
           });
         }
       }
 
       const result = await executeQuery(
-        `
-      INSERT INTO ${targetTable} (
-        LASTNAME,
-        FIRSTNAME,
-        MIDDLENAME,
-        SUFFIX,
-        DOB,
-        PRIN_DATE_RET,
-        AFPSN,
-        ACRANK,
-        PENRANK,
-        TYPE,
-        CTRLNR,
-        MOBILENR
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+        `INSERT INTO ${targetTable}
+          (LASTNAME, FIRSTNAME, MIDDLENAME, SUFFIX, DOB, PRIN_DATE_RET, AFPSN, ACRANK, PENRANK, TYPE, CTRLNR, MOBILENR)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           lastname,
           firstname,
@@ -3813,30 +3829,49 @@ router.post(
         ],
       );
 
-      const processingTime = Date.now() - startTime;
+      // Audit
+      await insertAuditLog("ADD", req, {
+        afpsn,
+        firstname,
+        lastname,
+        sourceTable: targetTable,
+        recordNdx: result.insertId,
+        newData: {
+          lastname,
+          firstname,
+          middlename,
+          suffix,
+          dob,
+          prin_date_ret,
+          afpsn,
+          acrank,
+          penrank,
+          type,
+          ctrlnr,
+          mobilenr,
+        },
+      });
+
       res.json({
         success: true,
         message: `Record added successfully to ${targetTable}`,
         insertId: result.insertId,
-        targetTable: targetTable,
+        targetTable,
         meta: {
-          processingTime: `${processingTime}ms`,
+          processingTime: `${Date.now() - startTime}ms`,
           timestamp: new Date().toISOString(),
         },
       });
     } catch (error) {
-      const processingTime = Date.now() - startTime;
       logger.error("Add to alpha list error:", {
         message: error.message,
         code: error.code,
-        errno: error.errno,
       });
-
       res.status(500).json({
         success: false,
         error: "Failed to add record to list",
         code: "ALPHA_LIST_ADD_ERROR",
-        processingTime: `${processingTime}ms`,
+        processingTime: `${Date.now() - startTime}ms`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -3846,10 +3881,10 @@ router.post(
 router.post(
   "/bulk-add-to-alpha-list",
   validateDatabaseConnection,
+  authenticateAdminToken,
   upload.single("file"),
   async (req, res) => {
     const startTime = Date.now();
-
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -3898,7 +3933,6 @@ router.post(
         });
       }
 
-      // Process records
       const results = {
         totalRecords: records.length,
         successCount: 0,
@@ -3920,7 +3954,6 @@ router.post(
         const rowNumber = i + 2;
 
         try {
-          // Map new column names to database fields (supports both formats)
           const lastname = (record.lastname || record.LASTNAME)
             ?.toString()
             .trim()
@@ -3945,7 +3978,6 @@ router.post(
             continue;
           }
 
-          // Prepare data with column mapping
           const middlename =
             (record.middlename || record.MIDDLENAME)
               ?.toString()
@@ -3979,7 +4011,6 @@ router.post(
               .trim()
               .replace(/\D/g, "") || null;
 
-          // Check for duplicate CTRLNR (if CTRLNR is provided)
           if (ctrlnr && existingCTRLNRSet.has(ctrlnr)) {
             results.duplicates.push({
               row: rowNumber,
@@ -3990,7 +4021,6 @@ router.post(
             continue;
           }
 
-          // Handle PRIN/BENE column - normalize both "PRIN" and "BENE" values
           let typeRaw =
             (record.type || record["prin/bene"] || record["PRIN/BENE"])
               ?.toString()
@@ -4004,7 +4034,6 @@ router.post(
             type = "P";
           }
 
-          // Validate type
           if (type !== "P" && type !== "B") {
             results.errorCount++;
             results.errors.push({
@@ -4016,15 +4045,15 @@ router.post(
             continue;
           }
 
-          // Insert record
-          await executeQuery(
+          // ✅ Capture insertResult to get insertId for audit
+          const insertResult = await executeQuery(
             `
-      INSERT INTO ${targetTable} (
-        LASTNAME, FIRSTNAME, MIDDLENAME, SUFFIX,
-        DOB, PRIN_DATE_RET, AFPSN, ACRANK, PENRANK,
-        TYPE, CTRLNR, MOBILENR
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+              INSERT INTO ${targetTable} (
+                LASTNAME, FIRSTNAME, MIDDLENAME, SUFFIX,
+                DOB, PRIN_DATE_RET, AFPSN, ACRANK, PENRANK,
+                TYPE, CTRLNR, MOBILENR
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
             [
               lastname,
               firstname,
@@ -4041,11 +4070,36 @@ router.post(
             ],
           );
 
-          // Add to existing set to catch duplicates within the same file
-          if (ctrlnr) {
-            existingCTRLNRSet.add(ctrlnr);
-          }
+          if (ctrlnr) existingCTRLNRSet.add(ctrlnr);
           results.successCount++;
+
+          // ✅ Audit — non-blocking so one failure won't stop the loop
+          insertAuditLog("BULK_ADD", req, {
+            afpsn,
+            firstname,
+            lastname,
+            sourceTable: targetTable,
+            recordNdx: insertResult.insertId,
+            newData: {
+              lastname,
+              firstname,
+              middlename,
+              suffix,
+              dob,
+              prin_date_ret,
+              afpsn,
+              acrank,
+              penrank,
+              type,
+              ctrlnr,
+              mobilenr,
+            },
+          }).catch((err) =>
+            logger.error("Audit log failed:", {
+              row: rowNumber,
+              error: err.message,
+            }),
+          );
         } catch (error) {
           results.errorCount++;
           results.errors.push({
@@ -4060,7 +4114,6 @@ router.post(
       }
 
       const processingTime = Date.now() - startTime;
-
       res.json({
         success: true,
         message: `Bulk upload completed`,
@@ -4111,6 +4164,7 @@ router.use((error, req, res, next) => {
 router.put(
   "/update-alpha-list/:id",
   validateDatabaseConnection,
+  authenticateAdminToken,
   async (req, res) => {
     const startTime = Date.now();
 
@@ -4162,11 +4216,8 @@ router.put(
         });
       }
 
-      // Check if record exists using NDX (the primary key)
       const existingRecord = await executeQuery(
-        `
-      SELECT NDX FROM ${targetTable} WHERE NDX = ?
-    `,
+        `SELECT * FROM ${targetTable} WHERE NDX = ?`,
         [id],
       );
 
@@ -4178,91 +4229,144 @@ router.put(
         });
       }
 
+      const oldSnapshot = existingRecord[0];
+
       const isDeceasedValue = is_deceased ? 1 : 0;
       const dateDeceasedValue =
         is_deceased && date_deceased ? date_deceased : null;
 
-      const isHeroesTbl = targetTable === "heroes_tbl";
+      const updateQuery =
+        targetTable === "heroes_tbl"
+          ? `UPDATE ${targetTable} SET
+            LASTNAME = ?, FIRSTNAME = ?, MIDDLENAME = ?, SUFFIX = ?,
+            DOB = ?, PRIN_DATE_RET = ?, AFPSN = ?, ACRANK = ?, PENRANK = ?,
+            TYPE = ?, CTRLNR = ?, MOBILENR = ?,
+            is_deceased = ?, date_deceased = ?
+           WHERE NDX = ?`
+          : `UPDATE ${targetTable} SET
+            LASTNAME = ?, FIRSTNAME = ?, MIDDLENAME = ?, SUFFIX = ?,
+            DOB = ?, PRIN_DATE_RET = ?, AFPSN = ?, ACRANK = ?, PENRANK = ?,
+            TYPE = ?, CTRLNR = ?, MOBILENR = ?
+           WHERE NDX = ?`;
 
-      const updateQuery = `
-        UPDATE ${targetTable} SET
-          LASTNAME = ?,
-          FIRSTNAME = ?,
-          MIDDLENAME = ?,
-          SUFFIX = ?,
-          DOB = ?,
-          PRIN_DATE_RET = ?,
-          AFPSN = ?,
-          ACRANK = ?,
-          PENRANK = ?,
-          TYPE = ?,
-          CTRLNR = ?,
-          MOBILENR = ?,
-          is_deceased = ?,
-          date_deceased = ?
-        WHERE NDX = ?
-      `;
-
-      const updateParams = [
-        lastname,
-        firstname,
-        middlename || null,
-        suffix || null,
-        dob || null,
-        prin_date_ret || null,
-        afpsn,
-        acrank || null,
-        penrank || null,
-        type || "P",
-        ctrlnr || null,
-        mobilenr || null,
-        isDeceasedValue,
-        dateDeceasedValue,
-        id,
-      ];
+      const updateParams =
+        targetTable === "heroes_tbl"
+          ? [
+              lastname,
+              firstname,
+              middlename || null,
+              suffix || null,
+              dob || null,
+              prin_date_ret || null,
+              afpsn,
+              acrank || null,
+              penrank || null,
+              type || "P",
+              ctrlnr || null,
+              mobilenr || null,
+              isDeceasedValue,
+              dateDeceasedValue,
+              id,
+            ]
+          : [
+              lastname,
+              firstname,
+              middlename || null,
+              suffix || null,
+              dob || null,
+              prin_date_ret || null,
+              afpsn,
+              acrank || null,
+              penrank || null,
+              type || "P",
+              ctrlnr || null,
+              mobilenr || null,
+              id,
+            ];
 
       const result = await executeQuery(updateQuery, updateParams);
 
       if (type === "B" && b_type) {
         await executeQuery(
-          `UPDATE pensioners_tbl SET b_type = ? WHERE hero_ndx = ?`,
-          [b_type, id],
+          `UPDATE pensioners_tbl SET type = ?, b_type = ? WHERE hero_ndx = ?`,
+          [type, b_type, id],
+        );
+      } else {
+        await executeQuery(
+          `UPDATE pensioners_tbl SET type = ? WHERE hero_ndx = ?`,
+          [type || "P", id],
         );
       }
 
       if (targetTable === "heroes_tbl") {
         if (isDeceasedValue === 1) {
           await executeQuery(
-            `
-      UPDATE users_tbl u
-      INNER JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      SET u.status = 'DECEASED', u.updated_at = NOW()
-      WHERE p.hero_ndx = ?
-        AND u.status != 'DECEASED'
-      `,
+            `UPDATE users_tbl u
+             INNER JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+             SET u.status = 'DECEASED', u.updated_at = NOW()
+             WHERE p.hero_ndx = ? AND u.status != 'DECEASED'`,
             [id],
           );
         } else {
           await executeQuery(
-            `
-      UPDATE users_tbl u
-      INNER JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-      SET u.status = 'TAG', u.updated_at = NOW()
-      WHERE p.hero_ndx = ?
-        AND u.status = 'DECEASED'
-        AND (SELECT date_deceased FROM heroes_tbl WHERE NDX = ?) IS NULL
-      `,
+            `UPDATE users_tbl u
+             INNER JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+             SET u.status = 'TAG', u.updated_at = NOW()
+             WHERE p.hero_ndx = ?
+               AND u.status = 'DECEASED'
+               AND (SELECT date_deceased FROM heroes_tbl WHERE NDX = ?) IS NULL`,
             [id, id],
           );
         }
       }
+
+      await insertAuditLog("UPDATE", req, {
+        afpsn,
+        firstname,
+        lastname,
+        sourceTable: targetTable,
+        recordNdx: parseInt(id),
+        oldData: oldSnapshot,
+        newData:
+          targetTable === "heroes_tbl"
+            ? {
+                lastname,
+                firstname,
+                middlename,
+                suffix,
+                dob,
+                prin_date_ret,
+                afpsn,
+                acrank,
+                penrank,
+                type,
+                ctrlnr,
+                mobilenr,
+                is_deceased,
+                date_deceased,
+              }
+            : {
+                lastname,
+                firstname,
+                middlename,
+                suffix,
+                dob,
+                prin_date_ret,
+                afpsn,
+                acrank,
+                penrank,
+                type,
+                ctrlnr,
+                mobilenr,
+              },
+      });
 
       const processingTime = Date.now() - startTime;
       res.json({
         success: true,
         message: `Record updated successfully in ${targetTable}`,
         affectedRows: result.affectedRows,
-        targetTable: targetTable,
+        targetTable,
         meta: {
           processingTime: `${processingTime}ms`,
           timestamp: new Date().toISOString(),

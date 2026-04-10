@@ -57,14 +57,12 @@ router.get("/health", async (req, res) => {
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const uploadDir = path.join(__dirname, "../uploads/profile-pictures");
-    // Create directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    // Create unique filename: userId_timestamp.ext
     const uniqueName = `${req.params.userId}_${Date.now()}${path.extname(file.originalname)}`;
     cb(null, uniqueName);
   },

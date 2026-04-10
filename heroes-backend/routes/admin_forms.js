@@ -185,6 +185,98 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
 
 // ==================== HISTORY LOGS ROUTES ====================
 
+router.get("/audit-logs", authenticateAdminToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 200, action, search } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, parseInt(limit) || 200);
+    const offset = (pageNum - 1) * limitNum;
+
+    let whereConditions = [];
+    let queryParams = [];
+
+    if (action && ["ADD", "UPDATE", "DELETE", "BULK_ADD"].includes(action)) {
+      whereConditions.push("action = ?");
+      queryParams.push(action);
+    }
+
+    if (search && search.trim()) {
+      whereConditions.push(`(
+        afpsn        LIKE ? OR
+        firstname    LIKE ? OR
+        lastname     LIKE ? OR
+        performed_by LIKE ? OR
+        source_table LIKE ? OR
+        CAST(id AS CHAR) LIKE ?
+      )`);
+      const s = `%${search.trim()}%`;
+      queryParams.push(s, s, s, s, s, s);
+    }
+
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(" AND ")}`
+        : "";
+
+    const pool = getPool();
+
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM audit_logs ${whereClause}`,
+      queryParams,
+    );
+    const totalCount = countResult[0].total;
+    const totalPages = Math.ceil(totalCount / limitNum);
+
+    const [rows] = await pool.execute(
+      `SELECT * FROM audit_logs
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT ${limitNum} OFFSET ${offset}`,
+      queryParams,
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        current_page: pageNum,
+        total_pages: totalPages,
+        total_count: totalCount,
+        per_page: limitNum,
+        has_next: pageNum < totalPages,
+        has_prev: pageNum > 1,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching audit logs:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch audit logs",
+    });
+  }
+});
+
+router.get("/audit-logs/stats", authenticateAdminToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const [rows] = await pool.execute(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(CASE WHEN action = 'ADD'      THEN 1 END) as added,
+        COUNT(CASE WHEN action = 'UPDATE'   THEN 1 END) as updated,
+        COUNT(CASE WHEN action = 'DELETE'   THEN 1 END) as deleted,
+        COUNT(CASE WHEN action = 'BULK_ADD' THEN 1 END) as bulkAdded
+      FROM audit_logs
+    `);
+    res.json({ success: true, stats: rows[0] });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to fetch audit stats" });
+  }
+});
+
 router.get("/history-logs/stats", async (req, res) => {
   try {
     const pool = getPool();

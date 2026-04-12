@@ -1109,6 +1109,14 @@ router.post(
             afpsn: afpsnRecords[0].AFPSN,
             rank: penRank,
           });
+
+          logger.info("Querying with:", {
+            firstname: normalizedFirstname,
+            lastname: normalizedLastname,
+            dob: dob,
+            afpsn: normalizedAfpsnNumeric,
+            type: type,
+          });
         }
       } catch (regexpError) {
         logger.warn("REGEXP_REPLACE not supported, using REPLACE fallback");
@@ -4045,7 +4053,6 @@ router.post(
             continue;
           }
 
-          // ✅ Capture insertResult to get insertId for audit
           const insertResult = await executeQuery(
             `
               INSERT INTO ${targetTable} (

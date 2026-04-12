@@ -15,6 +15,7 @@ const {
 
 const heroesRoutes = require("./routes/heroes");
 const uploadRoutes = require("./routes/upload");
+const announcementsRoutes = require("./routes/announcements");
 const usersRoutes = require("./routes/users");
 const formsRoutes = require("./routes/forms");
 const adminForms = require("./routes/admin_forms");
@@ -101,6 +102,7 @@ app.use(
 // mobile app routes
 app.use("/api/heroes", heroesRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/forms", formsRoutes);
 app.use("/api/inquiries", inquiriesRouter);
@@ -119,6 +121,7 @@ app.get("/api/check-routes", (req, res) => {
     routes: [
       "/api/heroes",
       "/api/upload",
+      "/api/announcements",
       "/api/users",
       "/api/forms",
       "/api/inquiries",

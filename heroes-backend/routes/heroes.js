@@ -299,7 +299,7 @@ router.get("/profile/:userId", async (req, res) => {
       LEFT JOIN beneficiaries_table h3 ON p.hero_ndx = h3.NDX
       WHERE u.id = ? 
         AND u.status IN ('ACT', 'UNV', 'AFB', 'AFB2', 'TAG', 'DEL', 'DECEASED', 'AFR', 'FOR_PAYROLL')
-          AND p.b_type 
+AND (p.b_type IS NOT NULL OR p.type != 'B')
 
     `,
       [userId],

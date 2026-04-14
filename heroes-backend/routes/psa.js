@@ -167,7 +167,7 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
         Bucket: process.env.SPACES_BUCKET,
         Key: file_key,
       });
-      const presignedUrl = await getSignedUrl(psaUploadClient, command, {
+      const presignedUrl = await getSignedUrl(psaPgmcBucket, command, {
         expiresIn: 900,
       });
       return res.json({

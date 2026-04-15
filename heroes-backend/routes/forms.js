@@ -146,43 +146,6 @@ router.post("/submit", async (req, res) => {
       });
     }
 
-    const psaRequirements = requirements.filter(
-      (r) =>
-        r.requirement_type === "crs4_reference" ||
-        r.requirement_type === "crs5_reference",
-    );
-
-    if (psaRequirements.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "PSA reference number is required",
-        code: "MISSING_PSA_REFERENCE",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
-    if (psaRequirements.length > 1) {
-      return res.status(400).json({
-        success: false,
-        error: "Only one PSA reference number should be provided",
-        code: "MULTIPLE_PSA_REFERENCES",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
-    const psaReferenceNumber = String(psaRequirements[0].value || "")
-      .replace(/\s+/g, "")
-      .trim();
-
-    if (!psaReferenceNumber) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid PSA reference number",
-        code: "INVALID_PSA_REFERENCE",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -233,8 +196,7 @@ router.post("/submit", async (req, res) => {
     const locationStatus = abroad_status ? "abr" : "loc";
 
     const [submissionResult] = await conn.execute(
-      `INSERT INTO form_submission 
-        (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
+      `INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) 
        VALUES (?, ?, ?, ?, ?, ?, NOW())`,
       [
         user_id,
@@ -249,7 +211,6 @@ router.post("/submit", async (req, res) => {
     const formSubmissionId = submissionResult.insertId;
 
     const formReference = generateFormReference(form_type_id, formSubmissionId);
-
     await conn.execute(
       "UPDATE form_submission SET form_reference = ? WHERE id = ?",
       [formReference, formSubmissionId],
@@ -271,13 +232,19 @@ router.post("/submit", async (req, res) => {
         )
       ) {
         applies_to_location = "abr";
-      } else if (["unified_id", "photo_2x2"].includes(requirement_type)) {
+      } else if (
+        [
+          "unified_id",
+          "photo_2x2",
+          "video_submission",
+          "home_address",
+        ].includes(requirement_type)
+      ) {
         applies_to_location = abroad_status ? "abr" : "loc";
       }
 
       await conn.execute(
-        `INSERT INTO upd_requirements 
-          (form_id, requirement_type, value, file_url, file_key, file_type, applies_to_location) 
+        `INSERT INTO upd_requirements (form_id, requirement_type, value, file_url, file_key, file_type, applies_to_location) 
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           formSubmissionId,
@@ -292,19 +259,18 @@ router.post("/submit", async (req, res) => {
     }
 
     await conn.commit();
+
     const processingTime = Date.now() - startTime;
 
-    return res.json({
+    const responseData = {
       success: true,
       message: "Form submitted successfully",
       data: {
         form_id: formSubmissionId,
         form_reference: formReference,
-        form_type_id,
+        form_type_id: form_type_id,
         location_status: locationStatus,
-        abroad_status,
-        psa_reference_number: psaReferenceNumber,
-        psa_processing_status: "pending",
+        abroad_status: abroad_status,
         location: {
           longitude: finalLongitude,
           latitude: finalLatitude,
@@ -317,7 +283,9 @@ router.post("/submit", async (req, res) => {
         processingTime: `${processingTime}ms`,
         submissionTime: new Date().toISOString(),
       },
-    });
+    };
+
+    res.json(responseData);
   } catch (error) {
     if (conn) {
       try {
@@ -330,6 +298,7 @@ router.post("/submit", async (req, res) => {
     const processingTime = Date.now() - startTime;
     console.error("❌ Error submitting form:", error);
     console.error("❌ Stack trace:", error.stack);
+    console.error(`Processing time: ${processingTime}ms`);
 
     let errorResponse = {
       success: false,
@@ -352,7 +321,7 @@ router.post("/submit", async (req, res) => {
       return res.status(503).json(errorResponse);
     }
 
-    return res.status(500).json(errorResponse);
+    res.status(500).json(errorResponse);
   } finally {
     if (conn) {
       try {

@@ -14,7 +14,7 @@ const {
 const nodemailer = require("nodemailer");
 require("dotenv").config();
 const multer = require("multer");
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
 const Papa = require("papaparse");
 const { authenticateAdminToken } = require("./admin");
 const TOKEN_EXPIRY_HOURS = 2;
@@ -195,23 +195,41 @@ const parseCSV = (buffer) => {
 };
 
 // Helper function to parse Excel
-const parseExcel = (buffer) => {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[sheetName];
-  const data = XLSX.utils.sheet_to_json(worksheet, {
-    raw: false,
-    defval: "",
+const parseExcel = async (buffer) => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+
+  const headers = [];
+  const data = [];
+
+  const resolveValue = (v) => {
+    if (v === null || v === undefined) return "";
+    // Formula cells: { formula: "...", result: ... }
+    if (typeof v === "object" && "result" in v) return resolveValue(v.result);
+    // Rich text cells: { richText: [{ text: "..." }, ...] }
+    if (typeof v === "object" && "richText" in v)
+      return v.richText.map((r) => r.text).join("");
+    // Date cells
+    if (v instanceof Date) return v.toLocaleDateString();
+    return String(v);
+  };
+
+  sheet.eachRow((row, rowNum) => {
+    const values = row.values.slice(1).map(resolveValue);
+
+    if (rowNum === 1) {
+      headers.push(...values.map((h) => h.toLowerCase().trim()));
+    } else {
+      const obj = {};
+      headers.forEach((key, i) => {
+        obj[key] = values[i] ?? "";
+      });
+      data.push(obj);
+    }
   });
 
-  // Normalize column names to lowercase
-  return data.map((row) => {
-    const normalizedRow = {};
-    Object.keys(row).forEach((key) => {
-      normalizedRow[key.toLowerCase().trim()] = row[key];
-    });
-    return normalizedRow;
-  });
+  return data;
 };
 
 // Helper function to format date for database
@@ -4080,7 +4098,6 @@ router.post(
           if (ctrlnr) existingCTRLNRSet.add(ctrlnr);
           results.successCount++;
 
-          // ✅ Audit — non-blocking so one failure won't stop the loop
           insertAuditLog("BULK_ADD", req, {
             afpsn,
             firstname,

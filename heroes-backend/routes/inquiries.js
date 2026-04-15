@@ -1,6 +1,6 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { getPool } = require('../config/database');
+const { getPool } = require("../config/database");
 
 // Database connection health check
 const checkDatabaseHealth = async () => {
@@ -11,37 +11,39 @@ const checkDatabaseHealth = async () => {
     conn.release();
     return true;
   } catch (error) {
-    console.error('Database health check failed:', error);
+    console.error("Database health check failed:", error);
     return false;
   }
 };
 
 // GET - Fetch all inquiry categories
-router.get('/categories', async (req, res) => {
+router.get("/categories", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
-    const [rows] = await conn.execute('SELECT * FROM inquiry_categories ORDER BY name ASC');
-    
-    res.json({ 
-      success: true, 
+
+    const [rows] = await conn.execute(
+      "SELECT * FROM inquiry_categories ORDER BY name ASC",
+    );
+
+    res.json({
+      success: true,
       data: rows,
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiry categories:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiry categories:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -55,7 +57,7 @@ router.get('/categories', async (req, res) => {
 });
 
 // POST - Submit a new inquiry
-router.post('/submit', async (req, res) => {
+router.post("/submit", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
@@ -65,9 +67,10 @@ router.post('/submit', async (req, res) => {
     if (!dbHealthy) {
       return res.status(503).json({
         success: false,
-        error: "Database service temporarily unavailable. Please try again later.",
-        code: 'DB_UNAVAILABLE',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Database service temporarily unavailable. Please try again later.",
+        code: "DB_UNAVAILABLE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -80,9 +83,10 @@ router.post('/submit', async (req, res) => {
     if (!name || !email || !mobilenr || !category_id || !message) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: name, email, mobilenr, category_id, and message are required',
-        code: 'MISSING_FIELDS',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Missing required fields: name, email, mobilenr, category_id, and message are required",
+        code: "MISSING_FIELDS",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -91,9 +95,9 @@ router.post('/submit', async (req, res) => {
     if (!emailRegex.test(email)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid email format',
-        code: 'INVALID_EMAIL',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "Invalid email format",
+        code: "INVALID_EMAIL",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -101,9 +105,9 @@ router.post('/submit', async (req, res) => {
     if (mobilenr.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Mobile number cannot be empty',
-        code: 'INVALID_MOBILE',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "Mobile number cannot be empty",
+        code: "INVALID_MOBILE",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -111,89 +115,101 @@ router.post('/submit', async (req, res) => {
     if (message.length > 1000) {
       return res.status(400).json({
         success: false,
-        error: 'Message exceeds maximum length of 1000 characters',
-        code: 'MESSAGE_TOO_LONG',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "Message exceeds maximum length of 1000 characters",
+        code: "MESSAGE_TOO_LONG",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // *** NEW: Check monthly submission limit ***
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-    
-    const [monthlyCount] = await conn.execute(`
+    const lastDay = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+    );
+
+    const [monthlyCount] = await conn.execute(
+      `
       SELECT COUNT(*) as count
       FROM inquiries
       WHERE email = ?
       AND created_at >= ?
       AND created_at <= ?
-    `, [email, firstDay, lastDay]);
+    `,
+      [email, firstDay, lastDay],
+    );
 
     const MAX_MONTHLY_INQUIRIES = 3;
     if (monthlyCount[0].count >= MAX_MONTHLY_INQUIRIES) {
       const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
       return res.status(429).json({
         success: false,
-        error: `You have reached the maximum of ${MAX_MONTHLY_INQUIRIES} inquiries per month. Your limit will reset on ${nextMonth.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`,
-        code: 'MONTHLY_LIMIT_REACHED',
+        error: `You have reached the maximum of ${MAX_MONTHLY_INQUIRIES} inquiries per month. Your limit will reset on ${nextMonth.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.`,
+        code: "MONTHLY_LIMIT_REACHED",
         data: {
           current_count: monthlyCount[0].count,
           max_allowed: MAX_MONTHLY_INQUIRIES,
-          reset_date: nextMonth.toISOString()
+          reset_date: nextMonth.toISOString(),
         },
-        processingTime: `${Date.now() - startTime}ms`
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Check if email already has an active submission
     const [existingEmail] = await conn.execute(
-      'SELECT id, created_at, status FROM inquiries WHERE email = ? AND status IN (?, ?) LIMIT 1',
-      [email, 'pen', 'in_prog']
+      "SELECT id, created_at, status FROM inquiries WHERE email = ? AND status IN (?, ?) LIMIT 1",
+      [email, "pen", "in_prog"],
     );
 
     if (existingEmail.length > 0) {
       return res.status(409).json({
         success: false,
-        error: 'You have an active inquiry with this email address. Please wait for it to be resolved before submitting a new one.',
-        code: 'DUPLICATE_EMAIL',
+        error:
+          "You have an active inquiry with this email address. Please wait for it to be resolved before submitting a new one.",
+        code: "DUPLICATE_EMAIL",
         existing_inquiry_id: existingEmail[0].id,
         submitted_at: existingEmail[0].created_at,
         current_status: existingEmail[0].status,
-        processingTime: `${Date.now() - startTime}ms`
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Check if mobile number already has an active submission
     const [existingMobile] = await conn.execute(
-      'SELECT id, created_at, status FROM inquiries WHERE mobilenr = ? AND status IN (?, ?) LIMIT 1',
-      [mobilenr, 'pen', 'in_prog']
+      "SELECT id, created_at, status FROM inquiries WHERE mobilenr = ? AND status IN (?, ?) LIMIT 1",
+      [mobilenr, "pen", "in_prog"],
     );
 
     if (existingMobile.length > 0) {
       return res.status(409).json({
         success: false,
-        error: 'You have an active inquiry with this mobile number. Please wait for it to be resolved before submitting a new one.',
-        code: 'DUPLICATE_MOBILE',
+        error:
+          "You have an active inquiry with this mobile number. Please wait for it to be resolved before submitting a new one.",
+        code: "DUPLICATE_MOBILE",
         existing_inquiry_id: existingMobile[0].id,
         submitted_at: existingMobile[0].created_at,
         current_status: existingMobile[0].status,
-        processingTime: `${Date.now() - startTime}ms`
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Verify category exists
     const [categoryCheck] = await conn.execute(
-      'SELECT id FROM inquiry_categories WHERE id = ?',
-      [category_id]
+      "SELECT id FROM inquiry_categories WHERE id = ?",
+      [category_id],
     );
 
     if (categoryCheck.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid category_id',
-        code: 'INVALID_CATEGORY',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "Invalid category_id",
+        code: "INVALID_CATEGORY",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -201,24 +217,27 @@ router.post('/submit', async (req, res) => {
     const [result] = await conn.execute(
       `INSERT INTO inquiries (name, email, mobilenr, category_id, message, status, created_at, updated_at) 
        VALUES (?, ?, ?, ?, ?, 'pen', NOW(), NOW())`,
-      [name, email, mobilenr, category_id, message]
+      [name, email, mobilenr, category_id, message],
     );
 
     const inquiryId = result.insertId;
 
     // Fetch the created inquiry with category details
-    const [inquiry] = await conn.execute(`
+    const [inquiry] = await conn.execute(
+      `
       SELECT i.*, ic.name as category_name, ic.code as category_code
       FROM inquiries i
       JOIN inquiry_categories ic ON i.category_id = ic.id
       WHERE i.id = ?
-    `, [inquiryId]);
+    `,
+      [inquiryId],
+    );
 
     const processingTime = Date.now() - startTime;
 
     res.json({
       success: true,
-      message: 'Inquiry submitted successfully',
+      message: "Inquiry submitted successfully",
       data: {
         inquiry_id: inquiryId,
         name: inquiry[0].name,
@@ -227,47 +246,47 @@ router.post('/submit', async (req, res) => {
         category: {
           id: inquiry[0].category_id,
           name: inquiry[0].category_name,
-          code: inquiry[0].category_code
+          code: inquiry[0].category_code,
         },
         status: inquiry[0].status,
         created_at: inquiry[0].created_at,
         monthly_stats: {
           submissions_this_month: monthlyCount[0].count + 1,
-          remaining: MAX_MONTHLY_INQUIRIES - (monthlyCount[0].count + 1)
-        }
+          remaining: MAX_MONTHLY_INQUIRIES - (monthlyCount[0].count + 1),
+        },
       },
       meta: {
         processingTime: `${processingTime}ms`,
-        submissionTime: new Date().toISOString()
-      }
+        submissionTime: new Date().toISOString(),
+      },
     });
-
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Error submitting inquiry:', error);
-    console.error('❌ Stack trace:', error.stack);
+    console.error("❌ Error submitting inquiry:", error);
+    console.error("❌ Stack trace:", error.stack);
 
     let errorResponse = {
       success: false,
       error: "Inquiry submission failed due to server error",
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     };
 
-    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-      errorResponse.error = "Database connection failed. Please try again later.";
-      errorResponse.code = 'DB_CONNECTION_ERROR';
+    if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
+      errorResponse.error =
+        "Database connection failed. Please try again later.";
+      errorResponse.code = "DB_CONNECTION_ERROR";
       return res.status(503).json(errorResponse);
     }
 
-    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-      errorResponse.error = "Database access denied. Please contact system administrator.";
-      errorResponse.code = 'DB_ACCESS_ERROR';
+    if (error.code === "ER_ACCESS_DENIED_ERROR") {
+      errorResponse.error =
+        "Database access denied. Please contact system administrator.";
+      errorResponse.code = "DB_ACCESS_ERROR";
       return res.status(503).json(errorResponse);
     }
 
     res.status(500).json(errorResponse);
-
   } finally {
     if (conn) {
       try {
@@ -280,16 +299,16 @@ router.post('/submit', async (req, res) => {
 });
 
 // GET - Fetch all inquiries (with optional filtering)
-router.get('/', async (req, res) => {
+router.get("/", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { status, category_id, assigned_to } = req.query;
-    
+
     let query = `
       SELECT i.*, ic.name as category_name, ic.code as category_code
       FROM inquiries i
@@ -299,40 +318,40 @@ router.get('/', async (req, res) => {
     const params = [];
 
     if (status) {
-      query += ' AND i.status = ?';
+      query += " AND i.status = ?";
       params.push(status);
     }
 
     if (category_id) {
-      query += ' AND i.category_id = ?';
+      query += " AND i.category_id = ?";
       params.push(category_id);
     }
 
     if (assigned_to) {
-      query += ' AND i.assigned_to = ?';
+      query += " AND i.assigned_to = ?";
       params.push(assigned_to);
     }
 
-    query += ' ORDER BY i.created_at DESC';
+    query += " ORDER BY i.created_at DESC";
 
     const [rows] = await conn.execute(query, params);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       data: rows,
       meta: {
         count: rows.length,
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiries:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiries:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -346,47 +365,50 @@ router.get('/', async (req, res) => {
 });
 
 // GET - Fetch specific inquiry by ID
-router.get('/:inquiry_id', async (req, res) => {
+router.get("/:inquiry_id", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { inquiry_id } = req.params;
 
-    const [rows] = await conn.execute(`
+    const [rows] = await conn.execute(
+      `
       SELECT i.*, ic.name as category_name, ic.code as category_code, ic.description as category_description
       FROM inquiries i
       JOIN inquiry_categories ic ON i.category_id = ic.id
       WHERE i.id = ?
-    `, [inquiry_id]);
+    `,
+      [inquiry_id],
+    );
 
     if (rows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Inquiry not found',
-        code: 'NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+      return res.status(404).json({
+        success: false,
+        error: "Inquiry not found",
+        code: "NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: rows[0],
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiry:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiry:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -400,40 +422,43 @@ router.get('/:inquiry_id', async (req, res) => {
 });
 
 // GET - Fetch inquiries by email
-router.get('/email/:email', async (req, res) => {
+router.get("/email/:email", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { email } = req.params;
 
-    const [rows] = await conn.execute(`
+    const [rows] = await conn.execute(
+      `
       SELECT i.*, ic.name as category_name, ic.code as category_code
       FROM inquiries i
       JOIN inquiry_categories ic ON i.category_id = ic.id
       WHERE i.email = ?
       ORDER BY i.created_at DESC
-    `, [email]);
+    `,
+      [email],
+    );
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: rows,
       meta: {
         count: rows.length,
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiries by email:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiries by email:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -447,40 +472,43 @@ router.get('/email/:email', async (req, res) => {
 });
 
 // GET - Fetch inquiries by mobile number
-router.get('/mobile/:mobilenr', async (req, res) => {
+router.get("/mobile/:mobilenr", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { mobilenr } = req.params;
 
-    const [rows] = await conn.execute(`
+    const [rows] = await conn.execute(
+      `
       SELECT i.*, ic.name as category_name, ic.code as category_code
       FROM inquiries i
       JOIN inquiry_categories ic ON i.category_id = ic.id
       WHERE i.mobilenr = ?
       ORDER BY i.created_at DESC
-    `, [mobilenr]);
+    `,
+      [mobilenr],
+    );
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: rows,
       meta: {
         count: rows.length,
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiries by mobile:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiries by mobile:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -494,61 +522,62 @@ router.get('/mobile/:mobilenr', async (req, res) => {
 });
 
 // PUT - Update inquiry status
-router.put('/:inquiry_id/status', async (req, res) => {
+router.put("/:inquiry_id/status", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { inquiry_id } = req.params;
     const { status } = req.body;
 
     // Validate status
-    const validStatuses = ['pen', 'in_prog', 'res', 'clo']; // pending, in_progress, resolved, closed
+    const validStatuses = ["pen", "in_prog", "res", "clo"]; // pending, in_progress, resolved, closed
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be pen (pending), in_prog (in progress), res (resolved), or clo (closed)',
-        code: 'INVALID_STATUS',
-        processingTime: `${Date.now() - startTime}ms`
+        error:
+          "Invalid status. Must be pen (pending), in_prog (in progress), res (resolved), or clo (closed)",
+        code: "INVALID_STATUS",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     const [result] = await conn.execute(
-      'UPDATE inquiries SET status = ?, updated_at = NOW() WHERE id = ?',
-      [status, inquiry_id]
+      "UPDATE inquiries SET status = ?, updated_at = NOW() WHERE id = ?",
+      [status, inquiry_id],
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Inquiry not found',
-        code: 'NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+      return res.status(404).json({
+        success: false,
+        error: "Inquiry not found",
+        code: "NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Inquiry status updated successfully',
+    res.json({
+      success: true,
+      message: "Inquiry status updated successfully",
       data: {
         inquiry_id: parseInt(inquiry_id),
-        status: status
+        status: status,
       },
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error updating inquiry status:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error updating inquiry status:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -562,24 +591,24 @@ router.put('/:inquiry_id/status', async (req, res) => {
 });
 
 // PUT - Assign inquiry to user
-router.put('/:inquiry_id/assign', async (req, res) => {
+router.put("/:inquiry_id/assign", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { inquiry_id } = req.params;
     const { assigned_to } = req.body;
 
     // Check if assigned_to is explicitly provided in the request body
-    if (!req.body.hasOwnProperty('assigned_to')) {
+    if (!req.body.hasOwnProperty("assigned_to")) {
       return res.status(400).json({
         success: false,
-        error: 'assigned_to field is required (use null to unassign)',
-        code: 'MISSING_ASSIGNED_TO',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "assigned_to field is required (use null to unassign)",
+        code: "MISSING_ASSIGNED_TO",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
@@ -587,16 +616,16 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     if (assigned_to !== null) {
       // Check against admins_tbl instead of users_tbl since you're using admin assignments
       const [userCheck] = await conn.execute(
-        'SELECT id FROM admins_tbl WHERE id = ?',
-        [assigned_to]
+        "SELECT id FROM admins_tbl WHERE id = ?",
+        [assigned_to],
       );
 
       if (userCheck.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'Invalid assigned_to admin ID',
-          code: 'INVALID_USER',
-          processingTime: `${Date.now() - startTime}ms`
+          error: "Invalid assigned_to admin ID",
+          code: "INVALID_USER",
+          processingTime: `${Date.now() - startTime}ms`,
         });
       }
     }
@@ -605,38 +634,41 @@ router.put('/:inquiry_id/assign', async (req, res) => {
     const [result] = await conn.execute(
       assigned_to !== null
         ? "UPDATE inquiries SET assigned_to = ?, status = IF(status = 'pen', 'in_prog', status), updated_at = NOW() WHERE id = ?"
-        : 'UPDATE inquiries SET assigned_to = NULL, updated_at = NOW() WHERE id = ?',
-      assigned_to !== null ? [assigned_to, inquiry_id] : [inquiry_id]
+        : "UPDATE inquiries SET assigned_to = NULL, updated_at = NOW() WHERE id = ?",
+      assigned_to !== null ? [assigned_to, inquiry_id] : [inquiry_id],
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Inquiry not found',
-        code: 'NOT_FOUND',
-        processingTime: `${Date.now() - startTime}ms`
+      return res.status(404).json({
+        success: false,
+        error: "Inquiry not found",
+        code: "NOT_FOUND",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
-    res.json({ 
-      success: true, 
-      message: assigned_to !== null ? 'Inquiry assigned successfully' : 'Inquiry unassigned successfully',
+    res.json({
+      success: true,
+      message:
+        assigned_to !== null
+          ? "Inquiry assigned successfully"
+          : "Inquiry unassigned successfully",
       data: {
         inquiry_id: parseInt(inquiry_id),
-        assigned_to: assigned_to
+        assigned_to: assigned_to,
       },
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error assigning inquiry:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error assigning inquiry:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -649,16 +681,15 @@ router.put('/:inquiry_id/assign', async (req, res) => {
   }
 });
 
-
 // GET - Analytics/Statistics for inquiries
-router.get('/analytics/stats', async (req, res) => {
+router.get("/analytics/stats", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     // Get inquiry counts by status
     const [statusStats] = await conn.execute(`
       SELECT 
@@ -705,20 +736,20 @@ router.get('/analytics/stats', async (req, res) => {
         status_statistics: statusStats,
         category_statistics: categoryStats,
         recent_inquiries: recentInquiries,
-        assignment_statistics: assignmentStats[0]
+        assignment_statistics: assignmentStats[0],
       },
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching inquiry statistics:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching inquiry statistics:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -731,64 +762,74 @@ router.get('/analytics/stats', async (req, res) => {
   }
 });
 
-router.get('/user/monthly-count', async (req, res) => {
+router.get("/user/monthly-count", async (req, res) => {
   const startTime = Date.now();
   let conn = null;
 
   try {
     const pool = getPool();
     conn = await pool.getConnection();
-    
+
     const { email } = req.query;
 
     if (!email) {
       return res.status(400).json({
         success: false,
-        error: 'Email parameter is required',
-        code: 'MISSING_EMAIL',
-        processingTime: `${Date.now() - startTime}ms`
+        error: "Email parameter is required",
+        code: "MISSING_EMAIL",
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 
     // Get start and end of current month
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const lastDay = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+    );
 
-    const [rows] = await conn.execute(`
+    const [rows] = await conn.execute(
+      `
       SELECT COUNT(*) as count
       FROM inquiries
       WHERE email = ?
       AND created_at >= ?
       AND created_at <= ?
-    `, [email, firstDay, lastDay]);
+    `,
+      [email, firstDay, lastDay],
+    );
 
     const count = rows[0].count;
     const maxInquiries = 3;
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: {
         count: count,
         remaining: Math.max(0, maxInquiries - count),
         max_allowed: maxInquiries,
         period: {
           start: firstDay.toISOString(),
-          end: lastDay.toISOString()
-        }
+          end: lastDay.toISOString(),
+        },
       },
       meta: {
-        processingTime: `${Date.now() - startTime}ms`
-      }
+        processingTime: `${Date.now() - startTime}ms`,
+      },
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Error fetching monthly inquiry count:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error("Error fetching monthly inquiry count:", error);
+    res.status(500).json({
+      success: false,
       error: error.message,
-      code: 'SERVER_ERROR',
-      processingTime: `${processingTime}ms`
+      code: "SERVER_ERROR",
+      processingTime: `${processingTime}ms`,
     });
   } finally {
     if (conn) {
@@ -800,6 +841,5 @@ router.get('/user/monthly-count', async (req, res) => {
     }
   }
 });
-
 
 module.exports = router;

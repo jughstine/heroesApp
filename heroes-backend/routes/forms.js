@@ -146,43 +146,6 @@ router.post("/submit", async (req, res) => {
       });
     }
 
-    const psaRequirements = requirements.filter(
-      (r) =>
-        r.requirement_type === "crs4_reference" ||
-        r.requirement_type === "crs5_reference",
-    );
-
-    if (psaRequirements.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "PSA reference number is required",
-        code: "MISSING_PSA_REFERENCE",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
-    if (psaRequirements.length > 1) {
-      return res.status(400).json({
-        success: false,
-        error: "Only one PSA reference number should be provided",
-        code: "MULTIPLE_PSA_REFERENCES",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
-    const psaReferenceNumber = String(psaRequirements[0].value || "")
-      .replace(/\s+/g, "")
-      .trim();
-
-    if (!psaReferenceNumber) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid PSA reference number",
-        code: "INVALID_PSA_REFERENCE",
-        processingTime: `${Date.now() - startTime}ms`,
-      });
-    }
-
     let finalLongitude = null;
     let finalLatitude = null;
 
@@ -303,8 +266,6 @@ router.post("/submit", async (req, res) => {
         form_type_id,
         location_status: locationStatus,
         abroad_status,
-        psa_reference_number: psaReferenceNumber,
-        psa_processing_status: "pending",
         location: {
           longitude: finalLongitude,
           latitude: finalLatitude,

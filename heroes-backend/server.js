@@ -99,22 +99,19 @@ app.use(
   }),
 );
 
-// mobile app routes
 app.use("/api/heroes", heroesRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/announcements", announcementsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/forms", formsRoutes);
 app.use("/api/inquiries", inquiriesRouter);
-
-// web
 app.use("/api/admin", adminAuthRoutes);
 app.use("/api/admin_forms", adminForms);
 app.use("/api", psaRoutes);
 
 createManualTriggerRoute(app);
 
-// Check all available routes
+// ─── check routes ───────────────────────────────────────────────────────────────────
 app.get("/api/check-routes", (req, res) => {
   res.json({
     success: true,
@@ -138,7 +135,7 @@ app.get("/api/check-routes", (req, res) => {
   });
 });
 
-// health check endpoint
+// ─── health check ───────────────────────────────────────────────────────────────────
 app.get("/api/health", async (req, res) => {
   try {
     let dbStatus = "unknown";
@@ -231,7 +228,7 @@ const shutdown = async () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-// Start server
+// ─── start server ───────────────────────────────────────────────────────────────────
 const startServer = async () => {
   try {
     await initializeDatabase();
@@ -250,9 +247,7 @@ const startServer = async () => {
   }
 };
 
-//
-// test server
-//
+// ─── test server ───────────────────────────────────────────────────────────────────
 
 app.get("/api/diagnostic/database", async (req, res) => {
   const startTime = Date.now();

@@ -5,20 +5,10 @@ const {
   S3Client,
   ListObjectsV2Command,
   GetObjectCommand,
-  PutObjectCommand,
   DeleteObjectCommand,
+  PutObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-
-const psaUploadClient = new S3Client({
-  endpoint: "https://sgp1.digitaloceanspaces.com",
-  region: "us-east-1",
-  credentials: {
-    accessKeyId: process.env.PSA_PGMC_KEY,
-    secretAccessKey: process.env.PSA_PGMC_SECRET,
-  },
-  forcePathStyle: false,
-});
 
 const psaBucket = new S3Client({
   region: "ap-southeast-1",
@@ -133,14 +123,7 @@ router.get("/psa/orders/:reference_number/download", async (req, res) => {
     }
 
     const json = await response.json();
-    console.log("PSA download response:", JSON.stringify(json, null, 2));
-
-    return res.json({
-      success: true,
-      data: {
-        url: json.url,
-      },
-    });
+    return res.json({ success: true, data: { url: json.url } });
   } catch (err) {
     console.error("PSA download error:", err);
     return res.status(500).json({
@@ -150,96 +133,68 @@ router.get("/psa/orders/:reference_number/download", async (req, res) => {
   }
 });
 
+async function resolveReferenceNumber(pool, id) {
+  const REQUIREMENTS_MAP = {
+    5: { table: "upd_requirements", column: "form_id" },
+  };
+
+  // Path 1: psa_processing_jobs
+  const [jobRows] = await pool.execute(
+    `SELECT reference_number FROM psa_processing_jobs WHERE form_submission_id = ? LIMIT 1`,
+    [id],
+  );
+  if (jobRows.length > 0) return jobRows[0].reference_number;
+
+  // Path 2: requirements table based on form_type_id
+  const [formRows] = await pool.execute(
+    `SELECT form_type_id FROM form_submission WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  if (formRows.length > 0) {
+    const mapping = REQUIREMENTS_MAP[formRows[0].form_type_id];
+    if (mapping) {
+      const [reqRows] = await pool.execute(
+        `SELECT value FROM ${mapping.table}
+         WHERE ${mapping.column} = ?
+           AND requirement_type IN ('crs4_reference', 'crs5_reference')
+         LIMIT 1`,
+        [id],
+      );
+      if (reqRows.length > 0) return reqRows[0].value;
+    }
+  }
+
+  return null;
+}
+
 router.get("/psa_form/:id/psa-document", async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
 
   try {
-    // Step 1 — check our own Spaces first
-    const [rows] = await pool.execute(
-      `SELECT file_url, file_key, file_name FROM psa_documents WHERE form_submission_id = ? LIMIT 1`,
-      [id],
-    );
+    // Step 1 — check our own Spaces first (lookup by reference_number via jobs/order_data)
+    const reference_number = await resolveReferenceNumber(pool, id);
 
-    if (rows.length > 0) {
-      const { file_key, file_name } = rows[0];
-      const command = new GetObjectCommand({
-        Bucket: process.env.SPACES_BUCKET,
-        Key: file_key,
-      });
-      const presignedUrl = await getSignedUrl(psaPgmcBucket, command, {
-        expiresIn: 900,
-      });
-      return res.json({
-        success: true,
-        source: "spaces",
-        data: { file_url: presignedUrl, file_name },
-      });
-    }
-
-    // Step 2 — not in Spaces, resolve reference_number using multi-path lookup
-    console.log(
-      `⚠️ PSA document not in Spaces for form ${id}, falling back to PSA API`,
-    );
-
-    const REQUIREMENTS_MAP = {
-      5: { table: "upd_requirements", column: "form_id" },
-    };
-
-    let reference_number = null;
-
-    // Path 1: psa_processing_jobs
-    const [jobRows] = await pool.execute(
-      `SELECT reference_number FROM psa_processing_jobs WHERE form_submission_id = ? LIMIT 1`,
-      [id],
-    );
-    if (jobRows.length > 0) {
-      reference_number = jobRows[0].reference_number;
-    }
-
-    // Path 2: psa_order_data directly
-    if (!reference_number) {
-      const [orderRows] = await pool.execute(
-        `SELECT reference_number FROM psa_order_data WHERE form_submission_id = ? LIMIT 1`,
-        [id],
-      );
-      if (orderRows.length > 0) {
-        reference_number = orderRows[0].reference_number;
-      }
-    }
-
-    // Path 3: psa_documents by form_submission_id (already checked above for Spaces,
-    // but we can still grab the reference_number from it)
-    if (!reference_number) {
+    if (reference_number) {
       const [docRows] = await pool.execute(
-        `SELECT reference_number FROM psa_documents WHERE form_submission_id = ? LIMIT 1`,
-        [id],
+        `SELECT file_key, file_name FROM psa_documents WHERE reference_number = ? LIMIT 1`,
+        [reference_number],
       );
-      if (docRows.length > 0) {
-        reference_number = docRows[0].reference_number;
-      }
-    }
 
-    // Path 4: requirements table based on form_type_id
-    if (!reference_number) {
-      const [formRows] = await pool.execute(
-        `SELECT form_type_id FROM form_submission WHERE id = ? LIMIT 1`,
-        [id],
-      );
-      if (formRows.length > 0) {
-        const mapping = REQUIREMENTS_MAP[formRows[0].form_type_id];
-        if (mapping) {
-          const [reqRows] = await pool.execute(
-            `SELECT value FROM ${mapping.table}
-             WHERE ${mapping.column} = ?
-               AND requirement_type IN ('crs4_reference', 'crs5_reference')
-             LIMIT 1`,
-            [id],
-          );
-          if (reqRows.length > 0) {
-            reference_number = reqRows[0].value;
-          }
-        }
+      if (docRows.length > 0) {
+        const { file_key, file_name } = docRows[0];
+        const command = new GetObjectCommand({
+          Bucket: process.env.SPACES_BUCKET,
+          Key: file_key,
+        });
+        const presignedUrl = await getSignedUrl(psaPgmcBucket, command, {
+          expiresIn: 900,
+        });
+        return res.json({
+          success: true,
+          source: "spaces",
+          data: { file_url: presignedUrl, file_name },
+        });
       }
     }
 
@@ -250,6 +205,7 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
       });
     }
 
+    // Step 2 — fall back to PSA API
     const downloadResponse = await fetch(
       `${process.env.PSA_API_BASE_URL}/orders/${reference_number}/download`,
       {
@@ -280,11 +236,10 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
       });
     }
 
-    // Download and save to Spaces in the background so next request is faster
+    // Step 3 — background save to Spaces for next time
     fetch(psaPresignedUrl)
       .then((r) => r.arrayBuffer())
       .then(async (buffer) => {
-        const { PutObjectCommand } = require("@aws-sdk/client-s3");
         const pdfBuffer = Buffer.from(buffer);
         const key = `PSA/${reference_number}.pdf`;
         const endpoint = process.env.SPACES_ENDPOINT.replace("https://", "");
@@ -300,20 +255,16 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
         );
 
         await pool.execute(
-          `INSERT INTO psa_documents
-    (form_submission_id, reference_number, file_name, file_key, file_url, created_at)
-   VALUES (?, ?, ?, ?, ?, NOW())
-   ON DUPLICATE KEY UPDATE
-     file_key = VALUES(file_key),
-     file_url = VALUES(file_url)`,
-          [id, reference_number, `${reference_number}.pdf`, key, fileUrl], // ← added id
+          `INSERT INTO psa_documents (reference_number, file_name, file_key, file_url, created_at)
+           VALUES (?, ?, ?, ?, NOW())
+           ON DUPLICATE KEY UPDATE
+             file_key = VALUES(file_key),
+             file_url = VALUES(file_url)`,
+          [reference_number, `${reference_number}.pdf`, key, fileUrl],
         );
-
-        console.log(`✅ Background save — PDF stored to Spaces for form ${id}`);
       })
       .catch((err) => console.error("❌ Background PDF save failed:", err));
 
-    // Return PSA's presigned URL immediately while background save runs
     return res.json({
       success: true,
       source: "psa_api",
@@ -336,24 +287,16 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
   const pool = getPool();
 
   try {
-    // Map form_type_id to its requirements table and reference column
     const REQUIREMENTS_MAP = {
       5: { table: "upd_requirements", column: "form_id" },
-      // Add more form types here as needed:
-      // 1: { table: "dl_requirements",  column: "form_id" },
-      // 3: { table: "rst_requirements", column: "form_id" },
-      // 4: { table: "top_requirements", column: "form_id" },
     };
 
-    // Single query — tries all lookup paths at once
-    // Path 1: psa_order_data.form_submission_id = id
-    // Path 2: via psa_processing_jobs.form_submission_id = id
-    // Path 3: via psa_documents.form_submission_id = id
+    // Try all lookup paths — no longer using psa_documents.form_submission_id
     let [rows] = await pool.execute(
       `SELECT po.state, po.type, po.reference_number,
               po.requester_name, po.requester_email, po.raw_json, po.created_at
        FROM psa_order_data po
-       WHERE po.form_submission_id = ?
+       WHERE po.reference_number = ?
 
        UNION
 
@@ -363,20 +306,11 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
        INNER JOIN psa_processing_jobs pj ON pj.reference_number = po.reference_number
        WHERE pj.form_submission_id = ?
 
-       UNION
-
-       SELECT po.state, po.type, po.reference_number,
-              po.requester_name, po.requester_email, po.raw_json, po.created_at
-       FROM psa_order_data po
-       INNER JOIN psa_documents pd ON pd.reference_number = po.reference_number
-       WHERE pd.form_submission_id = ?
-
        LIMIT 1`,
-      [id, id, id],
+      [id, id],
     );
 
-    // Path 4 — look up reference number from requirements table
-    // based on the form's type, then find order data by reference number
+    // Path 3 — requirements table fallback
     if (rows.length === 0) {
       const [formRows] = await pool.execute(
         `SELECT form_type_id FROM form_submission WHERE id = ? LIMIT 1`,
@@ -385,7 +319,6 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
 
       if (formRows.length > 0) {
         const mapping = REQUIREMENTS_MAP[formRows[0].form_type_id];
-
         if (mapping) {
           const [reqRows] = await pool.execute(
             `SELECT value FROM ${mapping.table}
@@ -447,25 +380,40 @@ router.get("/psa/bucket/files", async (req, res) => {
     const command = new ListObjectsV2Command({
       Bucket: process.env.PSA_BUCKET,
     });
-
     const data = await psaBucket.send(command);
     const files = data.Contents || [];
 
-    // Separate PDFs and JSONs
     const pdfs = files.filter((f) => f.Key.endsWith(".pdf"));
     const jsons = files.filter((f) => f.Key.endsWith(".json"));
 
-    // Pair them by reference number (filename without extension)
+    const jsonKeyMap = new Map(
+      jsons.map((j) => [
+        j.Key.replace(/^.*\//, "").replace(".json", ""),
+        j.Key,
+      ]),
+    );
+
+    const jsonContentMap = new Map();
+    await Promise.all(
+      [...jsonKeyMap.entries()].map(async ([refNumber, key]) => {
+        try {
+          const obj = await psaBucket.send(
+            new GetObjectCommand({ Bucket: process.env.PSA_BUCKET, Key: key }),
+          );
+          const chunks = [];
+          for await (const chunk of obj.Body) chunks.push(chunk);
+          const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+          jsonContentMap.set(refNumber, Array.isArray(raw) ? raw[0] : raw);
+        } catch (e) {
+          console.warn(`Failed to fetch JSON for ${refNumber}:`, e.message);
+          jsonContentMap.set(refNumber, null);
+        }
+      }),
+    );
+
     const paired = await Promise.all(
       pdfs.map(async (pdf) => {
         const refNumber = pdf.Key.replace(/^.*\//, "").replace(".pdf", "");
-
-        // Find matching JSON
-        const matchingJson = jsons.find(
-          (j) => j.Key.replace(/^.*\//, "").replace(".json", "") === refNumber,
-        );
-
-        // Generate presigned URL for PDF
         const pdfUrl = await getSignedUrl(
           psaBucket,
           new GetObjectCommand({
@@ -474,50 +422,24 @@ router.get("/psa/bucket/files", async (req, res) => {
           }),
           { expiresIn: 900 },
         );
-
-        // Generate presigned URL for JSON if exists
-        let jsonData = null;
-        if (matchingJson) {
-          const jsonUrl = await getSignedUrl(
-            psaBucket,
-            new GetObjectCommand({
-              Bucket: process.env.PSA_BUCKET,
-              Key: matchingJson.Key,
-            }),
-            { expiresIn: 900 },
-          );
-
-          // Fetch and parse JSON content
-          try {
-            const jsonResponse = await fetch(jsonUrl);
-            const jsonRaw = await jsonResponse.json();
-            // unwrap array if needed
-            jsonData = Array.isArray(jsonRaw) ? jsonRaw[0] : jsonRaw;
-          } catch (e) {
-            jsonData = null;
-          }
-        }
-
         return {
           reference_number: refNumber,
           pdf_key: pdf.Key,
           pdf_url: pdfUrl,
           pdf_size: pdf.Size,
           last_modified: pdf.LastModified,
-          json_data: jsonData,
+          json_data: jsonContentMap.get(refNumber) ?? null,
         };
       }),
     );
 
-    return res.json({
-      success: true,
-      data: paired,
-    });
+    return res.json({ success: true, data: paired });
   } catch (error) {
     console.error("PSA bucket list error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to list PSA bucket files",
+      detail: error.message,
     });
   }
 });
@@ -525,93 +447,73 @@ router.get("/psa/bucket/files", async (req, res) => {
 router.get("/psa/spaces/files", async (req, res) => {
   const pool = getPool();
 
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 50;
+  const offset = (page - 1) * limit;
+
   try {
-    const [rows] = await pool.execute(
-      `SELECT 
-    pd.form_submission_id,
-    pd.reference_number,
-    pd.file_name,
-    pd.file_key,
-    pd.created_at,
-    po.state,
-    po.type,
-    po.requester_name,
-    po.requester_email,
-    po.raw_json,
-    fs.form_reference
-   FROM psa_documents pd
-   LEFT JOIN psa_order_data po 
-     ON po.reference_number = pd.reference_number
-   LEFT JOIN form_submission fs
-     ON fs.id = pd.form_submission_id
-   GROUP BY 
-     pd.file_key,
-     pd.form_submission_id,
-     pd.reference_number,
-     pd.file_name,
-     pd.created_at,
-     po.state,
-     po.type,
-     po.requester_name,
-     po.requester_email,
-     po.raw_json,
-     fs.form_reference
-   ORDER BY pd.created_at DESC`,
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(DISTINCT pd.reference_number) as total FROM psa_documents pd`,
     );
 
-    // Generate presigned URLs for each file
-    const files = await Promise.all(
-      rows.map(async (row) => {
-        const command = new GetObjectCommand({
-          Bucket: process.env.SPACES_BUCKET,
-          Key: row.file_key,
-        });
-        const presignedUrl = await getSignedUrl(psaPgmcBucket, command, {
-          expiresIn: 900,
-        });
-
-        return {
-          form_submission_id: row.form_submission_id,
-          reference_number: row.reference_number,
-          file_name: row.file_name,
-          file_key: row.file_key,
-          pdf_url: presignedUrl,
-          created_at: row.created_at,
-          state: row.state,
-          type: row.type,
-          requester_name: row.requester_name,
-          requester_email: row.requester_email,
-        };
-      }),
+    const [rows] = await pool.query(
+      `SELECT
+         pd.reference_number,
+         pd.file_name,
+         pd.file_key,
+         pd.created_at,
+         po.state,
+         po.type,
+         po.requester_name,
+         po.requester_email,
+         fs.form_reference
+       FROM psa_documents pd
+       LEFT JOIN psa_order_data po ON po.reference_number = pd.reference_number
+       LEFT JOIN form_submission fs ON fs.id = pd.reference_number
+       ORDER BY pd.created_at DESC
+       `,
     );
 
-    return res.json({
-      success: true,
-      data: files,
-    });
+    return res.json({ success: true, data: rows, total, page, limit });
   } catch (error) {
     console.error("Spaces files list error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to list Spaces files",
+      detail: error.message,
     });
+  }
+});
+
+router.get("/psa/spaces/:reference_number/url", async (req, res) => {
+  const pool = getPool();
+  const { reference_number } = req.params;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
+      [reference_number],
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false });
+
+    const command = new GetObjectCommand({
+      Bucket: process.env.SPACES_BUCKET,
+      Key: rows[0].file_key,
+    });
+    const url = await getSignedUrl(psaPgmcBucket, command, { expiresIn: 900 });
+    return res.json({ success: true, data: { url } });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
 router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
-
-  console.log(`🗑️ Purge request for: ${reference_number}`);
-
   try {
-    // Step 1 — get the file_key from DB
     const [rows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-
-    console.log(`📦 DB rows found:`, rows);
 
     if (rows.length === 0) {
       return res.status(404).json({
@@ -621,9 +523,8 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
     }
 
     const { file_key } = rows[0];
-    console.log(`🔑 file_key: ${file_key}`);
 
-    // Step 2 — delete PDF from Spaces
+    // Delete PDF from Spaces
     try {
       await psaPgmcBucket.send(
         new DeleteObjectCommand({
@@ -631,7 +532,6 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
           Key: file_key,
         }),
       );
-      console.log(`✅ PDF deleted from Spaces`);
     } catch (s3Err) {
       console.error(`❌ S3 delete PDF failed:`, s3Err);
       return res.status(500).json({
@@ -640,53 +540,29 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
       });
     }
 
-    // Step 3 — delete JSON sidecar (best effort)
-    const jsonKey = file_key.replace(".pdf", ".json");
+    // Delete JSON sidecar (best effort)
     try {
       await psaPgmcBucket.send(
         new DeleteObjectCommand({
           Bucket: process.env.SPACES_BUCKET,
-          Key: jsonKey,
+          Key: file_key.replace(".pdf", ".json"),
         }),
       );
-      console.log(`✅ JSON sidecar deleted`);
-    } catch (_) {
-      console.log(`ℹ️ No JSON sidecar found (OK)`);
-    }
+    } catch (_) {}
 
-    // Step 4 — mark purged in psa_order_data
-    try {
-      await pool.execute(
-        `UPDATE psa_order_data
-         SET state = 'purged', purged_at = NOW(), updated_at = NOW()
-         WHERE reference_number = ?`,
-        [reference_number],
-      );
-      console.log(`✅ psa_order_data updated`);
-    } catch (dbErr) {
-      console.error(`❌ psa_order_data update failed:`, dbErr);
-      return res.status(500).json({
-        success: false,
-        message: `DB update failed: ${dbErr.message}`,
-      });
-    }
+    // Mark purged in psa_order_data
+    await pool.execute(
+      `UPDATE psa_order_data
+       SET state = 'purged', purged_at = NOW(), updated_at = NOW()
+       WHERE reference_number = ?`,
+      [reference_number],
+    );
 
-    // Step 5 — delete from psa_documents
-    try {
-      await pool.execute(
-        `DELETE FROM psa_documents WHERE reference_number = ?`,
-        [reference_number],
-      );
-      console.log(`✅ psa_documents row deleted`);
-    } catch (dbErr) {
-      console.error(`❌ psa_documents delete failed:`, dbErr);
-      return res.status(500).json({
-        success: false,
-        message: `DB delete failed: ${dbErr.message}`,
-      });
-    }
+    // Remove from psa_documents
+    await pool.execute(`DELETE FROM psa_documents WHERE reference_number = ?`, [
+      reference_number,
+    ]);
 
-    console.log(`✅ Purge complete for ${reference_number}`);
     return res.json({
       success: true,
       message: `Document ${reference_number} has been purged from Spaces`,
@@ -700,16 +576,54 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
   }
 });
 
+// Stream PDF directly without an internal HTTP self-call
 router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
   const { id } = req.params;
+  const pool = getPool();
 
   try {
-    // Reuse your existing logic to get the file_url
-    const docResponse = await fetch(
-      `${process.env.SPACES_ENDPOINT}/psa_form/${id}/psa-document`,
+    const reference_number = await resolveReferenceNumber(pool, id);
+    if (!reference_number) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No PSA job found for this form" });
+    }
+
+    const [docRows] = await pool.execute(
+      `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
+      [reference_number],
     );
-    const docJson = await docResponse.json();
-    const fileUrl = docJson?.data?.file_url;
+
+    let fileUrl;
+
+    if (docRows.length > 0) {
+      // Serve from Spaces
+      const command = new GetObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: docRows[0].file_key,
+      });
+      fileUrl = await getSignedUrl(psaPgmcBucket, command, { expiresIn: 900 });
+    } else {
+      // Fall back to PSA API
+      const downloadResponse = await fetch(
+        `${process.env.PSA_API_BASE_URL}/orders/${reference_number}/download`,
+        {
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.PSA_API_TOKEN}`,
+          },
+        },
+      );
+      if (!downloadResponse.ok) {
+        return res.status(downloadResponse.status).json({
+          success: false,
+          message: "Failed to get download URL from PSA",
+        });
+      }
+      const json = await downloadResponse.json();
+      fileUrl = json?.url;
+    }
 
     if (!fileUrl) {
       return res.status(404).json({ success: false, message: "No PDF found" });

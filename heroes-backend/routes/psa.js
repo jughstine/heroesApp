@@ -76,17 +76,25 @@ router.get("/psa/orders/:reference_number", async (req, res) => {
 
     const json = await response.json();
 
+    const raw =
+      typeof row.raw_json === "string"
+        ? JSON.parse(row.raw_json)
+        : row.raw_json;
+
     return res.json({
       success: true,
       data: {
-        state: json.data.state,
-        reference_number: json.data.reference_number,
-        type: json.data.type,
-        created_at: json.data.created_at,
-        purged_at: json.data.purged_at,
+        state: row.state,
+        type: row.type,
+        reference_number: row.reference_number,
+        created_at: raw?.created_at,
+        purged_at: raw?.purged_at,
         requester: {
-          name: json.data.requester?.name,
-          email: json.data.requester?.email,
+          name: row.requester_name,
+          email: row.requester_email,
+          primary_last_name: raw?.requester?.primary_last_name,
+          primary_first_name: raw?.requester?.primary_first_name,
+          primary_middle_name: raw?.requester?.primary_middle_name,
         },
       },
     });
@@ -350,7 +358,10 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
     }
 
     const row = rows[0];
-    const raw = row.raw_json;
+    const raw =
+      typeof row.raw_json === "string"
+        ? JSON.parse(row.raw_json)
+        : row.raw_json;
 
     return res.json({
       success: true,
@@ -358,11 +369,14 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
         state: row.state,
         type: row.type,
         reference_number: row.reference_number,
-        created_at: raw?.data?.created_at,
-        purged_at: raw?.data?.purged_at,
+        created_at: raw?.created_at,
+        purged_at: raw?.purged_at,
         requester: {
           name: row.requester_name,
           email: row.requester_email,
+          primary_last_name: raw?.requester?.primary_last_name,
+          primary_first_name: raw?.requester?.primary_first_name,
+          primary_middle_name: raw?.requester?.primary_middle_name,
         },
       },
     });

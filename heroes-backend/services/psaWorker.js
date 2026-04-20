@@ -99,34 +99,45 @@ async function pollSpacesForNewFiles() {
 
     console.log(`📂 PSA poller — found ${pdfs.length} PDF(s) in Spaces`);
 
+    // ── Bulk fetch all known reference numbers in 2 queries ──
+    const [existingJobRows] = await pool.execute(
+      `SELECT reference_number FROM psa_processing_jobs`,
+    );
+    const [existingDocRows] = await pool.execute(
+      `SELECT reference_number FROM psa_documents`,
+    );
+
+    const jobSet = new Set(existingJobRows.map((r) => r.reference_number));
+    const docSet = new Set(existingDocRows.map((r) => r.reference_number));
+
+    console.log(
+      `📊 PSA poller — ${jobSet.size} jobs, ${docSet.size} docs in DB`,
+    );
+
     for (const pdf of pdfs) {
       const referenceNumber = pdf.Key.replace(/^PSA\//, "").replace(
         /\.pdf$/,
         "",
       );
 
-      if (!referenceNumber) continue;
+      if (!referenceNumber) {
+        console.log(`⚠️ Empty reference number for key: ${pdf.Key}`);
+        continue;
+      }
 
-      // Skip if a job already exists for this reference number
-      const [existingJobs] = await pool.execute(
-        `SELECT id FROM psa_processing_jobs WHERE reference_number = ? LIMIT 1`,
-        [referenceNumber],
-      );
+      if (jobSet.has(referenceNumber)) continue;
 
-      if (existingJobs.length > 0) continue;
-
-      // Skip if already processed
-      const [existingDocs] = await pool.execute(
-        `SELECT id FROM psa_documents WHERE reference_number = ? LIMIT 1`,
-        [referenceNumber],
-      );
-
-      if (existingDocs.length > 0) {
+      if (docSet.has(referenceNumber)) {
         console.log(
           `⏭️  PSA poller — ${referenceNumber} already in psa_documents, skipping`,
         );
         continue;
       }
+
+      // No job AND no doc
+      console.log(
+        `🔍 No job, no doc — creating job for: "${referenceNumber}" (key: ${pdf.Key})`,
+      );
 
       await pool.execute(
         `INSERT INTO psa_processing_jobs
@@ -135,15 +146,12 @@ async function pollSpacesForNewFiles() {
         [referenceNumber],
       );
 
-      console.log(
-        `✅ PSA poller — created job for reference number: ${referenceNumber}`,
-      );
+      console.log(`✅ PSA poller — created job for: ${referenceNumber}`);
     }
   } catch (err) {
     console.error("❌ PSA poller error:", err);
   }
 }
-
 // ─── Worker ───────────────────────────────────────────────────────────────────
 
 const MAX_ATTEMPTS = 5;

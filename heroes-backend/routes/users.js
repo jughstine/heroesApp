@@ -559,7 +559,6 @@ async function insertAuditLog(
 // ========================================
 // SIGNUP
 // ========================================
-
 const calculateAge = (birthDate) => {
   const today = new Date();
   let age = today.getFullYear() - birthDate.getFullYear();
@@ -800,7 +799,7 @@ router.post(
                         WHERE p.hero_ndx = ?
                         AND p.source_table = 'heroes_tbl'
                         AND p.type = 'B'
-                        AND u.status NOT IN ('DEL')
+                        AND u.account_status != 'deleted'
                         FOR UPDATE`,
               [heroData.NDX],
             );
@@ -1010,7 +1009,7 @@ router.post(
                     AND p.b_type = ?
                     AND p.type = 'B'
                     AND p.source_table = 'beneficiaries_table'
-                    AND u.status NOT IN ('DEL')
+                    AND u.account_status != 'deleted'
                     FOR UPDATE`,
             [
               normalizedFirstname,
@@ -1293,7 +1292,7 @@ router.post(
                 AND UPPER(TRIM(h.FIRSTNAME)) = ?
                 AND UPPER(TRIM(h.LASTNAME)) = ?
                 AND p.source_table = ?
-                AND u.status NOT IN ('DEL')
+                AND u.account_status != 'deleted'
                 FOR UPDATE`,
           [
             normalizedAfpsnNumeric,
@@ -1582,52 +1581,39 @@ router.post(
               isMinor: validationData.is_minor,
             });
 
-            // Check if this is an active beneficiary from heroes_tbl or a new application
             if (validationData.source_table === "heroes_tbl") {
               const [heroCheck] = await connection.execute(
                 `SELECT p.id FROM pensioners_tbl p 
-                             WHERE p.hero_ndx = ? AND p.source_table = 'heroes_tbl' AND p.type = 'B'
-                             FOR UPDATE`,
+                  WHERE p.hero_ndx = ? AND p.source_table = 'heroes_tbl' AND p.type = 'B'
+                  FOR UPDATE`,
                 [validationData.hero_ndx],
               );
 
               if (heroCheck.length > 0) {
-                logger.error(
-                  "Record already claimed:",
-                  validationData.hero_ndx,
+                pensionerId = heroCheck[0].id;
+                logger.info(
+                  "Reusing existing beneficiary pensioner record:",
+                  pensionerId,
                 );
-                throw {
-                  code: "RECORD_ALREADY_CLAIMED",
-                  statusCode: 409,
-                  message: "Account already exists for this beneficiary",
-                };
+              } else {
+                const [pensionerResult] = await connection.execute(
+                  `INSERT INTO pensioners_tbl 
+                    (hero_ndx, source_table, type, bos, b_type, 
+                      principal_afpsn, principal_firstname, principal_lastname) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [
+                    validationData.hero_ndx,
+                    "heroes_tbl",
+                    "B",
+                    null,
+                    validationData.b_type || null,
+                    validationData.principal_afpsn || null,
+                    validationData.principal_first_name || null,
+                    validationData.principal_last_name || null,
+                  ],
+                );
+                pensionerId = pensionerResult.insertId;
               }
-
-              // Insert pensioner record pointing to heroes_tbl
-              const [pensionerResult] = await connection.execute(
-                `INSERT INTO pensioners_tbl 
-                             (hero_ndx, source_table, type, bos, b_type, 
-                              principal_afpsn, principal_firstname, principal_lastname, account_status) 
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  validationData.hero_ndx,
-                  "heroes_tbl",
-                  "B",
-                  null,
-                  validationData.b_type || null,
-                  validationData.principal_afpsn || null,
-                  validationData.principal_first_name || null,
-                  validationData.principal_last_name || null,
-                  "active",
-                ],
-              );
-
-              pensionerId = pensionerResult.insertId;
-              if (!pensionerId) {
-                logger.error("Failed to create pensioner record - no insertId");
-                throw new Error("Failed to create pensioner record");
-              }
-              logger.info("Pensioner record created:", pensionerId);
             } else {
               // New beneficiary application
               const [existingBeneficiary] = await connection.execute(
@@ -1691,7 +1677,7 @@ router.post(
                 `INSERT INTO pensioners_tbl 
                              (hero_ndx, source_table, type, bos, b_type, 
                               principal_afpsn, principal_firstname, principal_lastname, 
-                              principal_ndx, account_status) 
+                              principal_ndx) 
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                   beneficiaryNdx,
@@ -1716,45 +1702,33 @@ router.post(
             }
           } else {
             // === PRINCIPAL (Type P) ===
-            logger.info("Processing principal account");
-
             const [heroCheck] = await connection.execute(
               `SELECT p.id FROM pensioners_tbl p 
-                         WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
-                         FOR UPDATE`,
+                WHERE p.hero_ndx = ? AND p.source_table = ? AND p.type = 'P'
+                FOR UPDATE`,
               [validationData.hero_ndx, validationData.source_table],
             );
 
             if (heroCheck.length > 0) {
-              logger.error(
-                "Principal record already claimed:",
-                validationData.hero_ndx,
+              pensionerId = heroCheck[0].id;
+              logger.info(
+                "Reusing existing principal pensioner record:",
+                pensionerId,
               );
-              throw {
-                code: "RECORD_ALREADY_CLAIMED",
-                statusCode: 409,
-                message: "Account already exists for this record",
-              };
+            } else {
+              const [pensionerResult] = await connection.execute(
+                `INSERT INTO pensioners_tbl (hero_ndx, source_table, type, bos) 
+                  VALUES (?, ?, ?, ?)`,
+                [
+                  validationData.hero_ndx,
+                  validationData.source_table,
+                  "P",
+                  validationData.bos || null,
+                ],
+              );
+              pensionerId = pensionerResult.insertId;
+              logger.info("New pensioner record created:", pensionerId);
             }
-
-            const [pensionerResult] = await connection.execute(
-              `INSERT INTO pensioners_tbl (hero_ndx, source_table, type, bos, account_status) 
-                         VALUES (?, ?, ?, ?, ?)`,
-              [
-                validationData.hero_ndx,
-                validationData.source_table,
-                "P",
-                validationData.bos || null,
-                validationData.account_status,
-              ],
-            );
-
-            pensionerId = pensionerResult.insertId;
-            if (!pensionerId) {
-              logger.error("Failed to create pensioner - no insertId");
-              throw new Error("Failed to create pensioner");
-            }
-            logger.info("Principal pensioner record created:", pensionerId);
           }
 
           // Determine initial user status
@@ -1996,32 +1970,31 @@ router.post(
       }
 
       const normalizedEmail = email.toLowerCase().trim();
-
       const users = await executeQuery(
         `
-            SELECT 
-                u.id AS user_id,
-                u.email,
-                u.password_hash,
-                u.status AS user_status,
-                p.id AS pensioner_id,
-                p.type,
-                p.bos,
-                p.source_table,
-                p.account_status,
-                COALESCE(h.FIRSTNAME, h2.FIRSTNAME, h3.FIRSTNAME) AS FIRSTNAME,
-                COALESCE(h.LASTNAME, h2.LASTNAME, h3.LASTNAME) AS LASTNAME,
-                COALESCE(h.AFPSN, h2.AFPSN, h3.AFPSN) AS AFPSN
-            FROM users_tbl u
-            JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-            LEFT JOIN heroes_tbl h 
-                ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
-            LEFT JOIN resumption_table h2 
-                ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
-            LEFT JOIN beneficiaries_table h3 
-                ON p.hero_ndx = h3.NDX AND p.source_table = 'beneficiaries_table'
-            WHERE u.email = ?
-            LOCK IN SHARE MODE
+        SELECT 
+            u.id AS user_id,
+            u.email,
+            u.password_hash,
+            u.status AS user_status,
+            u.account_status,
+            p.id AS pensioner_id,
+            p.type,
+            p.bos,
+            p.source_table,
+            COALESCE(h.FIRSTNAME, h2.FIRSTNAME, h3.FIRSTNAME) AS FIRSTNAME,
+            COALESCE(h.LASTNAME, h2.LASTNAME, h3.LASTNAME) AS LASTNAME,
+            COALESCE(h.AFPSN, h2.AFPSN, h3.AFPSN) AS AFPSN
+        FROM users_tbl u
+        JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+        LEFT JOIN heroes_tbl h 
+            ON p.hero_ndx = h.NDX AND p.source_table = 'heroes_tbl'
+        LEFT JOIN resumption_table h2 
+            ON p.hero_ndx = h2.NDX AND p.source_table = 'resumption_table'
+        LEFT JOIN beneficiaries_table h3 
+            ON p.hero_ndx = h3.NDX AND p.source_table = 'beneficiaries_table'
+        WHERE u.email = ?
+        LOCK IN SHARE MODE
         `,
         [normalizedEmail],
       );
@@ -2054,6 +2027,13 @@ router.post(
         });
       }
 
+      if (user.account_status === "deactivated") {
+        executeQuery(
+          "UPDATE users_tbl SET account_status = 'active', updated_at = NOW() WHERE id = ?",
+          [user.user_id],
+        ).catch((err) => logger.warn("Failed to reactivate account:", err));
+      }
+
       // Update last login (non-blocking)
       executeQuery("UPDATE users_tbl SET last_login = NOW() WHERE id = ?", [
         user.user_id,
@@ -2061,14 +2041,20 @@ router.post(
 
       res.json({
         success: true,
-        message: "Login successful",
+        message:
+          user.account_status === "deactivated"
+            ? "Login successful. Your account has been reactivated."
+            : "Login successful",
         user: {
           id: user.user_id,
           email: user.email,
           pensioner_id: user.pensioner_id,
           type: user.type,
           status: "ACTIVE",
-          account_status: user.account_status,
+          account_status:
+            user.account_status === "deactivated"
+              ? "active"
+              : user.account_status,
           validated_hero: {
             name: `${user.FIRSTNAME} ${user.LASTNAME}`,
             afpsn: user.AFPSN,
@@ -2089,13 +2075,37 @@ router.post(
 );
 
 // Logout endpoint
-router.post("/logout", async (req, res) => {
+router.post("/logout", validateDatabaseConnection, async (req, res) => {
+  const startTime = Date.now();
   try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: "User ID is required",
+        code: "MISSING_USER_ID",
+      });
+    }
+
+    await executeQuery(
+      `UPDATE users_tbl 
+       SET push_token = NULL,
+           fcm_token = NULL,
+           platform = NULL,
+           device_token = NULL,
+           device_token_type = NULL,
+           updated_at = NOW()
+       WHERE id = ?`,
+      [userId],
+    );
+
     res.json({
       success: true,
       message: "Logged out successfully",
       meta: {
         logoutTime: new Date().toISOString(),
+        processingTime: `${Date.now() - startTime}ms`,
       },
     });
   } catch (error) {
@@ -2123,7 +2133,9 @@ const profileUpdateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Update Email Endpoint
+// ========================================
+// ─── CHANGE EMAIL ─────────────────────
+// ========================================
 router.put(
   "/update-email/:userId",
   profileUpdateLimiter,
@@ -2134,14 +2146,14 @@ router.put(
 
     try {
       const { userId } = req.params;
-      const { email } = req.body;
+      const { email, password } = req.body; // add password here
 
       // Validation
-      if (!email) {
+      if (!email || !password) {
         return res.status(400).json({
           success: false,
-          error: "Email is required",
-          code: "MISSING_EMAIL",
+          error: "Email and password are required",
+          code: "MISSING_FIELDS",
           processingTime: `${Date.now() - startTime}ms`,
         });
       }
@@ -2157,9 +2169,9 @@ router.put(
 
       const normalizedEmail = email.toLowerCase().trim();
 
-      // Check if user exists
+      // Check if user exists — also fetch password_hash now
       const userCheck = await executeQuery(
-        "SELECT id, email FROM users_tbl WHERE id = ? LIMIT 1",
+        "SELECT id, email, password_hash FROM users_tbl WHERE id = ? LIMIT 1",
         [userId],
       );
 
@@ -2168,6 +2180,20 @@ router.put(
           success: false,
           error: "User not found",
           code: "USER_NOT_FOUND",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      }
+
+      // Verify password before allowing email change
+      const passwordMatch = await bcrypt.compare(
+        password,
+        userCheck[0].password_hash,
+      );
+      if (!passwordMatch) {
+        return res.status(401).json({
+          success: false,
+          error: "Incorrect password",
+          code: "INVALID_PASSWORD",
           processingTime: `${Date.now() - startTime}ms`,
         });
       }
@@ -2193,33 +2219,30 @@ router.put(
         [normalizedEmail, userId],
       );
 
-      const processingTime = Date.now() - startTime;
       res.json({
         success: true,
         message: "Email updated successfully",
-        data: {
-          email: normalizedEmail,
-        },
+        data: { email: normalizedEmail },
         meta: {
-          processingTime: `${processingTime}ms`,
+          processingTime: `${Date.now() - startTime}ms`,
           updatedAt: new Date().toISOString(),
         },
       });
     } catch (error) {
-      const processingTime = Date.now() - startTime;
       logger.error("Email update error:", error);
-
       res.status(500).json({
         success: false,
         error: "Failed to update email. Please try again.",
         code: "EMAIL_UPDATE_ERROR",
-        processingTime: `${processingTime}ms`,
+        processingTime: `${Date.now() - startTime}ms`,
       });
     }
   },
 );
 
-// Update Password Endpoint
+// ========================================
+// ─── CHANGE PASSWORD ─────────────────────
+// ========================================
 router.put(
   "/update-password/:userId",
   profileUpdateLimiter,
@@ -2841,6 +2864,9 @@ router.post(
   },
 );
 
+// ========================================
+// ─── RESET PASSWORD ─────────────────────
+// ========================================
 router.post(
   "/reset-password",
   sanitizeInput,
@@ -3041,6 +3067,408 @@ router.post(
           logger.error("Connection release failed:", e);
         }
       }
+    }
+  },
+);
+
+// ========================================
+// ─── DELETE ACCOUNT ─────────────────────
+// ========================================
+router.delete(
+  "/delete-account/:id",
+  sanitizeInput,
+  validateDatabaseConnection,
+  async (req, res) => {
+    const startTime = Date.now();
+    let connection = null;
+    try {
+      const { id } = req.params;
+      const { password, reason } = req.body;
+
+      if (!password || !reason) {
+        return res.status(400).json({
+          success: false,
+          error: "Password and reason are required",
+          code: "MISSING_FIELDS",
+        });
+      }
+
+      connection = await getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Fetch user
+        const [users] = await connection.execute(
+          "SELECT id, pensioner_ndx, email, password_hash FROM users_tbl WHERE id = ? AND account_status != 'deleted'",
+          [id],
+        );
+
+        if (users.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({
+            success: false,
+            error: "User not found",
+            code: "USER_NOT_FOUND",
+          });
+        }
+
+        const user = users[0];
+
+        // Verify password
+        const isPasswordValid = await bcrypt.compare(
+          password,
+          user.password_hash,
+        );
+        if (!isPasswordValid) {
+          await connection.rollback();
+          return res.status(401).json({
+            success: false,
+            error: "Incorrect password",
+            code: "INVALID_PASSWORD",
+          });
+        }
+
+        await connection.execute(
+          `INSERT INTO account_deletion_logs (user_id, pensioner_ndx, email, reason, deleted_at)
+            VALUES (?, ?, ?, ?, NOW())`,
+          [user.id, user.pensioner_ndx, user.email, reason],
+        );
+
+        // Hard delete the users_tbl row since a new one will be made on re-registration
+        await connection.execute("DELETE FROM users_tbl WHERE id = ?", [id]);
+
+        await connection.commit();
+
+        // Send confirmation email
+        const confirmationEmail = {
+          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+          to: user.email,
+          subject: "Account Deleted - AFPPGMC Heroes Mobile App",
+          html: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #dc3545 0%, #a71d2a 100%);
+                          color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+                .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+                .warning { background: #fff3cd; border-left: 4px solid #ffc107;
+                           padding: 12px; margin: 20px 0; }
+                .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <h1>Account Deleted</h1>
+                </div>
+                <div class="content">
+                  <p>Hello,</p>
+                  <p>Your AFPPGMC account has been permanently deleted as requested.</p>
+                  <div class="warning">
+                    <strong>⚠️ Notice:</strong><br>
+                    If you did not request this deletion, please contact support immediately.
+                  </div>
+                  <p>
+                    <strong>Time:</strong> ${new Date().toLocaleString(
+                      "en-US",
+                      {
+                        timeZone: "Asia/Manila",
+                        dateStyle: "full",
+                        timeStyle: "long",
+                      },
+                    )}
+                  </p>
+                  <p>Best regards,<br>AFP Pension and Gratuity Management Center</p>
+                </div>
+                <div class="footer">
+                  <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
+                </div>
+              </div>
+            </body>
+            </html>
+          `,
+        };
+
+        transporter.sendMail(confirmationEmail, (error, info) => {
+          if (error) {
+            logger.error("Account deletion email failed:", error);
+          } else {
+            logger.info("Account deletion confirmation sent:", info.messageId);
+          }
+        });
+
+        res.status(200).json({
+          success: true,
+          message: "Account deleted successfully",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      } catch (error) {
+        if (connection) await connection.rollback();
+        throw error;
+      }
+    } catch (error) {
+      logger.error("Delete account error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Unable to delete account",
+        code: "DELETE_ACCOUNT_FAILED",
+        processingTime: `${Date.now() - startTime}ms`,
+      });
+    } finally {
+      if (connection) {
+        try {
+          connection.release();
+        } catch (e) {
+          logger.error("Connection release failed:", e);
+        }
+      }
+    }
+  },
+);
+
+// ========================================
+// ─── DEACTIVATE ACCOUNT ─────────────────
+// ========================================
+router.put(
+  "/deactivate-account/:id",
+  sanitizeInput,
+  validateDatabaseConnection,
+  async (req, res) => {
+    const startTime = Date.now();
+    let connection = null;
+    try {
+      const { id } = req.params;
+      const { password, reason, status } = req.body;
+
+      if (!password || !reason || !status) {
+        return res.status(400).json({
+          success: false,
+          error: "Password, reason, and status are required",
+          code: "MISSING_FIELDS",
+        });
+      }
+
+      connection = await getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        // Fetch user
+        const [users] = await connection.execute(
+          "SELECT id, email, password_hash FROM users_tbl WHERE id = ? AND account_status = 'active'",
+          [id],
+        );
+
+        if (users.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({
+            success: false,
+            error: "User not found",
+            code: "USER_NOT_FOUND",
+          });
+        }
+
+        const user = users[0];
+
+        // Verify password
+        const isPasswordValid = await bcrypt.compare(
+          password,
+          user.password_hash,
+        );
+        if (!isPasswordValid) {
+          await connection.rollback();
+          return res.status(401).json({
+            success: false,
+            error: "Incorrect password",
+            code: "INVALID_PASSWORD",
+          });
+        }
+
+        await connection.execute(
+          `UPDATE users_tbl 
+            SET account_status = 'deactivated',
+                updated_at = NOW()
+            WHERE id = ?`,
+          [id],
+        );
+
+        await connection.commit();
+
+        // Send confirmation email
+        const confirmationEmail = {
+          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+          to: user.email,
+          subject: "Account Deactivated",
+          html: `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #FF9500 0%, #e68200 100%);
+                          color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+                .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+                .info { background: #e8f4fd; border-left: 4px solid #007AFF;
+                        padding: 12px; margin: 20px 0; }
+                .warning { background: #fff3cd; border-left: 4px solid #ffc107;
+                           padding: 12px; margin: 20px 0; }
+                .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <h1>Account Deactivated</h1>
+                </div>
+                <div class="content">
+                  <p>Hello,</p>
+                  <p>Your AFP PGMC account has been temporarily deactivated as requested.</p>
+                  <div class="info">
+                    <strong>ℹ️ Reactivation:</strong><br>
+                    You can reactivate your account at any time by logging in again.
+                  </div>
+                  <div class="warning">
+                    <strong>⚠️ Notice:</strong><br>
+                    If you did not request this deactivation, please contact support immediately.
+                  </div>
+                  <p>
+                    <strong>Time:</strong> ${new Date().toLocaleString(
+                      "en-US",
+                      {
+                        timeZone: "Asia/Manila",
+                        dateStyle: "full",
+                        timeStyle: "long",
+                      },
+                    )}
+                  </p>
+                  <p>Best regards,<br>AFP Pension and Gratuity Management Center Team</p>
+                </div>
+                <div class="footer">
+                  <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
+                </div>
+              </div>
+            </body>
+            </html>
+          `,
+        };
+
+        transporter.sendMail(confirmationEmail, (error, info) => {
+          if (error) {
+            logger.error("Account deactivation email failed:", error);
+          } else {
+            logger.info(
+              "Account deactivation confirmation sent:",
+              info.messageId,
+            );
+          }
+        });
+
+        res.status(200).json({
+          success: true,
+          message: "Account deactivated successfully",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      } catch (error) {
+        if (connection) await connection.rollback();
+        throw error;
+      }
+    } catch (error) {
+      logger.error("Deactivate account error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Unable to deactivate account",
+        code: "DEACTIVATE_ACCOUNT_FAILED",
+        processingTime: `${Date.now() - startTime}ms`,
+      });
+    } finally {
+      if (connection) {
+        try {
+          connection.release();
+        } catch (e) {
+          logger.error("Connection release failed:", e);
+        }
+      }
+    }
+  },
+);
+
+// ========================================
+// ─── VERIFY PASSWORD ─────────────────────
+// ========================================
+router.post(
+  "/verify-password/:userId",
+  profileUpdateLimiter,
+  sanitizeInput,
+  validateDatabaseConnection,
+  async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+      const { userId } = req.params;
+      const { password } = req.body;
+
+      if (!password) {
+        return res.status(400).json({
+          success: false,
+          error: "Password is required",
+          code: "MISSING_PASSWORD",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      }
+
+      const users = await executeQuery(
+        "SELECT id, password_hash, status FROM users_tbl WHERE id = ? AND account_status != 'deleted' LIMIT 1",
+        [userId],
+      );
+
+      if (users.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+          code: "USER_NOT_FOUND",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      }
+
+      const user = users[0];
+
+      if (user.status === "SUS") {
+        return res.status(403).json({
+          success: false,
+          error: "Account suspended",
+          code: "ACCOUNT_SUSPENDED",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      }
+
+      const passwordMatch = await bcrypt.compare(password, user.password_hash);
+      if (!passwordMatch) {
+        return res.status(401).json({
+          success: false,
+          error: "Incorrect password",
+          code: "INVALID_PASSWORD",
+          processingTime: `${Date.now() - startTime}ms`,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Password verified",
+        processingTime: `${Date.now() - startTime}ms`,
+      });
+    } catch (error) {
+      logger.error("Verify password error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to verify password",
+        code: "VERIFY_PASSWORD_ERROR",
+        processingTime: `${Date.now() - startTime}ms`,
+      });
     }
   },
 );

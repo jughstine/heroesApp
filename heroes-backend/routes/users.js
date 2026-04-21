@@ -2714,7 +2714,7 @@ router.post(
 
                 <p>If you did not request this code, you can safely ignore this email — your password will remain unchanged. <strong>Do not give this code to anyone</strong></p>
 
-                <p>Respectfully,<br><strong>AFP Pension and Gratuity Management Center Team</strong></p>
+                <p>Respectfully,<br><strong>AFP Pension and Gratuity Management Center</strong></p>
                 </div>
 
                 <div class="footer">
@@ -2974,7 +2974,7 @@ router.post(
 
         if (users.length > 0) {
           const confirmationEmail = {
-            from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+            from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_FROM}>`,
             to: users[0].email,
             subject: "Password Successfully Changed",
             html: `
@@ -3021,7 +3021,7 @@ router.post(
                     )}
                   </p>
 
-                  <p>Best regards,<br>AFP Pension and Gratuity Management Center Team</p>
+                  <p>Best regards,<br>AFP Pension and Gratuity Management Center</p>
                 </div>
                 <div class="footer">
                   <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
@@ -3142,7 +3142,7 @@ router.delete(
 
         // Send confirmation email
         const confirmationEmail = {
-          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_FROM}>`,
           to: user.email,
           subject: "Account Deleted - AFPPGMC Heroes Mobile App",
           html: `
@@ -3300,7 +3300,7 @@ router.put(
 
         // Send confirmation email
         const confirmationEmail = {
-          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_USER}>`,
+          from: `"AFP Pension and Gratuity Management Center" <${process.env.SMTP_FROM}>`,
           to: user.email,
           subject: "Account Deactivated",
           html: `

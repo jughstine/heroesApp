@@ -36,8 +36,8 @@ const corsOptions = {
       // Development
       "http://localhost:3000",
       "http://localhost:5173",
-      "http://192.168.254.108:5173",
-      "http://192.168.254.108:3000",
+      "http://192.168.254.101:5173",
+      "http://192.168.254.101:3000",
       "http://127.0.0.1:5173",
       "tauri://localhost",
       "http://tauri.localhost",
@@ -237,10 +237,8 @@ const startServer = async () => {
     await initializeDatabase();
     await testConnection();
 
-    // Start worker only after DB is ready
-    require("./services/psaWorker");
+    require("./workers/psaWorker");
 
-    // Schedule automatic status updates
     scheduleStatusUpdates();
 
     app.listen(PORT, "0.0.0.0", () => {});

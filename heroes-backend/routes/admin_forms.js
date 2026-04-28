@@ -784,10 +784,6 @@ router.options("/proxy-file", (req, res) => {
 
 // Main proxy endpoint
 router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
-  console.log("🎯 PROXY-FILE ENDPOINT HIT!");
-  console.log("Query params:", req.query);
-  console.log("Headers:", req.headers);
-
   try {
     const { url } = req.query;
 
@@ -799,7 +795,6 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
     }
 
     const decodedUrl = decodeURIComponent(url);
-    console.log("🔓 Decoded URL:", decodedUrl.substring(0, 100));
 
     if (
       !decodedUrl.startsWith(
@@ -812,7 +807,6 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
         .json({ success: false, error: "Invalid URL domain" });
     }
 
-    console.log("⬇️ Fetching from DO Spaces...");
     const response = await fetch(decodedUrl);
 
     if (!response.ok) {
@@ -829,11 +823,6 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
       response.headers.get("content-type") || "application/octet-stream";
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-
-    console.log("✅ File fetched successfully:", {
-      contentType,
-      sizeKB: (buffer.length / 1024).toFixed(2),
-    });
 
     // Set CORS headers
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -2140,10 +2129,6 @@ router.put(
                   process.env.SPACES_BUCKET,
                   formData[0].resolution_file_key,
                 );
-                console.log(
-                  "✅ Deleted resolution file:",
-                  formData[0].resolution_file_key,
-                );
               } catch (deleteErr) {
                 console.error(
                   "⚠️ Error deleting resolution file (continuing anyway):",
@@ -2222,10 +2207,6 @@ router.put(
           try {
             await minioClient.removeObject(
               process.env.SPACES_BUCKET,
-              resolutionFileKey,
-            );
-            console.log(
-              "🧹 Cleaned up file after transaction failure:",
               resolutionFileKey,
             );
           } catch (cleanupErr) {

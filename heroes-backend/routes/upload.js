@@ -372,3 +372,5 @@ router.get("/info/:key(*)", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.minioClient = minioClient;
+module.exports.checkDatabaseHealth = checkDatabaseHealth;

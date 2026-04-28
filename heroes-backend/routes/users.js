@@ -2978,58 +2978,114 @@ router.post(
             to: users[0].email,
             subject: "Password Successfully Changed",
             html: `
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                          color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-                .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-                .success-icon { font-size: 48px; text-align: center; margin: 20px 0; }
-                .warning { background: #fff3cd; border-left: 4px solid #ffc107; 
-                           padding: 12px; margin: 20px 0; }
-                .footer { text-align: center; color: #666; font-size: 12px; margin-top: 20px; }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <div class="header">
-                  <h1>Password Changed Successfully</h1>
-                </div>
-                <div class="content">
-                  <div class="success-icon">✅</div>
-                  <p>Hello,</p>
-                  <p>Your password has been successfully changed.</p>
-                  <p>You can now log in to your AFP Pension and Gratuity Management Center account using your new password.</p>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body {
+          font-family: 'Segoe UI', Arial, sans-serif;
+          line-height: 1.6;
+          color: #222;
+          background-color: #e5e7eb;
+          margin: 0;
+          padding: 0;
+        }
 
-                  <div class="warning">
-                    <strong>⚠️ Security Notice:</strong><br>
-                    If you did not make this change, please contact support immediately 
-                    as your account may be compromised.
-                  </div>
+        .container {
+          max-width: 600px;
+          margin: 40px auto;
+          background: #ffffff;
+          border-radius: 10px;
+          overflow: hidden;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
 
-                  <p style="margin-top: 30px;">
-                    <strong>Time:</strong> ${new Date().toLocaleString(
-                      "en-US",
-                      {
-                        timeZone: "Asia/Manila",
-                        dateStyle: "full",
-                        timeStyle: "long",
-                      },
-                    )}
-                  </p>
+        .header {
+          background: linear-gradient(135deg, #1e3a2a 0%, #2f5233 100%);
+          color: white;
+          padding: 25px 20px;
+          text-align: center;
+          border-bottom: 5px solid #c9b458;
+        }
 
-                  <p>Best regards,<br>AFP Pension and Gratuity Management Center</p>
-                </div>
-                <div class="footer">
-                  <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
-                </div>
-              </div>
-            </body>
-            </html>
-          `,
+        .header img {
+          width: 90px;
+          height: auto;
+          margin-bottom: 10px;
+        }
+
+        .header h1 {
+          margin: 0;
+          font-size: 22px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+        }
+
+        .content {
+          padding: 30px;
+          background-color: #f9fafb;
+        }
+
+        .warning {
+          background: #fff3cd;
+          border-left: 5px solid #b38f00;
+          padding: 12px 16px;
+          margin: 25px 0;
+          border-radius: 6px;
+          font-size: 14px;
+        }
+
+        .footer {
+          text-align: center;
+          color: #6b7280;
+          font-size: 12px;
+          padding: 15px;
+          background: #f3f4f6;
+          border-top: 1px solid #e5e7eb;
+        }
+
+        strong {
+          color: #111827;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <img src="https://psahelpline.ph/img/ecert/afp/PGMC.png" alt="AFP Logo" />
+          <h1>Password Changed Successfully</h1>
+        </div>
+
+        <div class="content">
+          <p>Dear Pensioner,</p>
+          <p>Your password has been successfully changed. You can now log in to your AFP Pension and Gratuity Management Center account using your new password.</p>
+
+          <div class="warning">
+            <strong>⚠️ Security Notice:</strong><br>
+            If you did not make this change, please contact support immediately
+            as your account may be compromised.
+          </div>
+
+          <p>
+            <strong>Time:</strong> ${new Date().toLocaleString("en-US", {
+              timeZone: "Asia/Manila",
+              dateStyle: "full",
+              timeStyle: "long",
+            })}
+          </p>
+
+          <p>Respectfully,<br><strong>AFP Pension and Gratuity Management Center</strong></p>
+        </div>
+
+        <div class="footer">
+          <p>This is an automated message. Please do not reply to this email.</p>
+          <p>&copy; ${new Date().getFullYear()} AFP Pension and Gratuity Management Center. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `,
           };
 
           transporter.sendMail(confirmationEmail, (error, info) => {

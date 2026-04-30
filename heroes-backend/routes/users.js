@@ -3191,6 +3191,19 @@ router.delete(
           [user.id, user.pensioner_ndx, user.email, reason],
         );
 
+        await connection.execute(
+          `DELETE hl FROM history_logs hl
+   INNER JOIN form_submission fs ON hl.form_submission_id = fs.id
+   WHERE fs.user_id = ?`,
+          [id],
+        );
+
+        // 2. Delete form_submissions belonging to the user
+        await connection.execute(
+          "DELETE FROM form_submission WHERE user_id = ?",
+          [id],
+        );
+
         // Hard delete the users_tbl row since a new one will be made on re-registration
         await connection.execute("DELETE FROM users_tbl WHERE id = ?", [id]);
 

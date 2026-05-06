@@ -22,7 +22,6 @@ const {
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
 /**
- * POST /psa/sync
  * Scans Spaces for new PDFs and enqueues jobs. The background worker
  * handles actual processing automatically.
  */
@@ -53,7 +52,6 @@ router.post("/psa/sync", async (req, res) => {
 });
 
 /**
- * GET /psa/sync/status
  * Returns current job queue counts by status.
  */
 router.get("/psa/sync/status", async (req, res) => {
@@ -77,7 +75,6 @@ const PSA_HTTP_ERRORS = {
 };
 
 /**
- * GET /psa/orders/:reference_number
  * Proxies a single order lookup to the PSA API.
  */
 router.get("/psa/orders/:reference_number", async (req, res) => {
@@ -198,7 +195,6 @@ router.get("/psa/order-data/:reference_number", async (req, res) => {
 // ─── Form-linked document helpers ────────────────────────────────────────────
 
 /**
- * GET /psa_form/:id/psa-document
  * Returns a presigned URL for the PSA document linked to a form submission.
  * Sources in order: Spaces → PSA API (with background save to Spaces).
  */
@@ -278,7 +274,6 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
 });
 
 /**
- * GET /psa_form/:id/psa-document/stream
  * Streams the PDF directly to the client.
  */
 router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
@@ -293,11 +288,11 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
     }
 
     let fileUrl;
-
     const [docRows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
+
     if (docRows.length > 0) {
       fileUrl = await getSignedUrl(
         getPsaPgmcBucketClient(),
@@ -339,8 +334,14 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
     }
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${id}.pdf"`);
-    pdfResponse.body.pipe(res);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${reference_number}.pdf"`,
+    );
+
+    const { Readable } = require("stream");
+    const nodeStream = Readable.fromWeb(pdfResponse.body);
+    nodeStream.pipe(res);
   } catch (err) {
     console.error("PDF stream error:", err);
     res.status(500).json({ success: false, message: "Failed to stream PDF" });
@@ -348,7 +349,6 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
 });
 
 /**
- * GET /psa_form/:id/psa-order
  * Returns structured order data for a form submission.
  */
 router.get("/psa_form/:id/psa-order", async (req, res) => {
@@ -566,7 +566,6 @@ router.get("/psa/spaces/files", async (req, res) => {
 });
 
 /**
- * GET /psa/spaces/:reference_number/url
  * Returns a fresh presigned URL for a document stored in Spaces.
  */
 router.get("/psa/spaces/:reference_number/url", async (req, res) => {

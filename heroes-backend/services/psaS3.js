@@ -25,7 +25,6 @@ function getPsaBucketClient() {
 
 /**
  * DigitalOcean Spaces bucket (PSA PGMC working bucket).
- * Reads SPACES_ENDPOINT from env so it works across environments.
  */
 function getPsaPgmcBucketClient() {
   if (_psaPgmcBucket) return _psaPgmcBucket;

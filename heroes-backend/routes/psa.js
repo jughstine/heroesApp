@@ -203,32 +203,25 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
   const pool = getPool();
   try {
     const reference_number = await resolveReferenceNumber(pool, id);
-
     if (!reference_number) {
       return res
         .status(404)
         .json({ success: false, message: "No PSA job found for this form" });
     }
 
-    // Try Spaces first
     const [docRows] = await pool.execute(
       `SELECT file_key, file_name FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
+
     if (docRows.length > 0) {
       const { file_key, file_name } = docRows[0];
-      const presignedUrl = await getSignedUrl(
-        getPsaPgmcBucketClient(),
-        new GetObjectCommand({
-          Bucket: process.env.SPACES_BUCKET,
-          Key: file_key,
-        }),
-        { expiresIn: 900 },
-      );
+      const publicUrl = buildSpacesFileUrl(file_key);
+
       return res.json({
         success: true,
         source: "spaces",
-        data: { file_url: presignedUrl, file_name },
+        data: { file_url: publicUrl, file_name },
       });
     }
 

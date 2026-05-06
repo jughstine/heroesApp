@@ -26,23 +26,25 @@ const REQUIREMENTS_MAP = {
  * @param {string|number} formSubmissionId
  * @returns {Promise<string|null>}
  */
+
 async function resolveReferenceNumber(pool, formSubmissionId) {
-  // 1. Direct match in processing jobs
   const [jobRows] = await pool.execute(
     `SELECT reference_number FROM psa_processing_jobs
      WHERE form_submission_id = ? LIMIT 1`,
     [formSubmissionId],
   );
+  console.log("jobRows:", jobRows);
   if (jobRows.length > 0) return jobRows[0].reference_number;
 
-  // 2. Look up form type and check the requirements table
   const [formRows] = await pool.execute(
     `SELECT form_type_id FROM form_submission WHERE id = ? LIMIT 1`,
     [formSubmissionId],
   );
+  console.log("formRows:", formRows);
   if (formRows.length === 0) return null;
 
   const mapping = REQUIREMENTS_MAP[formRows[0].form_type_id];
+  console.log("mapping:", mapping);
   if (!mapping) return null;
 
   const [reqRows] = await pool.execute(
@@ -52,9 +54,9 @@ async function resolveReferenceNumber(pool, formSubmissionId) {
      LIMIT 1`,
     [formSubmissionId],
   );
+  console.log("reqRows:", reqRows);
   return reqRows.length > 0 ? reqRows[0].value : null;
 }
-
 // ─── Discovery ────────────────────────────────────────────────────────────────
 
 /**

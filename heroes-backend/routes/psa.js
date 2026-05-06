@@ -277,55 +277,27 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
     if (!reference_number) {
       return res
         .status(404)
-        .json({ success: false, message: "No PSA job found for this form" });
+        .json({ success: false, message: "No PSA reference found" });
     }
 
-    let fileUrl;
-    const [docRows] = await pool.execute(
+    const [rows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-
-    if (docRows.length > 0) {
-      fileUrl = await getSignedUrl(
-        getPsaPgmcBucketClient(),
-        new GetObjectCommand({
-          Bucket: process.env.SPACES_BUCKET,
-          Key: docRows[0].file_key,
-        }),
-        { expiresIn: 900 },
-      );
-    } else {
-      const response = await fetch(
-        `${process.env.PSA_API_BASE_URL}/orders/${reference_number}/download`,
-        {
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.PSA_API_TOKEN}`,
-          },
-        },
-      );
-      if (!response.ok) {
-        return res.status(response.status).json({
-          success: false,
-          message: "Failed to get download URL from PSA",
-        });
-      }
-      fileUrl = (await response.json())?.url;
-    }
-
-    if (!fileUrl) {
+    if (rows.length === 0) {
       return res.status(404).json({ success: false, message: "No PDF found" });
     }
 
-    const pdfResponse = await fetch(fileUrl);
-    if (!pdfResponse.ok) {
-      return res
-        .status(502)
-        .json({ success: false, message: "Failed to fetch PDF" });
-    }
+    const fileUrl = await getSignedUrl(
+      getPsaPgmcBucketClient(),
+      new GetObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: rows[0].file_key,
+      }),
+      { expiresIn: 900 },
+    );
 
+    const pdfResponse = await fetch(fileUrl);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
@@ -333,8 +305,7 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
     );
 
     const { Readable } = require("stream");
-    const nodeStream = Readable.fromWeb(pdfResponse.body);
-    nodeStream.pipe(res);
+    Readable.fromWeb(pdfResponse.body).pipe(res);
   } catch (err) {
     console.error("PDF stream error:", err);
     res.status(500).json({ success: false, message: "Failed to stream PDF" });

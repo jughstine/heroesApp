@@ -44,7 +44,7 @@ router.post("/psa/sync", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("❌ PSA sync error:", err);
+    console.error("PSA sync error:", err);
     return res
       .status(500)
       .json({ success: false, message: err.message || "Sync failed" });
@@ -455,7 +455,6 @@ router.get("/psa/bucket/files", async (req, res) => {
 });
 
 /**
- * GET /psa/spaces/files
  * Paginated listing of documents in our Spaces bucket, with optional
  * search and type filter. Joined with order data for display.
  */
@@ -529,6 +528,104 @@ router.get("/psa/spaces/files", async (req, res) => {
   }
 });
 
+router.get("/psa/spaces/:reference_number/stream", async (req, res) => {
+  const { reference_number } = req.params;
+  const pool = getPool();
+  try {
+    const [rows] = await pool.execute(
+      `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
+      [reference_number],
+    );
+    if (rows.length === 0)
+      return res.status(404).json({ success: false, message: "No PDF found" });
+
+    const { file_key } = rows[0];
+    const client = getPsaPgmcBucketClient();
+
+    // Try public URL first (works for ACL public files without needing credentials)
+    const publicUrl = buildSpacesFileUrl(file_key);
+    let fetchUrl = publicUrl;
+
+    const publicCheck = await fetch(publicUrl, { method: "HEAD" });
+    if (publicCheck.status === 403 || publicCheck.status === 401) {
+      // File is private — generate a presigned URL
+      fetchUrl = await getSignedUrl(
+        client,
+        new GetObjectCommand({
+          Bucket: process.env.SPACES_BUCKET,
+          Key: file_key,
+        }),
+        { expiresIn: 900 },
+      );
+    }
+
+    const pdfResponse = await fetch(fetchUrl);
+    if (!pdfResponse.ok) {
+      return res.status(502).json({
+        success: false,
+        message: `Spaces fetch failed: ${pdfResponse.status}`,
+      });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${reference_number}.pdf"`,
+    );
+    const { Readable } = require("stream");
+    Readable.fromWeb(pdfResponse.body).pipe(res);
+  } catch (err) {
+    console.error("Stream error:", err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
+  const { reference_number } = req.params;
+  const pool = getPool();
+  try {
+    const [rows] = await pool.execute(
+      `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
+      [reference_number],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "No PDF found" });
+    }
+
+    const { file_key } = rows[0];
+    const signedUrl = await getSignedUrl(
+      getPsaPgmcBucketClient(),
+      new GetObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: file_key,
+      }),
+      { expiresIn: 300 },
+    );
+
+    const pdfResponse = await fetch(signedUrl);
+    if (!pdfResponse.ok) {
+      return res.status(502).json({
+        success: false,
+        message: `Spaces fetch failed: ${pdfResponse.status}`,
+      });
+    }
+
+    // Tell browser to cache for 4 minutes (safe within the 5min presign window)
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${reference_number}.pdf"`,
+    );
+    res.setHeader("Cache-Control", "private, max-age=240");
+
+    const { Readable } = require("stream");
+    Readable.fromWeb(pdfResponse.body).pipe(res);
+  } catch (err) {
+    console.error("PDF proxy error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 /**
  * Returns a fresh presigned URL for a document stored in Spaces.
  */
@@ -557,7 +654,6 @@ router.get("/psa/spaces/:reference_number/url", async (req, res) => {
 });
 
 /**
- * DELETE /psa/spaces/:reference_number/purge
  * Deletes the PDF (and JSON sidecar) from Spaces and removes the document
  * record from the database.
  */
@@ -588,7 +684,7 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
         }),
       );
     } catch (s3Err) {
-      console.error("❌ S3 delete PDF failed:", s3Err);
+      console.error("S3 delete PDF failed:", s3Err);
       return res.status(500).json({
         success: false,
         message: `Failed to delete PDF from Spaces: ${s3Err.message}`,
@@ -620,7 +716,7 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
       message: `Document ${reference_number} purged from Spaces`,
     });
   } catch (err) {
-    console.error("❌ Spaces purge error:", err);
+    console.error("Spaces purge error:", err);
     return res.status(500).json({
       success: false,
       message: err.message || "Failed to purge document from Spaces",
@@ -657,7 +753,7 @@ function saveToSpacesInBackground(psaPresignedUrl, referenceNumber, pool) {
         [referenceNumber, `${referenceNumber}.pdf`, key, fileUrl],
       );
     })
-    .catch((err) => console.error("❌ Background PDF save failed:", err));
+    .catch((err) => console.error("Background PDF save failed:", err));
 }
 
 module.exports = router;

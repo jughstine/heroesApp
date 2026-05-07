@@ -9,6 +9,20 @@ const {
 } = require("../services/pushNotificationService");
 const multer = require("multer");
 const { Client } = require("minio");
+const {
+  S3Client,
+  GetObjectCommand,
+  ListObjectsV2Command,
+} = require("@aws-sdk/client-s3");
+
+const s3 = new S3Client({
+  endpoint: "https://sgp1.digitaloceanspaces.com",
+  region: "sgp1",
+  credentials: {
+    accessKeyId: process.env.SPACES_KEY,
+    secretAccessKey: process.env.SPACES_SECRET,
+  },
+});
 
 router.use(authenticateAdminToken);
 const upload = multer({
@@ -784,6 +798,8 @@ router.options("/proxy-file", (req, res) => {
 
 // Main proxy endpoint
 router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
+  console.log("Auth header:", req.headers.authorization);
+
   try {
     const { url } = req.query;
 
@@ -807,31 +823,40 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
         .json({ success: false, error: "Invalid URL domain" });
     }
 
-    const response = await fetch(decodedUrl);
+    const base = "https://space-bucket-heroes.sgp1.digitaloceanspaces.com/";
+    const key = decodeURIComponent(decodedUrl.slice(base.length).split("?")[0]);
 
-    if (!response.ok) {
-      console.error(
-        `❌ DO Spaces fetch failed: ${response.status} ${response.statusText}`,
-      );
-      return res.status(response.status).json({
-        success: false,
-        error: `Failed to fetch file: ${response.statusText}`,
-      });
-    }
+    console.log("🔑 Extracted key:", key);
 
-    const contentType =
-      response.headers.get("content-type") || "application/octet-stream";
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // ← Add this to verify the file exists
+    const listResult = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: process.env.SPACES_BUCKET,
+        Prefix: key,
+      }),
+    );
+    console.log(
+      "📦 Found objects:",
+      JSON.stringify(listResult.Contents, null, 2),
+    );
+    console.log("🪣 Bucket:", process.env.SPACES_BUCKET);
 
-    // Set CORS headers
+    const s3Response = await s3.send(
+      new GetObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: key,
+      }),
+    );
+
+    res.setHeader(
+      "Content-Type",
+      s3Response.ContentType || "application/octet-stream",
+    );
+    res.setHeader("Cache-Control", "private, max-age=3600");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    res.setHeader("Content-Length", buffer.length);
 
-    res.send(buffer);
+    s3Response.Body.pipe(res);
   } catch (error) {
     console.error("💥 Proxy error:", error);
     res.status(500).json({

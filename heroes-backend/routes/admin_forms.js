@@ -824,11 +824,15 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
     }
 
     const base = "https://space-bucket-heroes.sgp1.digitaloceanspaces.com/";
-    const key = decodeURIComponent(decodedUrl.slice(base.length).split("?")[0]);
+    const rawKey = decodedUrl.slice(base.length).split("?")[0];
+
+    const key = rawKey
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
 
     console.log("🔑 Extracted key:", key);
 
-    // ← Add this to verify the file exists
     const listResult = await s3.send(
       new ListObjectsV2Command({
         Bucket: process.env.SPACES_BUCKET,
@@ -870,9 +874,8 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
 router.get("/", authenticateAdminToken, async (req, res) => {
   try {
     const pool = getPool();
-    const adminId = req.admin.id; // Get admin ID from the JWT token
+    const adminId = req.admin.id;
 
-    // First, get the admin's form permissions
     const [permissions] = await pool.execute(
       `
       SELECT form_type_id, can_view 

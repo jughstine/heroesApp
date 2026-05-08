@@ -629,27 +629,41 @@ router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
 /**
  * Returns a fresh presigned URL for a document stored in Spaces.
  */
-router.get("/psa/spaces/:reference_number/url", async (req, res) => {
-  const pool = getPool();
+router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
   const { reference_number } = req.params;
+  const pool = getPool();
   try {
+    // Debug: log env var presence without exposing values
+    console.log("ENV CHECK:", {
+      hasKey: !!process.env.SPACES_KEY,
+      hasSecret: !!process.env.SPACES_SECRET,
+      bucket: process.env.SPACES_BUCKET,
+      endpoint: process.env.SPACES_ENDPOINT,
+    });
+
     const [rows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-    if (rows.length === 0) return res.status(404).json({ success: false });
 
-    const url = await getSignedUrl(
-      getPsaPgmcBucketClient(),
-      new GetObjectCommand({
-        Bucket: process.env.SPACES_BUCKET,
-        Key: rows[0].file_key,
-      }),
-      { expiresIn: 900 },
-    );
-    return res.json({ success: true, data: { url } });
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "No PDF found" });
+    }
+
+    console.log("file_key from DB:", rows[0].file_key);
+    // ... rest of route
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    console.error("PDF proxy error:", err);
+    // TEMPORARY — remove after debugging
+    return res.status(500).json({
+      success: false,
+      message: err.message,
+      hint: {
+        hasKey: !!process.env.SPACES_KEY,
+        hasSecret: !!process.env.SPACES_SECRET,
+        bucket: process.env.SPACES_BUCKET,
+      },
+    });
   }
 });
 

@@ -34,8 +34,6 @@ function getPsaPgmcBucketClient() {
   if (!endpoint.startsWith("http")) endpoint = `https://${endpoint}`;
   endpoint = endpoint.replace(/\/$/, "");
 
-  // ← remove the duplicate const endpoint line
-
   if (!process.env.SPACES_KEY || !process.env.SPACES_SECRET) {
     throw new Error(
       "Missing S3 credentials — SPACES_KEY and SPACES_SECRET must be set",

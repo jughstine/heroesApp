@@ -233,15 +233,18 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
 // ─── start server ───────────────────────────────────────────────────────────────────
+
+const DISABLE_PSA_WORKER = true;
 const startServer = async () => {
   try {
     await initializeDatabase();
     await testConnection();
 
-    require("./workers/psaWorker");
+    if (!DISABLE_PSA_WORKER) {
+      require("./workers/psaWorker");
+    }
 
     scheduleStatusUpdates();
-
     app.listen(PORT, "0.0.0.0", () => {});
   } catch (error) {
     console.error("❌ Failed to start server:", error.message);

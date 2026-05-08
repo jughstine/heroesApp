@@ -8,6 +8,16 @@ const {
 } = require("../services/pushNotificationService");
 const router = express.Router();
 const admin = require("firebase-admin");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+
+const s3 = new S3Client({
+  endpoint: "https://sgp1.digitaloceanspaces.com",
+  region: "sgp1",
+  credentials: {
+    accessKeyId: process.env.SPACES_KEY,
+    secretAccessKey: process.env.SPACES_SECRET,
+  },
+});
 
 const minioClient = new Client({
   endPoint: process.env.SPACES_ENDPOINT.replace("https://", ""),
@@ -207,7 +217,8 @@ router.post("/", upload.single("file"), async (req, res) => {
 
     const timestamp = Date.now();
     const folder = req.body.folder || "uploads";
-    const fileName = `${folder}/${timestamp}-${req.file.originalname}`;
+    const customName = req.body.customFileName || req.file.originalname;
+    const fileName = `${folder}/${customName}`;
 
     // Parse metadata FIRST, before using it
     const metadata = req.body.metadata ? JSON.parse(req.body.metadata) : {};
@@ -241,12 +252,20 @@ router.post("/", upload.single("file"), async (req, res) => {
       }
     }
 
-    await minioClient.putObject(
-      process.env.SPACES_BUCKET,
-      fileName,
-      req.file.buffer,
-      req.file.size,
-      uploadMetadata,
+    const isPublic = req.file.mimetype.startsWith("image/");
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: fileName,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype,
+        ACL: isPublic ? "public-read" : "private",
+        Metadata: {
+          "original-name": req.file.originalname,
+          "upload-timestamp": timestamp.toString(),
+        },
+      }),
     );
 
     const publicUrl = `https://${process.env.SPACES_BUCKET}.sgp1.digitaloceanspaces.com/${fileName}`;

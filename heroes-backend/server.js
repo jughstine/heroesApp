@@ -118,7 +118,23 @@ createManualTriggerRoute(app);
 app.get("/api/check-routes", (req, res) => {
   res.json({
     success: true,
-    routes: ["/api/heroes"],
+    routes: [
+      "/api/heroes",
+      "/api/upload",
+      "/api/announcements",
+      "/api/users",
+      "/api/forms",
+      "/api/inquiries",
+      "/api/admin",
+      "/api/admin_forms",
+      "/api/health",
+      "/api/test-inquiries",
+      "/admin/trigger-status-update",
+      "/admin/users-at-risk",
+      "/admin/cycle-statistics",
+      "/admin/current-cycle",
+      "/api/",
+    ],
     timestamp: new Date().toISOString(),
   });
 });

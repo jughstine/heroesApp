@@ -2,15 +2,16 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 require("dotenv").config();
+
 const {
   initializeDatabase,
   testConnection,
   closePool,
 } = require("./config/database");
-
 const {
   scheduleStatusUpdates,
   createManualTriggerRoute,
+  autoStatusChangeService,
 } = require("./services/autoStatusChange");
 
 const heroesRoutes = require("./routes/heroes");
@@ -25,47 +26,37 @@ const psaRoutes = require("./routes/psa");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// ─── CORS ──────────────────────────────────────────────────────────────────────
+
+const ALLOWED_ORIGINS = new Set([
+  "https://afppgmc.com",
+  "https://www.afppgmc.com",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://192.168.254.101:5173",
+  "http://192.168.254.101:3000",
+  "http://127.0.0.1:5173",
+  "tauri://localhost",
+  "http://tauri.localhost",
+  "https://tauri.localhost",
+]);
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    const allowedOrigins = [
-      // Production
-      "https://afppgmc.com",
-      "https://www.afppgmc.com",
+  origin(origin, callback) {
+    // Allow server-to-server (no origin) in both envs
+    if (!origin) return callback(null, true);
 
-      // Development
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://192.168.254.101:5173",
-      "http://192.168.254.101:3000",
-      "http://127.0.0.1:5173",
-      "tauri://localhost",
-      "http://tauri.localhost",
-      "https://tauri.localhost",
-    ];
-    // Development
-    if (process.env.NODE_ENV === "development") {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        // In development
-        console.warn("CORS [DEV]: Unexpected origin allowed:", origin);
-        callback(null, true);
-      }
+    if (ALLOWED_ORIGINS.has(origin)) return callback(null, true);
+
+    if (!IS_PROD) {
+      console.warn("CORS [DEV]: Unexpected origin allowed:", origin);
+      return callback(null, true);
     }
-    // Production: Strict
-    else {
-      if (!origin) {
-        return callback(null, true);
-      }
-      // production
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("CORS [PROD]: BLOCKED origin:", origin);
-        callback(new Error("Not allowed by CORS policy"), false);
-      }
-    }
+
+    console.error("CORS [PROD]: BLOCKED origin:", origin);
+    callback(new Error("Not allowed by CORS policy"), false);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -81,26 +72,28 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
 app.options("*", cors(corsOptions));
-app.use((req, res, next) => {
-  next();
-});
+
+// ─── Body parsing ──────────────────────────────────────────────────────────────
+const LARGE_LIMIT = process.env.MAX_FILE_SIZE || "50mb";
 
 app.use(
   express.json({
-    limit: process.env.MAX_FILE_SIZE || "500mb",
-    verify: (req, res, buf) => {
+    limit: "10mb",
+    verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
 app.use(
-  express.urlencoded({
-    extended: true,
-    limit: process.env.MAX_FILE_SIZE || "500mb",
-  }),
+  "/api/upload",
+  express.json({ limit: LARGE_LIMIT }),
+  express.urlencoded({ extended: true, limit: LARGE_LIMIT }),
 );
+
+// ─── Routes ────────────────────────────────────────────────────────────────────
 
 app.use("/api/heroes", heroesRoutes);
 app.use("/api/upload", uploadRoutes);
@@ -114,8 +107,76 @@ app.use("/api", psaRoutes);
 
 createManualTriggerRoute(app);
 
-// ─── check routes ───────────────────────────────────────────────────────────────────
-app.get("/api/check-routes", (req, res) => {
+// ─── Health check ──────────────────────────────────────────────────────────────
+
+app.get("/api/health", async (req, res) => {
+  let dbStatus = "unknown";
+  let dbError = null;
+
+  try {
+    await testConnection();
+    dbStatus = "connected";
+  } catch (err) {
+    dbStatus = "disconnected";
+    dbError = err.message;
+  }
+
+  let cycleInfo = null;
+  try {
+    const info = autoStatusChangeService.getCurrentCycleInfo();
+    const dayOfYear = autoStatusChangeService.getDayOfYear();
+    cycleInfo = info
+      ? {
+          currentCycle: info.cycle,
+          cycleName: info.name,
+          currentPeriod: info.period,
+          dayOfYear,
+          daysLeftInPeriod: info.daysLeftInPeriod,
+          nextPeriod: info.nextPeriod,
+        }
+      : { error: "Could not determine current cycle", dayOfYear };
+  } catch (err) {
+    cycleInfo = { error: "Could not fetch cycle info", details: err.message };
+  }
+
+  res.json({
+    success: true,
+    message: "Server is running!",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+    version: process.env.APP_VERSION || "1.0.0",
+    server: {
+      port: PORT,
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      platform: process.platform,
+      nodeVersion: process.version,
+    },
+    services: {
+      database: dbStatus,
+      autoStatusChange: "active (Calendar Cycle-based)",
+      cycleInfo,
+      ...(dbError && { databaseError: dbError }),
+    },
+    headers: {
+      origin: req.headers.origin || "none",
+      userAgent: req.headers["user-agent"] || "none",
+    },
+  });
+});
+
+// ─── Diagnostic endpoints (internal / dev only) ────────────────────────────────
+
+function internalOnly(req, res, next) {
+  if (IS_PROD) {
+    return res
+      .status(404)
+      .json({ success: false, error: "Endpoint not found" });
+  }
+  next();
+}
+
+app.get("/api/check-routes", internalOnly, (req, res) => {
   res.json({
     success: true,
     routes: [
@@ -128,7 +189,6 @@ app.get("/api/check-routes", (req, res) => {
       "/api/admin",
       "/api/admin_forms",
       "/api/health",
-      "/api/test-inquiries",
       "/admin/trigger-status-update",
       "/admin/users-at-risk",
       "/admin/cycle-statistics",
@@ -139,352 +199,123 @@ app.get("/api/check-routes", (req, res) => {
   });
 });
 
-// ─── health check ───────────────────────────────────────────────────────────────────
-app.get("/api/health", async (req, res) => {
-  try {
-    let dbStatus = "unknown";
-    let dbError = null;
-
-    try {
-      await testConnection();
-      dbStatus = "connected";
-    } catch (error) {
-      dbStatus = "disconnected";
-      dbError = error.message;
-    }
-
-    // Get current cycle info
-    let cycleInfo = null;
-    try {
-      const {
-        autoStatusChangeService,
-      } = require("./services/autoStatusChange");
-      const currentCycleInfo = autoStatusChangeService.getCurrentCycleInfo();
-      const dayOfYear = autoStatusChangeService.getDayOfYear();
-
-      if (currentCycleInfo) {
-        cycleInfo = {
-          currentCycle: currentCycleInfo.cycle,
-          cycleName: currentCycleInfo.name,
-          currentPeriod: currentCycleInfo.period,
-          dayOfYear: dayOfYear,
-          daysLeftInPeriod: currentCycleInfo.daysLeftInPeriod,
-          nextPeriod: currentCycleInfo.nextPeriod,
-        };
-      } else {
-        cycleInfo = {
-          error: "Could not determine current cycle",
-          dayOfYear: dayOfYear,
-        };
-      }
-    } catch (error) {
-      cycleInfo = {
-        error: "Could not fetch cycle info",
-        details: error.message,
-      };
-    }
-
-    const healthData = {
-      success: true,
-      message: "Server is running!",
-      timestamp: new Date().toISOString(),
-      environment: process.env.NODE_ENV || "development",
-      version: process.env.APP_VERSION || "1.0.0",
-      server: {
-        port: PORT,
-        uptime: process.uptime(),
-        memory: process.memoryUsage(),
-        platform: process.platform,
-        nodeVersion: process.version,
-      },
-      services: {
-        database: dbStatus,
-        autoStatusChange: "active (Calendar Cycle-based)",
-        cycleInfo: cycleInfo,
-        ...(dbError && { databaseError: dbError }),
-      },
-      headers: {
-        origin: req.headers.origin || "none",
-        userAgent: req.headers["user-agent"] || "none",
-      },
-    };
-
-    res.json(healthData);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString(),
-    });
-  }
-});
-
-const shutdown = async () => {
-  try {
-    await closePool();
-    process.exit(0);
-  } catch (error) {
-    console.error("Error during shutdown:", error);
-    process.exit(1);
-  }
-};
-
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
-
-// ─── start server ───────────────────────────────────────────────────────────────────
-
-const DISABLE_PSA_WORKER = true;
-const startServer = async () => {
-  try {
-    await initializeDatabase();
-    await testConnection();
-
-    if (!DISABLE_PSA_WORKER) {
-      require("./workers/psaWorker");
-    }
-
-    scheduleStatusUpdates();
-    app.listen(PORT, "0.0.0.0", () => {});
-  } catch (error) {
-    console.error("❌ Failed to start server:", error.message);
-    process.exit(1);
-  }
-};
-
-// ─── test server ───────────────────────────────────────────────────────────────────
-
-app.get("/api/diagnostic/database", async (req, res) => {
+// FIX: no longer creates a raw connection per request — uses the existing pool.
+app.get("/api/diagnostic/database", internalOnly, async (req, res) => {
   const startTime = Date.now();
-
   try {
-    const diagnostic = {
-      timestamp: new Date().toISOString(),
-      environment: process.env.NODE_ENV || "development",
-
-      // Environment variables check
-      environmentVariables: {
-        DB_HOST: process.env.DB_HOST ? "SET" : "MISSING",
-        DB_PORT: process.env.DB_PORT || "3306 (default)",
-        DB_USER: process.env.DB_USER ? "SET" : "MISSING",
-        DB_PASSWORD: process.env.DB_PASSWORD ? "SET" : "MISSING",
-        DB_NAME: process.env.DB_NAME ? "SET" : "MISSING",
-      },
-
-      // Database configuration
-      databaseConfig: {
-        host: process.env.DB_HOST,
-        port: parseInt(process.env.DB_PORT) || 3306,
-        database: process.env.DB_NAME,
-        ssl: false,
-      },
+    const envCheck = {
+      DB_HOST: process.env.DB_HOST ? "SET" : "MISSING",
+      DB_PORT: process.env.DB_PORT || "3306 (default)",
+      DB_USER: process.env.DB_USER ? "SET" : "MISSING",
+      DB_PASSWORD: process.env.DB_PASSWORD ? "SET" : "MISSING",
+      DB_NAME: process.env.DB_NAME ? "SET" : "MISSING",
     };
 
-    //  MySQL connection
-    let connectionTest = {
-      status: "failed",
-      error: null,
-      duration: 0,
-    };
-
+    let poolTest = { status: "failed", error: null };
     try {
-      const mysql = require("mysql2/promise");
-      const testConfig = {
-        host: process.env.DB_HOST,
-        port: parseInt(process.env.DB_PORT) || 3306,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
-        database: process.env.DB_NAME,
-        ssl: false,
-        connectTimeout: 5000,
-      };
-
-      const testStart = Date.now();
-      const connection = await mysql.createConnection(testConfig);
-
-      try {
-        const [rows] = await connection.execute(
-          "SELECT 1 as test, NOW() as timestamp, CONNECTION_ID() as conn_id, VERSION() as version",
-        );
-        connectionTest = {
-          status: "success",
-          duration: Date.now() - testStart,
-          result: rows[0],
-          connectionId: rows[0].conn_id,
-          serverVersion: rows[0].version,
-        };
-      } finally {
-        await connection.end();
-      }
-    } catch (error) {
-      connectionTest = {
+      const result = await testConnection();
+      poolTest = { status: "success", ...result };
+    } catch (err) {
+      poolTest = {
         status: "failed",
-        duration: Date.now() - startTime,
-        error: {
-          code: error.code,
-          errno: error.errno,
-          sqlState: error.sqlState,
-          message: error.message,
-        },
+        error: { code: err.code, message: err.message },
       };
     }
 
-    // Pool connection test
-    let poolTest = {
-      status: "failed",
-      error: null,
-    };
-
-    try {
-      const { testConnection } = require("./config/database");
-      const poolResult = await testConnection();
-      poolTest = {
-        status: "success",
-        ...poolResult,
-      };
-    } catch (error) {
-      poolTest = {
-        status: "failed",
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      };
-    }
-
-    // DNS resolution check
-    let dnsTest = {
-      status: "unknown",
-      error: null,
-    };
-
+    let dnsTest = { status: "unknown" };
     if (process.env.DB_HOST) {
       try {
         const dns = require("dns").promises;
         const dnsStart = Date.now();
-        const addresses = await dns.lookup(process.env.DB_HOST);
+        const resolved = await dns.lookup(process.env.DB_HOST);
         dnsTest = {
           status: "success",
           duration: Date.now() - dnsStart,
-          resolved: addresses,
+          resolved,
         };
-      } catch (error) {
+      } catch (err) {
         dnsTest = {
           status: "failed",
-          error: {
-            code: error.code,
-            message: error.message,
-          },
+          error: { code: err.code, message: err.message },
         };
       }
     }
 
-    const totalDuration = Date.now() - startTime;
-
     res.json({
       success: true,
-      message: "Database diagnostic completed",
-      totalDuration: `${totalDuration}ms`,
+      totalDuration: `${Date.now() - startTime}ms`,
       diagnostic: {
-        ...diagnostic,
-        tests: {
-          directConnection: connectionTest,
-          poolConnection: poolTest,
-          dnsResolution: dnsTest,
-        },
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || "development",
+        environmentVariables: envCheck,
+        tests: { poolConnection: poolTest, dnsResolution: dnsTest },
         summary: {
-          canConnectDirectly: connectionTest.status === "success",
           canConnectViaPool: poolTest.status === "success",
           canResolveDNS: dnsTest.status === "success",
           overallStatus:
-            connectionTest.status === "success" ? "healthy" : "unhealthy",
+            poolTest.status === "success" ? "healthy" : "unhealthy",
         },
       },
     });
-  } catch (error) {
+  } catch (err) {
     res.status(500).json({
       success: false,
       error: "Diagnostic test failed",
-      details: {
-        message: error.message,
-        code: error.code,
-        stack: error.stack,
-      },
+      details: { message: err.message, code: err.code },
       duration: `${Date.now() - startTime}ms`,
     });
   }
 });
 
-// Network connectivity test endpoint
-app.get("/api/diagnostic/network", async (req, res) => {
-  try {
-    const os = require("os");
-    const networkInterfaces = os.networkInterfaces();
-
-    res.json({
-      success: true,
-      serverInfo: {
-        hostname: os.hostname(),
-        platform: os.platform(),
-        arch: os.arch(),
-        uptime: os.uptime(),
-        networkInterfaces: Object.keys(networkInterfaces).reduce(
-          (acc, name) => {
-            acc[name] = networkInterfaces[name].filter(
-              (iface) => iface.family === "IPv4",
-            );
-            return acc;
-          },
-          {},
-        ),
-      },
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
+app.get("/api/diagnostic/network", internalOnly, (req, res) => {
+  const os = require("os");
+  const ifaces = os.networkInterfaces();
+  res.json({
+    success: true,
+    serverInfo: {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      uptime: os.uptime(),
+      networkInterfaces: Object.fromEntries(
+        Object.entries(ifaces).map(([name, addrs]) => [
+          name,
+          addrs.filter((a) => a.family === "IPv4"),
+        ]),
+      ),
+    },
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// test env
-app.get("/api/debugme", (req, res) => {
+app.get("/api/debugme", internalOnly, (req, res) => {
   res.json({
     maxFileSize: process.env.MAX_FILE_SIZE,
     nodeEnv: process.env.NODE_ENV,
     dbHost: process.env.DB_HOST ? "SET" : "NOT SET",
-
     spacesKey: process.env.SPACES_KEY ? "SET" : "NOT SET",
     spacesSecret: process.env.SPACES_SECRET ? "SET" : "NOT SET",
     spacesBucket: process.env.SPACES_BUCKET || "NOT SET",
     spacesEndpoint: process.env.SPACES_ENDPOINT || "NOT SET",
-
-    allEnvKeys: Object.keys(process.env).filter(
-      (key) => key.includes("MAX_FILE") || key.includes("NODE_ENV"),
-    ),
   });
 });
 
-// upload size
+// ─── Test upload ───────────────────────────────────────────────────────────────
+
 const testUpload = multer({
-  limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB
-  },
+  limits: { fileSize: 500 * 1024 * 1024 },
   storage: multer.memoryStorage(),
 });
 
-// Test upload endpoint
-app.post("/api/test-upload-direct", testUpload.single("file"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: "No file uploaded",
-      });
-    }
-
-    const fileSizeMB = (req.file.size / (1024 * 1024)).toFixed(2);
+app.post(
+  "/api/test-upload-direct",
+  internalOnly,
+  testUpload.single("file"),
+  (req, res) => {
+    if (!req.file)
+      return res
+        .status(400)
+        .json({ success: false, error: "No file uploaded" });
 
     res.json({
       success: true,
@@ -492,36 +323,24 @@ app.post("/api/test-upload-direct", testUpload.single("file"), (req, res) => {
       fileInfo: {
         originalName: req.file.originalname,
         size: req.file.size,
-        sizeMB: fileSizeMB,
+        sizeMB: (req.file.size / (1024 * 1024)).toFixed(2),
         mimetype: req.file.mimetype,
-        server: "Node.js direct",
-        nginxBypassed: true,
       },
     });
-  } catch (error) {
-    console.error("Test upload error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      errorCode: error.code,
-    });
-  }
-});
+  },
+);
 
-// Error handler
-app.use((err, req, res, next) => {
+// ─── Error handlers ────────────────────────────────────────────────────────────
+
+app.use((err, req, res, _next) => {
   console.error("Server error:", err);
   res.status(500).json({
     success: false,
-    error:
-      process.env.NODE_ENV === "development"
-        ? err.message
-        : "Something went wrong!",
+    error: IS_PROD ? "Something went wrong!" : err.message,
     timestamp: new Date().toISOString(),
   });
 });
 
-// 404 handler
 app.use("*", (req, res) => {
   res.status(404).json({
     success: false,
@@ -530,5 +349,43 @@ app.use("*", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// ─── Graceful shutdown ─────────────────────────────────────────────────────────
+
+const shutdown = async () => {
+  try {
+    await closePool();
+    process.exit(0);
+  } catch (err) {
+    console.error("Error during shutdown:", err);
+    process.exit(1);
+  }
+};
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+// ─── Bootstrap ─────────────────────────────────────────────────────────────────
+
+const startServer = async () => {
+  try {
+    await initializeDatabase();
+    await testConnection();
+
+    if (process.env.ENABLE_PSA_WORKER === "true") {
+      require("./workers/psaWorker");
+    }
+
+    scheduleStatusUpdates();
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(
+        `Server running on port ${PORT} [${process.env.NODE_ENV || "development"}]`,
+      );
+    });
+  } catch (err) {
+    console.error("Failed to start server:", err.message);
+    process.exit(1);
+  }
+};
 
 startServer();

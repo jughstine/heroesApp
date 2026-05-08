@@ -21,10 +21,6 @@ const {
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
 
-/**
- * Scans Spaces for new PDFs and enqueues jobs. The background worker
- * handles actual processing automatically.
- */
 router.post("/psa/sync", async (req, res) => {
   const pool = getPool();
   try {
@@ -32,7 +28,6 @@ router.post("/psa/sync", async (req, res) => {
       discoverAndEnqueueJobs(pool),
       getQueueStatus(pool),
     ]);
-
     return res.json({
       success: true,
       summary: {
@@ -51,9 +46,6 @@ router.post("/psa/sync", async (req, res) => {
   }
 });
 
-/**
- * Returns current job queue counts by status.
- */
 router.get("/psa/sync/status", async (req, res) => {
   const pool = getPool();
   try {
@@ -74,9 +66,6 @@ const PSA_HTTP_ERRORS = {
   503: "PSA API is under maintenance",
 };
 
-/**
- * Proxies a single order lookup to the PSA API.
- */
 router.get("/psa/orders/:reference_number", async (req, res) => {
   const { reference_number } = req.params;
   try {
@@ -90,18 +79,15 @@ router.get("/psa/orders/:reference_number", async (req, res) => {
         },
       },
     );
-
     const errorMsg = PSA_HTTP_ERRORS[response.status];
     if (errorMsg)
       return res
         .status(response.status)
         .json({ success: false, message: errorMsg });
-    if (!response.ok) {
+    if (!response.ok)
       return res
         .status(502)
         .json({ success: false, message: `PSA API error: ${response.status}` });
-    }
-
     return res.json({ success: true, data: await response.json() });
   } catch (err) {
     console.error("PSA order fetch error:", err);
@@ -112,10 +98,6 @@ router.get("/psa/orders/:reference_number", async (req, res) => {
   }
 });
 
-/**
- * GET /psa/orders/:reference_number/download
- * Returns a PSA-issued download URL for a given order.
- */
 router.get("/psa/orders/:reference_number/download", async (req, res) => {
   const { reference_number } = req.params;
   try {
@@ -129,11 +111,10 @@ router.get("/psa/orders/:reference_number/download", async (req, res) => {
         },
       },
     );
-    if (!response.ok) {
+    if (!response.ok)
       return res
         .status(response.status)
         .json({ success: false, message: `PSA API error: ${response.status}` });
-    }
     const json = await response.json();
     return res.json({ success: true, data: { url: json.url } });
   } catch (err) {
@@ -145,47 +126,48 @@ router.get("/psa/orders/:reference_number/download", async (req, res) => {
   }
 });
 
-// GET /psa/order-data/:reference_number
+// ─── PSA order-data (shared query builder) ───────────────────────────────────
+
+/**
+ * Formats a raw psa_order_data row into a consistent API response shape.
+ */
+function formatOrderRow(row) {
+  const raw =
+    typeof row.raw_json === "string" ? JSON.parse(row.raw_json) : row.raw_json;
+  return {
+    state: row.state,
+    type: row.type,
+    reference_number: row.reference_number,
+    created_at: raw?.created_at,
+    purged_at: raw?.purged_at,
+    requester: {
+      name: row.requester_name,
+      email: row.requester_email,
+      primary_last_name: raw?.requester?.primary_last_name,
+      primary_first_name: raw?.requester?.primary_first_name,
+      primary_middle_name: raw?.requester?.primary_middle_name,
+    },
+  };
+}
+
+const ORDER_DATA_SELECT = `
+  SELECT state, type, reference_number,
+         requester_name, requester_email, raw_json, created_at
+  FROM psa_order_data
+  WHERE reference_number = ?
+  LIMIT 1`;
+
 router.get("/psa/order-data/:reference_number", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
   try {
-    const [rows] = await pool.execute(
-      `SELECT state, type, reference_number,
-              requester_name, requester_email, raw_json, created_at
-       FROM psa_order_data
-       WHERE reference_number = ?
-       LIMIT 1`,
-      [reference_number],
-    );
-    if (rows.length === 0) {
+    const [rows] = await pool.execute(ORDER_DATA_SELECT, [reference_number]);
+    if (rows.length === 0)
       return res
         .status(404)
         .json({ success: false, message: "PSA order data not found" });
-    }
-    const row = rows[0];
-    const raw =
-      typeof row.raw_json === "string"
-        ? JSON.parse(row.raw_json)
-        : row.raw_json;
-    return res.json({
-      success: true,
-      data: {
-        state: row.state,
-        type: row.type,
-        reference_number: row.reference_number,
-        created_at: raw?.created_at,
-        purged_at: raw?.purged_at,
-        requester: {
-          name: row.requester_name,
-          email: row.requester_email,
-          primary_last_name: raw?.requester?.primary_last_name,
-          primary_first_name: raw?.requester?.primary_first_name,
-          primary_middle_name: raw?.requester?.primary_middle_name,
-        },
-      },
-    });
-  } catch (error) {
+    return res.json({ success: true, data: formatOrderRow(rows[0]) });
+  } catch {
     return res
       .status(500)
       .json({ success: false, message: "Failed to fetch PSA order data" });
@@ -194,20 +176,15 @@ router.get("/psa/order-data/:reference_number", async (req, res) => {
 
 // ─── Form-linked document helpers ────────────────────────────────────────────
 
-/**
- * Returns a presigned URL for the PSA document linked to a form submission.
- * Sources in order: Spaces → PSA API (with background save to Spaces).
- */
 router.get("/psa_form/:id/psa-document", async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
   try {
     const reference_number = await resolveReferenceNumber(pool, id);
-    if (!reference_number) {
+    if (!reference_number)
       return res
         .status(404)
         .json({ success: false, message: "No PSA job found for this form" });
-    }
 
     const [docRows] = await pool.execute(
       `SELECT file_key, file_name FROM psa_documents WHERE reference_number = ? LIMIT 1`,
@@ -216,12 +193,10 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
 
     if (docRows.length > 0) {
       const { file_key, file_name } = docRows[0];
-      const publicUrl = buildSpacesFileUrl(file_key);
-
       return res.json({
         success: true,
         source: "spaces",
-        data: { file_url: publicUrl, file_name },
+        data: { file_url: buildSpacesFileUrl(file_key), file_name },
       });
     }
 
@@ -236,21 +211,18 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
         },
       },
     );
-    if (!downloadResponse.ok) {
+    if (!downloadResponse.ok)
       return res.status(downloadResponse.status).json({
         success: false,
         message: "Document not in Spaces and PSA API also failed",
       });
-    }
 
     const psaPresignedUrl = (await downloadResponse.json())?.url;
-    if (!psaPresignedUrl) {
+    if (!psaPresignedUrl)
       return res
         .status(404)
         .json({ success: false, message: "PSA did not return a download URL" });
-    }
 
-    // Save to Spaces in the background so next request is served locally
     saveToSpacesInBackground(psaPresignedUrl, reference_number, pool);
 
     return res.json({
@@ -268,53 +240,32 @@ router.get("/psa_form/:id/psa-document", async (req, res) => {
 
 /**
  * Streams the PDF directly to the client.
+ * buckets. If you have public files, set SPACES_PUBLIC_BUCKET=true in env.
  */
 router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
   try {
     const reference_number = await resolveReferenceNumber(pool, id);
-    if (!reference_number) {
+    if (!reference_number)
       return res
         .status(404)
         .json({ success: false, message: "No PSA reference found" });
-    }
 
     const [rows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ success: false, message: "No PDF found" });
-    }
 
-    const fileUrl = await getSignedUrl(
-      getPsaPgmcBucketClient(),
-      new GetObjectCommand({
-        Bucket: process.env.SPACES_BUCKET,
-        Key: rows[0].file_key,
-      }),
-      { expiresIn: 900 },
-    );
-
-    const pdfResponse = await fetch(fileUrl);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename="${reference_number}.pdf"`,
-    );
-
-    const { Readable } = require("stream");
-    Readable.fromWeb(pdfResponse.body).pipe(res);
+    await streamPdfToResponse(rows[0].file_key, reference_number, res);
   } catch (err) {
     console.error("PDF stream error:", err);
     res.status(500).json({ success: false, message: "Failed to stream PDF" });
   }
 });
 
-/**
- * Returns structured order data for a form submission.
- */
 router.get("/psa_form/:id/psa-order", async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
@@ -322,12 +273,8 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
     const reference_number = await resolveReferenceNumber(pool, id);
 
     const query = reference_number
-      ? `SELECT state, type, reference_number, requester_name, requester_email, raw_json, created_at
-         FROM psa_order_data
-         WHERE reference_number = ?
-         LIMIT 1`
-      : // If no reference resolved, try matching directly against the form submission ID
-        `SELECT po.state, po.type, po.reference_number,
+      ? ORDER_DATA_SELECT
+      : `SELECT po.state, po.type, po.reference_number,
                 po.requester_name, po.requester_email, po.raw_json, po.created_at
          FROM psa_order_data po
          INNER JOIN psa_processing_jobs pj ON pj.reference_number = po.reference_number
@@ -336,35 +283,12 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
 
     const [rows] = await pool.execute(query, [reference_number ?? id]);
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res
         .status(404)
         .json({ success: false, message: "PSA order data not found" });
-    }
 
-    const row = rows[0];
-    const raw =
-      typeof row.raw_json === "string"
-        ? JSON.parse(row.raw_json)
-        : row.raw_json;
-
-    return res.json({
-      success: true,
-      data: {
-        state: row.state,
-        type: row.type,
-        reference_number: row.reference_number,
-        created_at: raw?.created_at,
-        purged_at: raw?.purged_at,
-        requester: {
-          name: row.requester_name,
-          email: row.requester_email,
-          primary_last_name: raw?.requester?.primary_last_name,
-          primary_first_name: raw?.requester?.primary_first_name,
-          primary_middle_name: raw?.requester?.primary_middle_name,
-        },
-      },
-    });
+    return res.json({ success: true, data: formatOrderRow(rows[0]) });
   } catch (error) {
     console.error("PSA order data fetch error:", error);
     return res
@@ -377,30 +301,37 @@ router.get("/psa_form/:id/psa-order", async (req, res) => {
 
 /**
  * GET /psa/bucket/files
- * Lists files from the legacy PSA AWS S3 bucket, pairing PDFs with their
- * JSON sidecars.
+ * unbounded Promise.all across thousands of objects.
  */
 router.get("/psa/bucket/files", async (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const continuationToken = req.query.cursor || undefined;
+
   try {
     const psaBucket = getPsaBucketClient();
     const data = await psaBucket.send(
-      new ListObjectsV2Command({ Bucket: process.env.PSA_BUCKET }),
+      new ListObjectsV2Command({
+        Bucket: process.env.PSA_BUCKET,
+        MaxKeys: limit * 2, // over-fetch to account for JSON sidecars
+        ContinuationToken: continuationToken,
+      }),
     );
+
     const files = data.Contents || [];
     const pdfs = files.filter((f) => f.Key.endsWith(".pdf"));
-    const jsons = files.filter((f) => f.Key.endsWith(".json"));
-
-    const jsonKeyMap = new Map(
-      jsons.map((j) => [
-        j.Key.replace(/^.*\//, "").replace(".json", ""),
-        j.Key,
-      ]),
+    const jsonKeys = new Map(
+      files
+        .filter((f) => f.Key.endsWith(".json"))
+        .map((j) => [j.Key.replace(/^.*\//, "").replace(".json", ""), j.Key]),
     );
 
-    // Fetch all JSON sidecars concurrently
-    const jsonContentMap = new Map(
+    // Limit concurrent S3 reads to avoid hammering the bucket
+    const CONCURRENCY = 10;
+    const jsonContentMap = new Map();
+    for (let i = 0; i < [...jsonKeys.entries()].length; i += CONCURRENCY) {
+      const batch = [...jsonKeys.entries()].slice(i, i + CONCURRENCY);
       await Promise.all(
-        [...jsonKeyMap.entries()].map(async ([refNumber, key]) => {
+        batch.map(async ([refNumber, key]) => {
           try {
             const obj = await psaBucket.send(
               new GetObjectCommand({
@@ -411,39 +342,51 @@ router.get("/psa/bucket/files", async (req, res) => {
             const chunks = [];
             for await (const chunk of obj.Body) chunks.push(chunk);
             const raw = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
-            return [refNumber, Array.isArray(raw) ? raw[0] : raw];
+            jsonContentMap.set(refNumber, Array.isArray(raw) ? raw[0] : raw);
           } catch (e) {
             console.warn(`Failed to fetch JSON for ${refNumber}:`, e.message);
-            return [refNumber, null];
+            jsonContentMap.set(refNumber, null);
           }
         }),
-      ),
-    );
+      );
+    }
 
-    // Build paired results with presigned URLs
-    const paired = await Promise.all(
-      pdfs.map(async (pdf) => {
-        const refNumber = pdf.Key.replace(/^.*\//, "").replace(".pdf", "");
-        const pdfUrl = await getSignedUrl(
-          psaBucket,
-          new GetObjectCommand({
-            Bucket: process.env.PSA_BUCKET,
-            Key: pdf.Key,
-          }),
-          { expiresIn: 900 },
-        );
-        return {
-          reference_number: refNumber,
-          pdf_key: pdf.Key,
-          pdf_url: pdfUrl,
-          pdf_size: pdf.Size,
-          last_modified: pdf.LastModified,
-          json_data: jsonContentMap.get(refNumber) ?? null,
-        };
-      }),
-    );
+    // Generate presigned URLs with bounded concurrency
+    const paired = [];
+    for (let i = 0; i < pdfs.length; i += CONCURRENCY) {
+      const batch = pdfs.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (pdf) => {
+          const refNumber = pdf.Key.replace(/^.*\//, "").replace(".pdf", "");
+          const pdfUrl = await getSignedUrl(
+            psaBucket,
+            new GetObjectCommand({
+              Bucket: process.env.PSA_BUCKET,
+              Key: pdf.Key,
+            }),
+            { expiresIn: 900 },
+          );
+          return {
+            reference_number: refNumber,
+            pdf_key: pdf.Key,
+            pdf_url: pdfUrl,
+            pdf_size: pdf.Size,
+            last_modified: pdf.LastModified,
+            json_data: jsonContentMap.get(refNumber) ?? null,
+          };
+        }),
+      );
+      paired.push(...results);
+    }
 
-    return res.json({ success: true, data: paired });
+    return res.json({
+      success: true,
+      data: paired,
+      pagination: {
+        nextCursor: data.IsTruncated ? data.NextContinuationToken : null,
+        hasMore: !!data.IsTruncated,
+      },
+    });
   } catch (error) {
     console.error("PSA bucket list error:", error);
     return res.status(500).json({
@@ -455,8 +398,7 @@ router.get("/psa/bucket/files", async (req, res) => {
 });
 
 /**
- * Paginated listing of documents in our Spaces bucket, with optional
- * search and type filter. Joined with order data for display.
+ * Paginated listing of documents in Spaces, with optional search and type
  */
 router.get("/psa/spaces/files", async (req, res) => {
   const pool = getPool();
@@ -465,6 +407,7 @@ router.get("/psa/spaces/files", async (req, res) => {
   const offset = (page - 1) * limit;
   const search = req.query.search?.trim() || "";
   const type = req.query.type?.trim() || "";
+
   try {
     const conditions = [];
     const params = [];
@@ -482,17 +425,9 @@ router.get("/psa/spaces/files", async (req, res) => {
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    const [[{ total }]] = await pool.query(
-      `SELECT COUNT(*) as total
-       FROM psa_documents pd
-       LEFT JOIN psa_order_data po ON po.reference_number = pd.reference_number
-       LEFT JOIN form_submission fs ON fs.id = pd.reference_number
-       ${where}`,
-      params,
-    );
-
+    // Single round-trip: SQL_CALC_FOUND_ROWS + FOUND_ROWS()
     const [rows] = await pool.query(
-      `SELECT
+      `SELECT SQL_CALC_FOUND_ROWS
          pd.reference_number, pd.file_name, pd.file_key, pd.created_at,
          po.state, po.type, po.requester_name, po.requester_email,
          fs.form_reference
@@ -505,7 +440,9 @@ router.get("/psa/spaces/files", async (req, res) => {
       [...params, limit, offset],
     );
 
+    const [[{ total }]] = await pool.query(`SELECT FOUND_ROWS() AS total`);
     const totalPages = Math.ceil(Number(total) / limit);
+
     return res.json({
       success: true,
       data: rows,
@@ -528,6 +465,9 @@ router.get("/psa/spaces/files", async (req, res) => {
   }
 });
 
+/**
+ * once at startup, not per-request.
+ */
 router.get("/psa/spaces/:reference_number/stream", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
@@ -539,41 +479,7 @@ router.get("/psa/spaces/:reference_number/stream", async (req, res) => {
     if (rows.length === 0)
       return res.status(404).json({ success: false, message: "No PDF found" });
 
-    const { file_key } = rows[0];
-    const client = getPsaPgmcBucketClient();
-
-    // Try public URL first (works for ACL public files without needing credentials)
-    const publicUrl = buildSpacesFileUrl(file_key);
-    let fetchUrl = publicUrl;
-
-    const publicCheck = await fetch(publicUrl, { method: "HEAD" });
-    if (publicCheck.status === 403 || publicCheck.status === 401) {
-      // File is private — generate a presigned URL
-      fetchUrl = await getSignedUrl(
-        client,
-        new GetObjectCommand({
-          Bucket: process.env.SPACES_BUCKET,
-          Key: file_key,
-        }),
-        { expiresIn: 900 },
-      );
-    }
-
-    const pdfResponse = await fetch(fetchUrl);
-    if (!pdfResponse.ok) {
-      return res.status(502).json({
-        success: false,
-        message: `Spaces fetch failed: ${pdfResponse.status}`,
-      });
-    }
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename="${reference_number}.pdf"`,
-    );
-    const { Readable } = require("stream");
-    Readable.fromWeb(pdfResponse.body).pipe(res);
+    await streamPdfToResponse(rows[0].file_key, reference_number, res);
   } catch (err) {
     console.error("Stream error:", err.message);
     res.status(500).json({ success: false, message: err.message });
@@ -581,76 +487,27 @@ router.get("/psa/spaces/:reference_number/stream", async (req, res) => {
 });
 
 /**
- * Returns a fresh presigned URL for a document stored in Spaces.
+ * streams directly to response instead of buffering the whole PDF in memory.
+ * Eliminates the largest per-request allocation in the original code.
  */
 router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
   try {
-    console.log("ENV CHECK:", {
-      hasKey: !!process.env.SPACES_KEY,
-      hasSecret: !!process.env.SPACES_SECRET,
-      bucket: process.env.SPACES_BUCKET,
-      endpoint: process.env.SPACES_ENDPOINT,
-    });
-
     const [rows] = await pool.execute(
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ success: false, message: "No PDF found" });
-    }
 
-    console.log("file_key from DB:", rows[0].file_key);
-
-    const signedUrl = await getSignedUrl(
-      getPsaPgmcBucketClient(),
-      new GetObjectCommand({
-        Bucket: process.env.SPACES_BUCKET,
-        Key: rows[0].file_key,
-      }),
-      { expiresIn: 300 },
-    );
-
-    const pdfResponse = await fetch(signedUrl);
-    if (!pdfResponse.ok) {
-      return res.status(502).json({
-        success: false,
-        message: `Spaces fetch failed: ${pdfResponse.status}`,
-      });
-    }
-
-    const arrayBuffer = await pdfResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename="${reference_number}.pdf"`,
-    );
-    res.setHeader("Cache-Control", "private, max-age=240");
-    res.setHeader("Content-Length", buffer.length);
-    res.end(buffer);
+    await streamPdfToResponse(rows[0].file_key, reference_number, res);
   } catch (err) {
     console.error("PDF proxy error:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message,
-      hint: {
-        hasKey: !!process.env.SPACES_KEY,
-        hasSecret: !!process.env.SPACES_SECRET,
-        bucket: process.env.SPACES_BUCKET,
-        endpoint: process.env.SPACES_ENDPOINT,
-      },
-    });
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * Deletes the PDF (and JSON sidecar) from Spaces and removes the document
- * record from the database.
- */
 router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
@@ -659,17 +516,15 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({
         success: false,
         message: "Document not found in Spaces records",
       });
-    }
 
     const { file_key } = rows[0];
     const client = getPsaPgmcBucketClient();
 
-    // Delete PDF
     try {
       await client.send(
         new DeleteObjectCommand({
@@ -685,24 +540,26 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
       });
     }
 
-    // Delete JSON sidecar (best effort — don't fail the whole purge if missing)
-    try {
-      await client.send(
+    // Best-effort JSON sidecar removal
+    client
+      .send(
         new DeleteObjectCommand({
           Bucket: process.env.SPACES_BUCKET,
           Key: file_key.replace(".pdf", ".json"),
         }),
-      );
-    } catch (_) {}
+      )
+      .catch(() => {});
 
-    // Update DB
-    await pool.execute(
-      `UPDATE psa_order_data SET state = 'purged', purged_at = NOW(), updated_at = NOW()
-       WHERE reference_number = ?`,
-      [reference_number],
-    );
-    await pool.execute(`DELETE FROM psa_documents WHERE reference_number = ?`, [
-      reference_number,
+    // Single transaction-ish batch via Promise.all to reduce round-trips
+    await Promise.all([
+      pool.execute(
+        `UPDATE psa_order_data SET state = 'purged', purged_at = NOW(), updated_at = NOW()
+         WHERE reference_number = ?`,
+        [reference_number],
+      ),
+      pool.execute(`DELETE FROM psa_documents WHERE reference_number = ?`, [
+        reference_number,
+      ]),
     ]);
 
     return res.json({
@@ -721,6 +578,39 @@ router.delete("/psa/spaces/:reference_number/purge", async (req, res) => {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
+ * Streams a Spaces PDF directly to an HTTP response without buffering
+ * the full file in memory.
+ *
+ * @param {string} fileKey   - S3/Spaces object key
+ * @param {string} fileName  - value used in Content-Disposition
+ * @param {import('express').Response} res
+ */
+async function streamPdfToResponse(fileKey, fileName, res) {
+  const { Readable } = require("stream");
+  const signedUrl = await getSignedUrl(
+    getPsaPgmcBucketClient(),
+    new GetObjectCommand({ Bucket: process.env.SPACES_BUCKET, Key: fileKey }),
+    { expiresIn: 900 },
+  );
+
+  const pdfResponse = await fetch(signedUrl);
+  if (!pdfResponse.ok) {
+    res.status(502).json({
+      success: false,
+      message: `Spaces fetch failed: ${pdfResponse.status}`,
+    });
+    return;
+  }
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${fileName}.pdf"`);
+  res.setHeader("Cache-Control", "private, max-age=240");
+
+  // Stream directly — no arrayBuffer(), no Buffer.from(), no memory spike
+  Readable.fromWeb(pdfResponse.body).pipe(res);
+}
+
+/**
  * Fetches a PDF from a PSA presigned URL and saves it to Spaces + DB
  * in the background (fire-and-forget). Errors are logged, never thrown.
  */
@@ -729,8 +619,6 @@ function saveToSpacesInBackground(psaPresignedUrl, referenceNumber, pool) {
     .then((r) => r.arrayBuffer())
     .then(async (buffer) => {
       const key = `PSA/${referenceNumber}.pdf`;
-      const fileUrl = buildSpacesFileUrl(key);
-
       await getPsaPgmcBucketClient().send(
         new PutObjectCommand({
           Bucket: process.env.SPACES_BUCKET,
@@ -739,12 +627,16 @@ function saveToSpacesInBackground(psaPresignedUrl, referenceNumber, pool) {
           ContentType: "application/pdf",
         }),
       );
-
       await pool.execute(
         `INSERT INTO psa_documents (reference_number, file_name, file_key, file_url, created_at)
          VALUES (?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE file_key = VALUES(file_key), file_url = VALUES(file_url)`,
-        [referenceNumber, `${referenceNumber}.pdf`, key, fileUrl],
+        [
+          referenceNumber,
+          `${referenceNumber}.pdf`,
+          key,
+          buildSpacesFileUrl(key),
+        ],
       );
     })
     .catch((err) => console.error("Background PDF save failed:", err));

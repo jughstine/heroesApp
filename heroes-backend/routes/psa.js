@@ -580,52 +580,6 @@ router.get("/psa/spaces/:reference_number/stream", async (req, res) => {
   }
 });
 
-router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
-  const { reference_number } = req.params;
-  const pool = getPool();
-  try {
-    const [rows] = await pool.execute(
-      `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
-      [reference_number],
-    );
-    if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: "No PDF found" });
-    }
-
-    const { file_key } = rows[0];
-    const signedUrl = await getSignedUrl(
-      getPsaPgmcBucketClient(),
-      new GetObjectCommand({
-        Bucket: process.env.SPACES_BUCKET,
-        Key: file_key,
-      }),
-      { expiresIn: 300 },
-    );
-
-    const pdfResponse = await fetch(signedUrl);
-    if (!pdfResponse.ok) {
-      return res.status(502).json({
-        success: false,
-        message: `Spaces fetch failed: ${pdfResponse.status}`,
-      });
-    }
-
-    // Tell browser to cache for 4 minutes (safe within the 5min presign window)
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename="${reference_number}.pdf"`,
-    );
-    res.setHeader("Cache-Control", "private, max-age=240");
-
-    const { Readable } = require("stream");
-    Readable.fromWeb(pdfResponse.body).pipe(res);
-  } catch (err) {
-    console.error("PDF proxy error:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
 /**
  * Returns a fresh presigned URL for a document stored in Spaces.
  */

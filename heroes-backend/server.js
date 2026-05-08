@@ -118,22 +118,7 @@ createManualTriggerRoute(app);
 app.get("/api/check-routes", (req, res) => {
   res.json({
     success: true,
-    routes: [
-      "/api/heroes",
-      "/api/upload",
-      "/api/announcements",
-      "/api/users",
-      "/api/forms",
-      "/api/inquiries",
-      "/api/admin",
-      "/api/admin_forms",
-      "/api/health",
-      "/api/test-inquiries",
-      "/admin/trigger-status-update",
-      "/admin/users-at-risk",
-      "/admin/cycle-statistics",
-      "/admin/current-cycle",
-    ],
+    routes: ["/api/heroes"],
     timestamp: new Date().toISOString(),
   });
 });
@@ -450,6 +435,12 @@ app.get("/api/debugme", (req, res) => {
     maxFileSize: process.env.MAX_FILE_SIZE,
     nodeEnv: process.env.NODE_ENV,
     dbHost: process.env.DB_HOST ? "SET" : "NOT SET",
+
+    spacesKey: process.env.SPACES_KEY ? "SET" : "NOT SET",
+    spacesSecret: process.env.SPACES_SECRET ? "SET" : "NOT SET",
+    spacesBucket: process.env.SPACES_BUCKET || "NOT SET",
+    spacesEndpoint: process.env.SPACES_ENDPOINT || "NOT SET",
+
     allEnvKeys: Object.keys(process.env).filter(
       (key) => key.includes("MAX_FILE") || key.includes("NODE_ENV"),
     ),

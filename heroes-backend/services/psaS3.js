@@ -29,6 +29,11 @@ function getPsaBucketClient() {
 function getPsaPgmcBucketClient() {
   if (_psaPgmcBucket) return _psaPgmcBucket;
 
+  let endpoint =
+    process.env.SPACES_ENDPOINT || "https://sgp1.digitaloceanspaces.com";
+  if (!endpoint.startsWith("http")) endpoint = `https://${endpoint}`;
+  endpoint = endpoint.replace(/\/$/, "");
+
   const endpoint =
     process.env.SPACES_ENDPOINT || "https://sgp1.digitaloceanspaces.com";
 

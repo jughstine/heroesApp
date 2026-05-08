@@ -34,8 +34,7 @@ function getPsaPgmcBucketClient() {
   if (!endpoint.startsWith("http")) endpoint = `https://${endpoint}`;
   endpoint = endpoint.replace(/\/$/, "");
 
-  const endpoint =
-    process.env.SPACES_ENDPOINT || "https://sgp1.digitaloceanspaces.com";
+  // ← remove the duplicate const endpoint line
 
   if (!process.env.SPACES_KEY || !process.env.SPACES_SECRET) {
     throw new Error(

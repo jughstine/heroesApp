@@ -587,7 +587,6 @@ router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
   const { reference_number } = req.params;
   const pool = getPool();
   try {
-    // Debug: log env var presence without exposing values
     console.log("ENV CHECK:", {
       hasKey: !!process.env.SPACES_KEY,
       hasSecret: !!process.env.SPACES_SECRET,
@@ -599,16 +598,42 @@ router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
       `SELECT file_key FROM psa_documents WHERE reference_number = ? LIMIT 1`,
       [reference_number],
     );
-
     if (rows.length === 0) {
       return res.status(404).json({ success: false, message: "No PDF found" });
     }
 
     console.log("file_key from DB:", rows[0].file_key);
-    // ... rest of route
+
+    const signedUrl = await getSignedUrl(
+      getPsaPgmcBucketClient(),
+      new GetObjectCommand({
+        Bucket: process.env.SPACES_BUCKET,
+        Key: rows[0].file_key,
+      }),
+      { expiresIn: 300 },
+    );
+
+    const pdfResponse = await fetch(signedUrl);
+    if (!pdfResponse.ok) {
+      return res.status(502).json({
+        success: false,
+        message: `Spaces fetch failed: ${pdfResponse.status}`,
+      });
+    }
+
+    const arrayBuffer = await pdfResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${reference_number}.pdf"`,
+    );
+    res.setHeader("Cache-Control", "private, max-age=240");
+    res.setHeader("Content-Length", buffer.length);
+    res.end(buffer);
   } catch (err) {
     console.error("PDF proxy error:", err);
-    // TEMPORARY — remove after debugging
     return res.status(500).json({
       success: false,
       message: err.message,
@@ -616,6 +641,7 @@ router.get("/psa/spaces/:reference_number/proxy-pdf", async (req, res) => {
         hasKey: !!process.env.SPACES_KEY,
         hasSecret: !!process.env.SPACES_SECRET,
         bucket: process.env.SPACES_BUCKET,
+        endpoint: process.env.SPACES_ENDPOINT,
       },
     });
   }

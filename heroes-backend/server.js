@@ -17,7 +17,15 @@ const {
 const heroesRoutes = require("./routes/heroes");
 const uploadRoutes = require("./routes/upload");
 const announcementsRoutes = require("./routes/announcements");
-const usersRoutes = require("./routes/users");
+
+const {
+  router: usersRoutes,
+  shutdown: shutdownUsers,
+} = require("./routes/users");
+process.on("SIGTERM", () => {
+  shutdownUsers();
+});
+
 const formsRoutes = require("./routes/forms");
 const adminForms = require("./routes/admin_forms");
 const { router: adminAuthRoutes } = require("./routes/admin");
@@ -45,7 +53,6 @@ const ALLOWED_ORIGINS = new Set([
 
 const corsOptions = {
   origin(origin, callback) {
-    // Allow server-to-server (no origin) in both envs
     if (!origin) return callback(null, true);
 
     if (ALLOWED_ORIGINS.has(origin)) return callback(null, true);
@@ -199,7 +206,6 @@ app.get("/api/check-routes", internalOnly, (req, res) => {
   });
 });
 
-// FIX: no longer creates a raw connection per request — uses the existing pool.
 app.get("/api/diagnostic/database", internalOnly, async (req, res) => {
   const startTime = Date.now();
   try {

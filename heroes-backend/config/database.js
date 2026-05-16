@@ -28,7 +28,6 @@ const validateConfig = () => {
   }
 };
 
-// Read once — not re-parsed on every call
 const CONNECTION_LIMIT = parseInt(process.env.DB_CONNECTION_LIMIT, 10) || 10;
 const IS_PROD = process.env.NODE_ENV === "production";
 
@@ -160,7 +159,6 @@ const testConnection = async () => {
 };
 
 // ─── executeQuery ──────────────────────────────────────────────────────────────
-
 const CONNECTION_ERRORS = new Set([
   "PROTOCOL_CONNECTION_LOST",
   "ECONNRESET",
@@ -230,7 +228,6 @@ const getPoolStats = () => {
     ...metrics,
     uptime: metrics.createdAt ? Date.now() - metrics.createdAt.getTime() : 0,
     config: {
-      // FIX: does NOT expose host/credentials — callers don't need them
       database: process.env.DB_NAME,
       environment: process.env.NODE_ENV || "development",
       limit: CONNECTION_LIMIT,

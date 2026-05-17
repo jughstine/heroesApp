@@ -56,6 +56,15 @@ router.get("/health", async (_req, res) => {
   }
 });
 
+// ─── App config ────────────────────────────────────────────────────────────────
+
+router.get("/app-config", (_req, res) => {
+  res.json({
+    success: true,
+    minimumVersion: "1.4.0",
+  });
+});
+
 // ─── Profile ───────────────────────────────────────────────────────────────────
 
 router.get("/profile/:userId", async (req, res) => {

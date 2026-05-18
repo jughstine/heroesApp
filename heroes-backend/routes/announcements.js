@@ -5,7 +5,7 @@ const { minioClient } = require("./upload");
 const {
   sendFCMAnnouncementBatch,
 } = require("../services/pushNotificationService");
-const { checkDatabaseHealth } = require("../config/database");
+const { healthCheck } = require("../config/database");
 const multer = require("multer");
 
 const upload = multer({ storage: multer.memoryStorage() });
@@ -37,7 +37,7 @@ const ALLOWED_MIME = new Set([
 ]);
 const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 const TITLE_MAX = 100;
-const DESC_MAX = 300;
+const DESC_MAX = 1000;
 
 function validateAnnouncementBody(req, res, next) {
   const { title, description, link_url } = req.body;
@@ -154,8 +154,8 @@ router.post(
       const { title, description, link_url, is_active, display_order } =
         req.body;
 
-      const dbHealthy = await checkDatabaseHealth();
-      if (!dbHealthy) {
+      const health = await healthCheck();
+      if (health.status !== "healthy") {
         return res.status(503).json({
           success: false,
           error:
@@ -411,15 +411,13 @@ router.get("/announcements", async (req, res) => {
   let conn = null;
 
   try {
-    // Database health check
-    const dbHealthy = await checkDatabaseHealth();
-    if (!dbHealthy) {
+    const health = await healthCheck();
+    if (health.status !== "healthy") {
       return res.status(503).json({
         success: false,
         error:
           "Database service temporarily unavailable. Please try again later.",
         code: "DB_UNAVAILABLE",
-        processingTime: `${Date.now() - startTime}ms`,
       });
     }
 

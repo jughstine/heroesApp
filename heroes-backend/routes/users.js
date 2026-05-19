@@ -19,7 +19,7 @@ const ExcelJS = require("exceljs");
 const Papa = require("papaparse");
 const { authenticateAdminToken } = require("./admin");
 const jwt = require("jsonwebtoken");
-const { LRUCache } = require("lru-cache");
+const LRUCache = require("lru-cache");
 
 // ============================================================
 // CONSTANTS
@@ -233,6 +233,7 @@ function buildEmailHtml(type, vars = {}) {
 const blacklistCache = new LRUCache({
   max: 5000,
   ttl: 7 * 24 * 60 * 60 * 1000,
+  ttlAutopurge: true
 });
 
 // AUTH MIDDLEWARE

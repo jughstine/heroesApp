@@ -138,7 +138,10 @@ const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: parseInt(process.env.SMTP_PORT) || 2525,
   secure: false,
-  auth: { user: process.env.SMTP_HOST },
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD,
+  },
   tls: { rejectUnauthorized: false },
   connectionTimeout: 30000,
   greetingTimeout: 15000,
@@ -233,7 +236,7 @@ function buildEmailHtml(type, vars = {}) {
 const blacklistCache = new LRUCache({
   max: 5000,
   ttl: 7 * 24 * 60 * 60 * 1000,
-  ttlAutopurge: true
+  ttlAutopurge: true,
 });
 
 // AUTH MIDDLEWARE

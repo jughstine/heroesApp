@@ -61,7 +61,7 @@ router.get("/health", async (_req, res) => {
 router.get("/app-config", (_req, res) => {
   res.json({
     success: true,
-    minimumVersion: "1.4.0",
+    minimumVersion: "1.4.5",
   });
 });
 
@@ -116,13 +116,13 @@ router.get("/profile/:userId", async (req, res) => {
          -- AFPSN with officer prefix logic
          CASE
            WHEN p.source_table = 'resumption_table' THEN
-             CASE WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+             CASE WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                THEN CONCAT('O-', REPLACE(h2.AFPSN, 'O-', '')) ELSE h2.AFPSN END
            WHEN p.source_table = 'beneficiaries_table' THEN
-             CASE WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+             CASE WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                THEN CONCAT('O-', REPLACE(h3.AFPSN, 'O-', '')) ELSE h3.AFPSN END
            ELSE
-             CASE WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+             CASE WHEN h.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                THEN CONCAT('O-', REPLACE(h.AFPSN, 'O-', '')) ELSE h.AFPSN END
          END AS AFPSN,
          CASE

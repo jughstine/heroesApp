@@ -51,6 +51,7 @@ const OFFICER_RANKS = new Set([
   "LTSG",
   "LTJG",
   "ENS",
+  "O-W",
 ]);
 
 const TABLE_ALLOWLIST = new Map([
@@ -205,7 +206,7 @@ function buildEmailHtml(type, vars = {}) {
   }
 
   if (type === "delete") {
-    return wrap(`${header("Account Deleted", "linear-gradient(135deg,#dc3545 0%,#a71d2a 100%)")}
+    return wrap(`${header("Account Deleted")}
       <div class="content">
         <p>Hello,</p>
         <p>Your AFPPGMC account has been permanently deleted as requested.</p>
@@ -216,11 +217,11 @@ function buildEmailHtml(type, vars = {}) {
   }
 
   if (type === "deactivate") {
-    return wrap(`${header("Account Deactivated", "linear-gradient(135deg,#FF9500 0%,#e68200 100%)")}
+    return wrap(`${header("Account Deactivated")}
       <div class="content">
         <p>Hello,</p>
-        <p>Your AFP PGMC account has been temporarily deactivated.</p>
-        <div class="info"><strong>ℹ️ Reactivation:</strong><br>You can reactivate your account at any time by logging in again.</div>
+        <p>Your AFPPGMC Heroes account has been temporarily deactivated.</p>
+        <div class="info"><strong>Reactivation:</strong><br>You can reactivate your account at any time by logging in again.</div>
         <div class="warning"><strong>⚠️ Notice:</strong><br>If you did not request this, please contact support immediately.</div>
         <p><strong>Time:</strong> ${new Date().toLocaleString("en-US", { timeZone: "Asia/Manila", dateStyle: "full", timeStyle: "long" })}</p>
         <p>Best regards,<br>AFP Pension and Gratuity Management Center Team</p>
@@ -2728,13 +2729,13 @@ router.get("/all", validateDatabaseConnection, async (req, res) => {
              CASE WHEN p.source_table='resumption_table' THEN h2.MOBILENR  WHEN p.source_table='beneficiaries_table' THEN h3.MOBILENR  ELSE h1.MOBILENR  END AS mobile,
              CASE
                WHEN p.source_table='resumption_table' THEN
-                 CASE WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+                 CASE WHEN h2.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                    THEN CONCAT('O-',REPLACE(h2.AFPSN,'O-','')) ELSE h2.AFPSN END
                WHEN p.source_table='beneficiaries_table' THEN
-                 CASE WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+                 CASE WHEN h3.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                    THEN CONCAT('O-',REPLACE(h3.AFPSN,'O-','')) ELSE h3.AFPSN END
                ELSE
-                 CASE WHEN h1.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+                 CASE WHEN h1.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS','O-W')
                    THEN CONCAT('O-',REPLACE(h1.AFPSN,'O-','')) ELSE h1.AFPSN END
              END AS afpsn
       FROM users_tbl u
@@ -2831,7 +2832,7 @@ router.get("/alpha-list", validateDatabaseConnection, async (req, res) => {
 
     const resSelect = `
       SELECT 'resumption_table' AS source_table, r.NDX AS id, r.NDX AS user_id, r.NDX AS ndx,
-             CASE WHEN r.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS')
+             CASE WHEN r.PENRANK IN ('2LT','1LT','CPT','MAJ','LTC','LTCOL','GEN','COMMO','COL','CDR','BGEN','MGEN','LGEN','ADM','VADM','RADM','CAPT','LCDR','LTSG','LTJG','ENS''O-W')
                THEN CONCAT('O-', REPLACE(r.AFPSN,'O-','')) ELSE r.AFPSN END AS afpsn,
              r.PENRANK AS penrank, r.ACRANK AS acrank,
              r.FIRSTNAME AS firstname, r.LASTNAME AS lastname, r.MIDDLENAME AS middlename, r.SUFFIX AS suffix,

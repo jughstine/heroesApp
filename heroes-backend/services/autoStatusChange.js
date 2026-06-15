@@ -1,6 +1,10 @@
 const cron = require("node-cron");
-const { executeQuery, logger } = require("../config/database");
-const { sendPushNotificationToUser } = require("./pushNotificationService");
+const { executeQuery, logger, getPool } = require("../config/database");
+const {
+  sendPushNotificationToUser,
+  sendStatusChangeNotification,
+} = require("./pushNotificationService");
+const pool = require("../config/database").pool;
 
 const QUARTERLY_CYCLES = [
   {
@@ -212,7 +216,7 @@ const autoStatusChangeService = {
         for (const user of eligibleUsers) {
           await sendNotif(
             user.id,
-            "📋 Time to Submit Your Update",
+            "Time to Submit Updating",
             `A new quarter has started ${cycleInfo.name}. Please submit your update form before the deadline to keep your account active.`,
             {
               type: "new_cycle_active",
@@ -256,7 +260,7 @@ const autoStatusChangeService = {
           for (const user of inactiveUsers) {
             await sendNotif(
               user.id,
-              "⚠️ Account Status Warning",
+              "Account Status Warning",
               `You have about ${daysLeft} days left to submit a form. Without a submission, your account will be tagged for deletion.`,
               {
                 type: "status_warning",
@@ -287,8 +291,8 @@ const autoStatusChangeService = {
         for (const user of taggedUsers) {
           await sendNotif(
             user.id,
-            "🏷️ Account Tagged for Deletion",
-            "Your account has been tagged for deletion due to inactivity. Submit a form within the next few days to restore your active status.",
+            "Account Tagged for Deletion",
+            "Your account has been tagged for deletion because you have not submitted an Updating form. Please submit an Updating form within the next few days to restore your active status.",
             {
               type: "status_changed",
               currentStatus: "TAG",
@@ -316,8 +320,8 @@ const autoStatusChangeService = {
         for (const user of deletedUsers) {
           await sendNotif(
             user.id,
-            "🗑️ Account Deleted",
-            "Your account has been deleted due to inactivity. You may contact support to restore your account.",
+            "Account Deleted",
+            "Your account status has been changed to Deleted due to inactivity. To regain access, please submit a Restoration Form.",
             { type: "status_changed", currentStatus: "DEL", screen: "Profile" },
           );
         }
@@ -373,6 +377,24 @@ const autoStatusChangeService = {
           `DEL update: ${result.affectedRows} users deleted`,
           deletedUsers.map((u) => u.email),
         );
+
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < deletedUsers.length; i += BATCH_SIZE) {
+          const batch = deletedUsers.slice(i, i + BATCH_SIZE);
+          await Promise.all(
+            batch.map((user) =>
+              sendStatusChangeNotification(
+                getPool(),
+                user.id,
+                "TAG",
+                "DEL",
+              ).catch((err) =>
+                logger.error(`Failed to notify user ${user.id}:`, err),
+              ),
+            ),
+          );
+          await new Promise((r) => setTimeout(r, 100));
+        }
       } else {
         logger.info("DEL update: no eligible TAG users found");
       }
@@ -411,6 +433,7 @@ const autoStatusChangeService = {
         [activePeriodStart],
       );
 
+      // In updateInactiveACTUsers(), after the UPDATE:
       if (result.affectedRows > 0) {
         const taggedUsers = await executeQuery(`
           SELECT id, email FROM users_tbl 
@@ -420,6 +443,29 @@ const autoStatusChangeService = {
           `TAG update: ${result.affectedRows} users tagged`,
           taggedUsers.map((u) => u.email),
         );
+
+        // Concurrent batches (what you want)
+        const BATCH_SIZE = 10;
+
+        for (let i = 0; i < taggedUsers.length; i += BATCH_SIZE) {
+          const batch = taggedUsers.slice(i, i + BATCH_SIZE); // grab 10 users
+
+          await Promise.all(
+            // fire all 10 at the same time
+            batch.map((user) =>
+              sendStatusChangeNotification(
+                getPool(),
+                user.id,
+                "ACT",
+                "TAG",
+              ).catch((err) =>
+                logger.error(`Failed to notify user ${user.id}:`, err),
+              ),
+            ),
+          );
+
+          await new Promise((r) => setTimeout(r, 100)); // wait 100ms before next batch
+        }
       } else {
         logger.info("TAG update: no eligible ACT users found");
       }

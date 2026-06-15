@@ -3379,4 +3379,90 @@ router.use((error, req, res, next) => {
   next(error);
 });
 
+// ─── User PSA Orders ──────────────────────────────────────────────────────────
+
+router.get("/my-orders", authenticateToken, async (req, res) => {
+  const pool = getPool();
+  const userId = req.user.userId; // from JWT
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const offset = (page - 1) * limit;
+  const state = req.query.state?.trim() || "";
+  const type = req.query.type?.trim() || "";
+
+  try {
+    // Resolve the hero_ndx for this user
+    const [pensionerRows] = await pool.execute(
+      `SELECT p.hero_ndx
+       FROM users_tbl u
+       JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+       WHERE u.id = ?
+       LIMIT 1`,
+      [userId],
+    );
+
+    if (pensionerRows.length === 0)
+      return res
+        .status(404)
+        .json({ success: false, message: "Pensioner record not found" });
+
+    const { hero_ndx } = pensionerRows[0];
+
+    // Build optional filters
+    const conditions = [`po.owned_by_ndx = ?`];
+    const params = [hero_ndx];
+
+    if (state && state !== "all") {
+      conditions.push(`po.state = ?`);
+      params.push(state);
+    }
+    if (type && type !== "all") {
+      conditions.push(`po.type = ?`);
+      params.push(type);
+    }
+
+    const where = `WHERE ${conditions.join(" AND ")}`;
+
+    const [rows] = await pool.query(
+      `SELECT SQL_CALC_FOUND_ROWS
+         po.reference_number,
+         po.state,
+         po.type,
+         po.afpsn,
+         po.created_at,
+         po.updated_at,
+         po.purged_at,
+         pd.file_key IS NOT NULL AS has_document
+       FROM psa_order_data po
+       LEFT JOIN psa_documents pd ON pd.reference_number = po.reference_number
+       ${where}
+       ORDER BY po.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
+    );
+
+    const [[{ total }]] = await pool.query(`SELECT FOUND_ROWS() AS total`);
+    const totalPages = Math.ceil(Number(total) / limit);
+
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        total: Number(total),
+        page,
+        limit,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    });
+  } catch (err) {
+    console.error("My orders fetch error:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch orders" });
+  }
+});
+
 module.exports = { router, shutdown };

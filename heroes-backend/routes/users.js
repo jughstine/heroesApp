@@ -3426,19 +3426,26 @@ router.get("/my-orders", authenticateToken, async (req, res) => {
 
     const [rows] = await pool.query(
       `SELECT SQL_CALC_FOUND_ROWS
-         po.reference_number,
-         po.state,
-         po.type,
-         po.afpsn,
-         po.created_at,
-         po.updated_at,
-         po.purged_at,
-         pd.file_key IS NOT NULL AS has_document
-       FROM psa_order_data po
-       LEFT JOIN psa_documents pd ON pd.reference_number = po.reference_number
-       ${where}
-       ORDER BY po.created_at DESC
-       LIMIT ? OFFSET ?`,
+          po.reference_number,
+          po.state,
+          po.type,
+          po.afpsn,
+          po.requester_name,
+          po.requester_email,
+          po.created_at,
+          po.updated_at,
+          po.purged_at,
+          po.download_used,
+          po.downloaded_at,
+          JSON_UNQUOTE(JSON_EXTRACT(po.raw_json, '$.purge_on'))           AS purge_on,
+          JSON_UNQUOTE(JSON_EXTRACT(po.raw_json, '$.organization_metadata.auth_code')) AS auth_code,
+          JSON_UNQUOTE(JSON_EXTRACT(po.raw_json, '$.downloaded_at'))      AS psa_downloaded_at,
+          pd.file_key IS NOT NULL AS has_document
+        FROM psa_order_data po
+        LEFT JOIN psa_documents pd ON pd.reference_number = po.reference_number
+        ${where}
+        ORDER BY po.created_at DESC
+        LIMIT ? OFFSET ?`,
       [...params, limit, offset],
     );
 
@@ -3464,5 +3471,154 @@ router.get("/my-orders", authenticateToken, async (req, res) => {
       .json({ success: false, message: "Failed to fetch orders" });
   }
 });
+
+router.get(
+  "/my-orders/:reference_number/document",
+  authenticateToken,
+  async (req, res) => {
+    const pool = getPool();
+    const { reference_number } = req.params;
+    const userId = req.user.userId;
+
+    console.log(`[download] start — user=${userId} ref=${reference_number}`);
+
+    try {
+      const [rows] = await pool.execute(
+        `SELECT po.download_used, pd.file_key
+       FROM psa_order_data po
+       JOIN users_tbl u ON u.id = ?
+       JOIN pensioners_tbl p ON p.id = u.pensioner_ndx
+       LEFT JOIN psa_documents pd ON pd.reference_number = po.reference_number
+       WHERE po.reference_number = ?
+         AND po.owned_by_ndx = p.hero_ndx
+       LIMIT 1`,
+        [userId, reference_number],
+      );
+
+      console.log(
+        `[download] ownership query — rows=${rows.length}`,
+        rows[0] ?? "none",
+      );
+
+      if (rows.length === 0)
+        return res
+          .status(404)
+          .json({ success: false, message: "Order not found" });
+
+      if (rows[0].download_used)
+        return res.status(403).json({
+          success: false,
+          code: "DOWNLOAD_EXHAUSTED",
+          message: "This document has already been downloaded.",
+        });
+
+      const [updateResult] = await pool.execute(
+        `UPDATE psa_order_data
+       SET download_used = 1, downloaded_at = NOW()
+       WHERE reference_number = ? AND download_used = 0`,
+        [reference_number],
+      );
+
+      console.log(
+        `[download] UPDATE affectedRows=${updateResult.affectedRows}`,
+      );
+
+      if (updateResult.affectedRows === 0)
+        return res.status(403).json({
+          success: false,
+          code: "DOWNLOAD_EXHAUSTED",
+          message: "This document has already been downloaded.",
+        });
+
+      const { file_key } = rows[0];
+      console.log(
+        `[download] file_key=${file_key ?? "null — will try PSA API"}`,
+      );
+
+      // Change serveDocument to return the signed URL rather than pipe it
+      const serveDocument = async () => {
+        if (file_key) {
+          const { Readable } = require("stream");
+          const { GetObjectCommand } = require("@aws-sdk/client-s3");
+          const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+          const { getPsaPgmcBucketClient } = require("../services/psaS3");
+
+          const signedUrl = await getSignedUrl(
+            getPsaPgmcBucketClient(),
+            new GetObjectCommand({
+              Bucket: process.env.SPACES_BUCKET,
+              Key: file_key,
+            }),
+            { expiresIn: 60 }, // only needs to last long enough for your server to fetch it
+          );
+
+          const pdfResponse = await fetch(signedUrl);
+          if (!pdfResponse.ok)
+            throw new Error(`Spaces fetch failed: ${pdfResponse.status}`);
+
+          res.setHeader("Content-Type", "application/pdf");
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${reference_number}.pdf"`, // <-- attachment forces download
+          );
+          res.setHeader("Cache-Control", "no-store"); // don't cache — one-time document
+
+          Readable.fromWeb(pdfResponse.body).pipe(res);
+          return;
+        }
+
+        // PSA API fallback — fetch and proxy the same way
+        const psaRes = await fetch(
+          `${process.env.PSA_API_BASE_URL}/orders/${reference_number}/download`,
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.PSA_API_TOKEN}`,
+              Accept: "application/json",
+            },
+          },
+        );
+        if (!psaRes.ok) throw new Error(`PSA API error: ${psaRes.status}`);
+
+        const { url } = await psaRes.json();
+        if (!url) throw new Error("No download URL returned");
+
+        const { Readable } = require("stream");
+        const fileRes = await fetch(url);
+        if (!fileRes.ok)
+          throw new Error(`PSA file fetch failed: ${fileRes.status}`);
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${reference_number}.pdf"`,
+        );
+        res.setHeader("Cache-Control", "no-store");
+        Readable.fromWeb(fileRes.body).pipe(res);
+      };
+
+      try {
+        await serveDocument();
+        console.log(`[download] done — response sent`);
+      } catch (serveErr) {
+        console.error(
+          `[download] serveDocument failed, rolling back slot`,
+          serveErr,
+        );
+        await pool.execute(
+          `UPDATE psa_order_data SET download_used = 0, downloaded_at = NULL WHERE reference_number = ?`,
+          [reference_number],
+        );
+        throw serveErr;
+      }
+    } catch (err) {
+      console.error("Document download error:", err);
+      if (!res.headersSent) {
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch document" });
+      }
+    }
+  },
+);
 
 module.exports = { router, shutdown };

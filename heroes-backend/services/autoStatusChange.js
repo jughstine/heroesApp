@@ -4,7 +4,6 @@ const {
   sendPushNotificationToUser,
   sendStatusChangeNotification,
 } = require("./pushNotificationService");
-const pool = require("../config/database").pool;
 
 const QUARTERLY_CYCLES = [
   {

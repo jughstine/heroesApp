@@ -296,12 +296,6 @@ const authenticateToken = async (req, res, next) => {
   }
 
   const decoded = jwt.decode(token);
-  logger.info("Token check:", {
-    userId: decoded?.userId,
-    iat: new Date(decoded?.iat * 1000).toISOString(),
-    exp: new Date(decoded?.exp * 1000).toISOString(),
-    isBlacklisted: blacklistCache.has(token),
-  });
 };
 
 // MIDDLEWARE
@@ -1506,7 +1500,7 @@ router.post(
       const normalizedEmail = email.toLowerCase().trim();
       const users = await executeQuery(
         `SELECT u.id AS user_id, u.email, u.password_hash, u.status AS user_status, u.account_status, u.token_version,
-                p.id AS pensioner_id, p.type, p.bos, p.source_table,
+                p.id AS pensioner_id, p.type, p.b_type, p.bos, p.source_table,
                 COALESCE(h.FIRSTNAME,h2.FIRSTNAME,h3.FIRSTNAME) AS FIRSTNAME,
                 COALESCE(h.LASTNAME,h2.LASTNAME,h3.LASTNAME) AS LASTNAME,
                 COALESCE(h.AFPSN,h2.AFPSN,h3.AFPSN) AS AFPSN
@@ -1574,6 +1568,7 @@ router.post(
           email: user.email,
           pensioner_id: user.pensioner_id,
           type: user.type,
+          b_type: user.b_type,
           status: "ACTIVE",
           account_status:
             user.account_status === "deactivated"
@@ -1601,7 +1596,6 @@ router.post(
 // ============================================================
 // LOGOUT
 // ============================================================
-
 router.post(
   "/logout",
   authenticateToken,
@@ -1643,7 +1637,6 @@ router.post(
 );
 
 // PROFILE
-
 router.get(
   "/profile/:userId",
   authenticateToken,

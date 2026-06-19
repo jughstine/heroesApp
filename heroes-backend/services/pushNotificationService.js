@@ -1,7 +1,6 @@
 const admin = require("../config/firebase");
 const { Expo } = require("expo-server-sdk");
-const pool = require("../config/database").pool;
-
+const { getPool } = require("../config/database");
 const expo = new Expo();
 
 /**
@@ -46,7 +45,14 @@ const validatePushToken = (token) => {
 /**
  * Send notification via Expo Push Notification service
  */
-async function sendExpoNotification(expoToken, title, body, data = {}) {
+async function sendExpoNotification(
+  expoToken,
+  title,
+  body,
+  data = {},
+  sound = "default",
+  channelId = "default",
+) {
   try {
     if (!Expo.isExpoPushToken(expoToken)) {
       console.error("❌ Invalid Expo push token");
@@ -60,12 +66,12 @@ async function sendExpoNotification(expoToken, title, body, data = {}) {
     const messages = [
       {
         to: expoToken,
-        sound: "default",
+        sound: sound,
+        channelId: channelId,
         title: title,
         body: body,
         data: data,
         priority: "high",
-        channelId: "default",
       },
     ];
 
@@ -100,7 +106,14 @@ async function sendExpoNotification(expoToken, title, body, data = {}) {
 /**
  * Send notification via Firebase Cloud Messaging
  */
-async function sendFCMNotification(fcmToken, title, body, data = {}) {
+async function sendFCMNotification(
+  fcmToken,
+  title,
+  body,
+  data = {},
+  sound = "default",
+  channelId = "default",
+) {
   try {
     // Convert all data values to strings (FCM requirement)
     const stringifiedData = {};
@@ -108,7 +121,6 @@ async function sendFCMNotification(fcmToken, title, body, data = {}) {
       stringifiedData[key] = String(value);
     }
 
-    // CRITICAL: Add title and body to data for foreground handling
     stringifiedData.title = String(title);
     stringifiedData.body = String(body);
 
@@ -125,8 +137,8 @@ async function sendFCMNotification(fcmToken, title, body, data = {}) {
       android: {
         priority: "high",
         notification: {
-          sound: "default",
-          channelId: "default",
+          sound: sound,
+          channelId: channelId,
           priority: "high",
           title: title,
           body: body,
@@ -135,7 +147,7 @@ async function sendFCMNotification(fcmToken, title, body, data = {}) {
       apns: {
         payload: {
           aps: {
-            sound: "default",
+            sound: sound,
             alert: {
               title: title,
               body: body,
@@ -165,9 +177,16 @@ async function sendFCMNotification(fcmToken, title, body, data = {}) {
 /**
  * Send push notification to a user by their userId
  */
-async function sendPushNotificationToUser(userId, title, body, data = {}) {
+async function sendPushNotificationToUser(
+  userId,
+  title,
+  body,
+  data = {},
+  sound = "default",
+  channelId = "default",
+) {
   try {
-    const [result] = await pool.execute(
+    const [result] = await getPool().execute(
       "SELECT push_token, fcm_token, platform FROM users_tbl WHERE id = ? LIMIT 1",
       [userId],
     );
@@ -186,22 +205,23 @@ async function sendPushNotificationToUser(userId, title, body, data = {}) {
 
     let notificationResult;
 
-    // Prefer FCM for Android if available
     if (platform === "android" && fcmToken) {
       notificationResult = await sendFCMNotification(
         fcmToken,
         title,
         body,
         data,
+        sound,
+        channelId,
       );
-    }
-    // Use Expo for iOS or as fallback
-    else if (expoToken) {
+    } else if (expoToken) {
       notificationResult = await sendExpoNotification(
         expoToken,
         title,
         body,
         data,
+        sound,
+        channelId,
       );
     } else {
       console.error("❌ No valid push token available");
@@ -372,7 +392,7 @@ const sendFormApprovalNotification = async (db, userId, formDetails) => {
 
     const formName = formTypeNames[formDetails.form_type_id] || "Form";
 
-    // ✅ Use executeQuery helper like status change does
+    // Use executeQuery helper like status change does
     const [userResult] = await executeQuery(
       db,
       "SELECT push_token, fcm_token, platform FROM users_tbl WHERE id = ?",
@@ -398,7 +418,7 @@ const sendFormApprovalNotification = async (db, userId, formDetails) => {
       screen: "Submissions",
     };
 
-    // ✅ Send notification directly like status change does
+    // Send notification directly like status change does
     let pushResult;
     if (platform === "android" && fcm_token) {
       pushResult = await sendFCMNotification(fcm_token, title, body, data);
@@ -441,7 +461,7 @@ const sendFormDenialNotification = async (db, userId, formDetails) => {
 
     const formName = formTypeNames[formDetails.form_type_id] || "Form";
 
-    // ✅ Use executeQuery helper like status change does
+    // Use executeQuery helper like status change does
     const [userResult] = await executeQuery(
       db,
       "SELECT push_token, fcm_token, platform FROM users_tbl WHERE id = ?",
@@ -467,7 +487,7 @@ const sendFormDenialNotification = async (db, userId, formDetails) => {
       screen: "Submissions",
     };
 
-    // ✅ Send notification directly like status change does
+    // Send notification directly like status change does
     let pushResult;
     if (platform === "android" && fcm_token) {
       pushResult = await sendFCMNotification(fcm_token, title, body, data);
@@ -500,7 +520,7 @@ const sendFormDenialNotification = async (db, userId, formDetails) => {
 
 const sendAdminNotesNotification = async (db, userId, formDetails) => {
   try {
-    // ✅ Use executeQuery helper like status change does
+    // Use executeQuery helper like status change does
     const [userResult] = await executeQuery(
       db,
       "SELECT push_token, fcm_token, platform FROM users_tbl WHERE id = ?",
@@ -526,7 +546,7 @@ const sendAdminNotesNotification = async (db, userId, formDetails) => {
       screen: "Submissions",
     };
 
-    // ✅ Send notification directly like status change does
+    // Send notification directly like status change does
     let pushResult;
     if (platform === "android" && fcm_token) {
       pushResult = await sendFCMNotification(fcm_token, title, body, data);

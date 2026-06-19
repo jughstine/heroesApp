@@ -11,30 +11,33 @@ const QUARTERLY_CYCLES = [
     activePeriod: { start: "01-01", end: "03-15" },
     tagPeriod: { start: "03-16", end: "03-20" },
     delPeriod: { start: "03-21", end: "03-31" },
-    name: "Q1 (Jan-Mar)",
+    name: "Quarter 1 (Jan-Mar)",
   },
   {
     cycle: 2,
     activePeriod: { start: "04-01", end: "06-15" },
     tagPeriod: { start: "06-16", end: "06-20" },
     delPeriod: { start: "06-21", end: "06-30" },
-    name: "Q2 (Apr-Jun)",
+    name: "Quarter 2 (Apr-Jun)",
   },
   {
     cycle: 3,
     activePeriod: { start: "07-01", end: "09-15" },
     tagPeriod: { start: "09-16", end: "09-20" },
     delPeriod: { start: "09-21", end: "09-30" },
-    name: "Q3 (Jul-Sep)",
+    name: "Quarter 3 (Jul-Sep)",
   },
   {
     cycle: 4,
     activePeriod: { start: "10-01", end: "12-15" },
     tagPeriod: { start: "12-16", end: "12-20" },
     delPeriod: { start: "12-21", end: "12-31" },
-    name: "Q4 (Oct-Dec)",
+    name: "Quarter 4 (Oct-Dec)",
   },
 ];
+
+const QUARTERLY_SOUND = "afppgmc.wav";
+const QUARTERLY_CHANNEL = "quarterly-cycle";
 
 const autoStatusChangeService = {
   dateToDayOfYear(dateStr, year) {
@@ -172,6 +175,8 @@ const autoStatusChangeService = {
             title,
             body,
             data,
+            QUARTERLY_SOUND,
+            QUARTERLY_CHANNEL,
           );
           if (result.success) {
             notificationsSent++;
@@ -335,6 +340,174 @@ const autoStatusChangeService = {
     } catch (error) {
       logger.error("Error sending status change warning notifications:", error);
       throw error;
+    }
+  },
+
+  // ─── MANUAL FALLBACK NOTIFICATIONS ─────────────────────────────────────────
+
+  async sendManualReminderToUser(userId) {
+    try {
+      const users = await executeQuery(
+        `SELECT id, email, status FROM users_tbl WHERE id = ?`,
+        [userId],
+      );
+
+      if (!users.length) {
+        return { success: false, error: "User not found" };
+      }
+
+      const user = users[0];
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
+        return { success: false, error: "Could not determine current cycle" };
+      }
+
+      let title, body, data;
+
+      if (user.status === "ACT") {
+        const daysLeft =
+          cycleInfo.period === "ACTIVE" ? cycleInfo.daysLeftInPeriod : 0;
+        title = "Account Status Warning";
+        body =
+          cycleInfo.period === "ACTIVE"
+            ? `You have about ${daysLeft} days left to submit a form for ${cycleInfo.name}. Without a submission, your account will be tagged for deletion.`
+            : `Please submit your update form as soon as possible to avoid your account being tagged for deletion.`;
+        data = {
+          type: "status_warning",
+          daysLeft: String(daysLeft),
+          currentStatus: "ACT",
+          nextStatus: "TAG",
+          screen: "Home",
+          manualTrigger: "true",
+        };
+      } else if (user.status === "TAG") {
+        title = "Account Tagged for Deletion";
+        body =
+          "Your account is tagged for deletion because you have not submitted an Updating form. Please submit one as soon as possible to restore your active status.";
+        data = {
+          type: "status_changed",
+          currentStatus: "TAG",
+          nextStatus: "DEL",
+          screen: "Profile",
+          manualTrigger: "true",
+        };
+      } else if (user.status === "DEL") {
+        title = "Account Deleted";
+        body =
+          "Your account status is Deleted due to inactivity. To regain access, please submit a Restoration Form.";
+        data = {
+          type: "status_changed",
+          currentStatus: "DEL",
+          screen: "Profile",
+          manualTrigger: "true",
+        };
+      } else {
+        return {
+          success: false,
+          error: `No reminder defined for status "${user.status}"`,
+        };
+      }
+
+      const result = await sendPushNotificationToUser(
+        userId,
+        title,
+        body,
+        data,
+        QUARTERLY_SOUND,
+        QUARTERLY_CHANNEL,
+      );
+      return { ...result, title, body, cycleName: cycleInfo.name };
+    } catch (error) {
+      logger.error(`Error sending manual reminder to user ${userId}:`, error);
+      return { success: false, error: error.message };
+    }
+  },
+
+  async sendManualReminderBulk() {
+    try {
+      const cycleInfo = this.getCurrentCycleInfo();
+      if (!cycleInfo) {
+        return { success: false, error: "Could not determine current cycle" };
+      }
+
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
+      let targetUsers = [];
+      let title, body, buildData;
+
+      if (cycleInfo.period === "ACTIVE") {
+        targetUsers = await executeQuery(
+          `SELECT id, email FROM users_tbl
+         WHERE status = 'ACT'
+           AND COALESCE(form_submitted_at, approved_at, created_at) < ?`,
+          [activePeriodStart],
+        );
+        title = "Account Status Warning";
+        body = `You have ${cycleInfo.daysLeftInPeriod} days left to submit a form for ${cycleInfo.name}. Without updating, your account will be tagged for deletion.`;
+        buildData = () => ({
+          type: "status_warning",
+          daysLeft: String(cycleInfo.daysLeftInPeriod),
+          currentStatus: "ACT",
+          nextStatus: "TAG",
+          screen: "Home",
+          manualTrigger: "true",
+        });
+      } else if (cycleInfo.period === "TAG_TRANSITION") {
+        targetUsers = await executeQuery(
+          `SELECT id, email FROM users_tbl WHERE status = 'TAG'`,
+        );
+        title = "Account Tagged for Deletion";
+        body =
+          "Your account is tagged for deletion for not submitted an Updating form. Please submit as soon as possible to restore your active status.";
+        buildData = () => ({
+          type: "status_changed",
+          currentStatus: "TAG",
+          nextStatus: "DEL",
+          screen: "Profile",
+          manualTrigger: "true",
+        });
+      } else {
+        return {
+          success: false,
+          error: `No bulk reminder defined for period "${cycleInfo.period}"`,
+        };
+      }
+
+      let sent = 0,
+        failed = 0;
+      const failures = [];
+
+      for (const user of targetUsers) {
+        const result = await sendPushNotificationToUser(
+          user.id,
+          title,
+          body,
+          QUARTERLY_SOUND,
+          QUARTERLY_CHANNEL,
+          buildData(),
+        );
+        if (result.success) {
+          sent++;
+        } else {
+          failed++;
+          failures.push({ userId: user.id, error: result.error });
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      return {
+        success: true,
+        cycleName: cycleInfo.name,
+        period: cycleInfo.period,
+        totalUsers: targetUsers.length,
+        sent,
+        failed,
+        failures,
+        title,
+        body,
+      };
+    } catch (error) {
+      logger.error("Error sending bulk manual reminder:", error);
+      return { success: false, error: error.message };
     }
   },
 

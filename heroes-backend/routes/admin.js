@@ -6,6 +6,7 @@ const db = require("../config/database");
 const {
   sendStatusChangeNotification,
 } = require("../services/pushNotificationService");
+const { autoStatusChangeService } = require("../services/autoStatusChange");
 const multer = require("multer");
 const { Client } = require("minio");
 
@@ -1274,6 +1275,58 @@ router.delete(
     }
   },
 );
+
+// ─── MANUAL FALLBACK — single user (e.g. a "resend reminder" button on a user's profile) ──────────────────
+router.post("/users/:userId/notify-reminder", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || isNaN(parseInt(userId))) {
+      return res.status(400).json({ success: false, error: "Invalid user ID" });
+    }
+
+    const result = await autoStatusChangeService.sendManualReminderToUser(
+      parseInt(userId),
+    );
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+
+    res.json({
+      success: true,
+      message: `Reminder sent to user ${userId}`,
+      title: result.title,
+      body: result.body,
+      cycle: result.cycleName,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── MANUAL FALLBACK — bulk, sends to everyone currently eligible this period ──────────────────
+router.post("/notify-reminder/bulk", async (req, res) => {
+  try {
+    const result = await autoStatusChangeService.autoStatusChangeService();
+
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+
+    res.json({
+      success: true,
+      message: "Bulk reminder sent",
+      cycle: result.cycleName,
+      period: result.period,
+      totalUsers: result.totalUsers,
+      sent: result.sent,
+      failed: result.failed,
+      failures: result.failures,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ─── Exports ───────────────────────────────────────────────────────────────────
 

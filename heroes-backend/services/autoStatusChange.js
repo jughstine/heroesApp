@@ -442,7 +442,7 @@ const autoStatusChangeService = {
           [activePeriodStart],
         );
         title = "Account Status Warning";
-        body = `You have ${cycleInfo.daysLeftInPeriod} days left to submit a form for ${cycleInfo.name}. Without updating, your account will be tagged for deletion.`;
+        body = `You have ${cycleInfo.daysLeftInPeriod} days left to submit a form for ${cycleInfo.name}. Failure to update may result in your account being tagged for deletion.`;
         buildData = () => ({
           type: "status_warning",
           daysLeft: String(cycleInfo.daysLeftInPeriod),
@@ -457,7 +457,7 @@ const autoStatusChangeService = {
         );
         title = "Account Tagged for Deletion";
         body =
-          "Your account is tagged for deletion for not submitted an Updating form. Please submit as soon as possible to restore your active status.";
+          "Your account has been tagged for deletion due to inactivity. Please submit an Updating form as soon as possible to maintain your active pension status.";
         buildData = () => ({
           type: "status_changed",
           currentStatus: "TAG",

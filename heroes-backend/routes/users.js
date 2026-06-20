@@ -19,7 +19,7 @@ const ExcelJS = require("exceljs");
 const Papa = require("papaparse");
 const { authenticateAdminToken } = require("./admin");
 const jwt = require("jsonwebtoken");
-const { LRUCache } = require("lru-cache");
+const LRUCache = require("lru-cache");
 
 // ============================================================
 // CONSTANTS

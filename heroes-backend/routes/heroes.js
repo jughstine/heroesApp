@@ -61,7 +61,7 @@ router.get("/health", async (_req, res) => {
 router.get("/app-config", (_req, res) => {
   res.json({
     success: true,
-    minimumVersion: "1.4.5",
+    minimumVersion: "1.4.6",
   });
 });
 

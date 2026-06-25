@@ -234,7 +234,7 @@ function makeSubmitHandler(config) {
       }
 
       const [result] = await conn.execute(
-        "INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) VALUES (?,?,?,?,?,?,NOW())",
+        "INSERT INTO form_submission (user_id, form_type_id, longitude, latitude, location, status, submitted_at) VALUES (?,?,?,?,?,?,CONVERT_TZ(NOW(),'UTC','Asia/Manila'))",
         [
           user_id,
           config.formTypeId,
@@ -299,7 +299,12 @@ function makeSubmitHandler(config) {
         },
         meta: {
           processingTime: `${Date.now() - startTime}ms`,
-          submissionTime: new Date().toISOString(),
+          submissionTime: new Date()
+            .toLocaleString("en-CA", {
+              timeZone: "Asia/Manila",
+              hour12: false,
+            })
+            .replace(",", ""),
         },
       });
     } catch (error) {
@@ -318,6 +323,7 @@ function makeSubmitHandler(config) {
     }
   };
 }
+
 let formTypeCache = null;
 
 // ============================================================
@@ -518,9 +524,15 @@ const WIDOW_REQUIRED = [
   "jago_declaration",
   "afp_id",
   "pension_acc",
+  "passport",
 ];
-const WIDOW_VALID = [...WIDOW_REQUIRED, "psa_crs5", "affidavit_late_filing"];
-
+const WIDOW_VALID = [
+  ...WIDOW_REQUIRED,
+  "psa_crs5",
+  "affidavit_late_filing",
+  "oath_of_allegiance",
+  "cert_of_naturalization",
+];
 router.post(
   "/widow-restoration/submit",
   requireDatabase,
@@ -566,7 +578,18 @@ const PRINCIPAL_REQUIRED = [
   "afp_id",
   "pension_acc",
 ];
-const PRINCIPAL_VALID = [...PRINCIPAL_REQUIRED, "affidavit_late_filing"];
+
+const PRINCIPAL_ABROAD_REQUIRED = [
+  "passport",
+  "oath_of_allegiance",
+  "cert_of_naturalization",
+];
+
+const PRINCIPAL_VALID = [
+  ...PRINCIPAL_REQUIRED,
+  "affidavit_late_filing",
+  ...PRINCIPAL_ABROAD_REQUIRED,
+];
 
 router.post(
   "/principal-restoration/submit",
@@ -585,6 +608,20 @@ router.post(
           error: `Missing required documents: ${missing.join(", ")}`,
           code: "MISSING_REQUIREMENTS",
         };
+
+      // ← was missing entirely
+      const isAbroad = body.applies_to_location === "abr";
+      if (isAbroad) {
+        const missingAbroad = PRINCIPAL_ABROAD_REQUIRED.filter(
+          (t) => !provided.includes(t),
+        );
+        if (missingAbroad.length)
+          return {
+            error: `Missing abroad documents: ${missingAbroad.join(", ")}`,
+            code: "MISSING_REQUIREMENTS",
+          };
+      }
+
       const invalid = body.requirements.find(
         (r) => !PRINCIPAL_VALID.includes(r.requirement_type),
       );
@@ -593,6 +630,7 @@ router.post(
           error: `Invalid requirement_type: ${invalid.requirement_type}`,
           code: "INVALID_REQUIREMENT_TYPE",
         };
+
       return null;
     },
 
@@ -604,7 +642,6 @@ router.post(
   }),
 );
 
-// ── RST: Bi-Principal Restoration ──────────────────────────
 const BIPRINCIPAL_REQUIRED = [
   "video_submission",
   "home_address",
@@ -618,7 +655,17 @@ const BIPRINCIPAL_REQUIRED = [
   "afp_id",
   "pen_account",
 ];
-const BIPRINCIPAL_VALID = BIPRINCIPAL_REQUIRED;
+
+const BIPRINCIPAL_ABROAD_REQUIRED = [
+  "passport",
+  "oath_of_allegiance",
+  "cert_of_naturalization",
+];
+
+const BIPRINCIPAL_VALID = [
+  ...BIPRINCIPAL_REQUIRED,
+  ...BIPRINCIPAL_ABROAD_REQUIRED,
+];
 
 router.post(
   "/biprincipal-restoration/submit",
@@ -637,6 +684,19 @@ router.post(
           error: `Missing required documents: ${missing.join(", ")}`,
           code: "MISSING_REQUIREMENTS",
         };
+
+      const isAbroad = body.applies_to_location === "abr";
+      if (isAbroad) {
+        const missingAbroad = BIPRINCIPAL_ABROAD_REQUIRED.filter(
+          (t) => !provided.includes(t),
+        );
+        if (missingAbroad.length)
+          return {
+            error: `Missing abroad documents: ${missingAbroad.join(", ")}`,
+            code: "MISSING_REQUIREMENTS",
+          };
+      }
+
       const invalid = body.requirements.find(
         (r) => !BIPRINCIPAL_VALID.includes(r.requirement_type),
       );
@@ -645,6 +705,7 @@ router.post(
           error: `Invalid requirement_type: ${invalid.requirement_type}`,
           code: "INVALID_REQUIREMENT_TYPE",
         };
+
       return null;
     },
 
@@ -655,7 +716,6 @@ router.post(
     }),
   }),
 );
-
 // ── RST: Re-entitlement Restoration ────────────────────────
 const REENTITLE_REQUIRED = [
   "video_submission",
@@ -669,6 +729,7 @@ const REENTITLE_REQUIRED = [
   "atm_account",
   "puf",
   "affidavit_late_filing",
+  "passport",
 ];
 const REENTITLE_VALID = REENTITLE_REQUIRED;
 
@@ -727,7 +788,13 @@ const BIBENE_REQUIRED = [
   "valid_id_1",
   "valid_id_2",
 ];
-const BIBENE_VALID = BIBENE_REQUIRED;
+
+const BIBENE_ABROAD_REQUIRED = [
+  "passport",
+  "oath_of_allegiance",
+  "cert_of_naturalization",
+];
+const BIBENE_VALID = [...BIBENE_REQUIRED, ...BIBENE_ABROAD_REQUIRED];
 
 router.post(
   "/bibeneficiary-restoration/submit",
@@ -746,6 +813,19 @@ router.post(
           error: `Missing required documents: ${missing.join(", ")}`,
           code: "MISSING_REQUIREMENTS",
         };
+
+      const isAbroad = body.applies_to_location === "abr";
+      if (isAbroad) {
+        const missingAbroad = BIBENE_ABROAD_REQUIRED.filter(
+          (t) => !provided.includes(t),
+        );
+        if (missingAbroad.length)
+          return {
+            error: `Missing abroad documents: ${missingAbroad.join(", ")}`,
+            code: "MISSING_REQUIREMENTS",
+          };
+      }
+
       const invalid = body.requirements.find(
         (r) => !BIBENE_VALID.includes(r.requirement_type),
       );
@@ -754,6 +834,7 @@ router.post(
           error: `Invalid requirement_type: ${invalid.requirement_type}`,
           code: "INVALID_REQUIREMENT_TYPE",
         };
+
       return null;
     },
 
@@ -1150,8 +1231,8 @@ router.put("/:form_id/status", async (req, res) => {
     try {
       const updateSql =
         admin_notes !== undefined
-          ? "UPDATE form_submission SET status=?, admin_notes=?, reviewed_at=NOW() WHERE id=?"
-          : "UPDATE form_submission SET status=?, reviewed_at=NOW() WHERE id=?";
+          ? "UPDATE form_submission SET status=?, admin_notes=?, reviewed_at=CONVERT_TZ(NOW(),'UTC','Asia/Manila') WHERE id=?"
+          : "UPDATE form_submission SET status=?, reviewed_at=CONVERT_TZ(NOW(),'UTC','Asia/Manila') WHERE id=?";
       const updateVals =
         admin_notes !== undefined
           ? [status, admin_notes, formId]
@@ -1160,7 +1241,7 @@ router.put("/:form_id/status", async (req, res) => {
 
       if (formTypeId === FORM_TYPE_IDS.RST && status === "a") {
         await conn.execute(
-          "UPDATE users_tbl SET status='ACT', approved_at=NOW() WHERE id=?",
+          "UPDATE users_tbl SET status='ACT', approved_at=CONVERT_TZ(NOW(),'UTC','Asia/Manila') WHERE id=?",
           [userId],
         );
       }

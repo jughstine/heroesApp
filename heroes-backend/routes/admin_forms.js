@@ -798,8 +798,6 @@ router.options("/proxy-file", (req, res) => {
 
 // Main proxy endpoint
 router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
-  console.log("Auth header:", req.headers.authorization);
-
   try {
     const { url } = req.query;
 
@@ -831,19 +829,12 @@ router.get("/proxy-file", authenticateAdminToken, async (req, res) => {
       .map((segment) => encodeURIComponent(segment))
       .join("/");
 
-    console.log("🔑 Extracted key:", key);
-
     const listResult = await s3.send(
       new ListObjectsV2Command({
         Bucket: process.env.SPACES_BUCKET,
         Prefix: key,
       }),
     );
-    console.log(
-      "📦 Found objects:",
-      JSON.stringify(listResult.Contents, null, 2),
-    );
-    console.log("🪣 Bucket:", process.env.SPACES_BUCKET);
 
     const s3Response = await s3.send(
       new GetObjectCommand({
@@ -945,19 +936,19 @@ router.get("/", authenticateAdminToken, async (req, res) => {
         CASE 
           WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1125,19 +1116,19 @@ router.get("/paginated", async (req, res) => {
         CASE 
           WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1258,19 +1249,19 @@ router.get("/export/bulk", async (req, res) => {
         CASE 
           WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1571,19 +1562,19 @@ router.get("/status/:status", async (req, res) => {
         CASE 
           WHEN p.source_table = 'resumption_table' THEN 
             CASE 
-              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN tr.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', tr.AFPSN)
               ELSE tr.AFPSN
             END
           WHEN p.source_table = 'beneficiaries_table' THEN 
             CASE 
-              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN b.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', b.AFPSN)
               ELSE b.AFPSN
             END
           ELSE 
             CASE 
-              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS') 
+              WHEN t.PENRANK IN ('2LT', '1LT', 'CPT', 'MAJ', 'LTC', 'LTCOL', 'GEN', 'COMMO', 'COL', 'CDR', 'BGEN', 'MGEN', 'LGEN', 'ADM', 'VADM', 'RADM', 'CAPT', 'CDR', 'LCDR', 'LTSG', 'LTJG', 'ENS','O-W') 
               THEN CONCAT('O-', t.AFPSN)
               ELSE t.AFPSN
             END
@@ -1901,6 +1892,7 @@ router.get("/:form_id", authenticateAdminToken, async (req, res) => {
         "LTSG",
         "LTJG",
         "ENS",
+        "O-W",
       ].includes(submission.PENRANK)
         ? submission.AFPSN?.startsWith("O-")
           ? submission.AFPSN
@@ -2108,8 +2100,8 @@ router.put(
         if (formTypeId === 5 && status === "a") {
           const [updateFormData] = await pool.execute(
             `SELECT value 
-          FROM upd_requirements 
-          WHERE form_id = ? AND requirement_type = 'home_address'`,
+    FROM upd_requirements 
+    WHERE form_id = ? AND requirement_type = 'home_address'`,
             [formId],
           );
 
@@ -2126,6 +2118,26 @@ router.put(
               [homeAddress, userId],
             );
           }
+
+          await pool.execute(
+            `UPDATE psa_order_data pod
+              JOIN upd_requirements ur
+                ON pod.reference_number = ur.value
+                AND ur.requirement_type IN ('crs5_reference', 'crs4_reference')
+              JOIN form_submission fs
+                ON ur.form_id = fs.id
+              JOIN users_tbl u
+                ON fs.user_id = u.id
+              JOIN pensioners_tbl p
+                ON u.pensioner_ndx = p.id
+              JOIN heroes_tbl h
+                ON p.hero_ndx = h.NDX
+              SET
+                pod.owned_by_ndx = h.NDX,
+                pod.afpsn        = h.AFPSN
+              WHERE fs.id = ?`,
+            [formId],
+          );
         }
 
         if (status === "d") {

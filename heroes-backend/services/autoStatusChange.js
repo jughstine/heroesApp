@@ -207,11 +207,7 @@ const autoStatusChangeService = {
     SELECT id, email
     FROM users_tbl
     WHERE status = 'ACT'
-      AND NOT EXISTS (
-        SELECT 1 FROM form_submission fs
-        WHERE fs.user_id = u.id
-          AND fs.submitted_at BETWEEN ? AND ?
-      )
+      AND COALESCE(form_submitted_at, approved_at, created_at) < ?
       AND COALESCE(form_submitted_at, approved_at, created_at) >= DATE_SUB(?, INTERVAL 4 MONTH)
     `,
           [activePeriodStart, activePeriodStart],
@@ -256,11 +252,7 @@ const autoStatusChangeService = {
             SELECT id, email 
             FROM users_tbl 
             WHERE status = 'ACT'
-              AND NOT EXISTS (
-                SELECT 1 FROM form_submission fs
-                WHERE fs.user_id = u.id
-                  AND fs.submitted_at BETWEEN ? AND ?
-              )
+              AND COALESCE(form_submitted_at, approved_at, created_at) < ?
           `,
             [activePeriodStart],
           );
@@ -446,12 +438,7 @@ const autoStatusChangeService = {
         targetUsers = await executeQuery(
           `SELECT id, email FROM users_tbl
          WHERE status = 'ACT'
-          AND NOT EXISTS (
-            SELECT 1 FROM form_submission fs
-            WHERE fs.user_id = u.id
-              AND fs.submitted_at BETWEEN ? AND ?
-          )
-`,
+           AND COALESCE(form_submitted_at, approved_at, created_at) < ?`,
           [activePeriodStart],
         );
         title = "Account Status Warning";
@@ -541,20 +528,16 @@ const autoStatusChangeService = {
         return 0;
       }
 
-      const activePeriodWindow = this.getActivePeriodWindow(cycleInfo);
+      const activePeriodStart = this.getActivePeriodStartDate(cycleInfo);
 
       const result = await executeQuery(
         `
-        UPDATE users_tbl u
-        SET u.status = 'TAG', u.updated_at = NOW(), u.tagged_at = NOW()
-        WHERE u.status = 'ACT'
-          AND NOT EXISTS (
-            SELECT 1 FROM form_submission fs
-            WHERE fs.user_id = u.id
-              AND fs.submitted_at BETWEEN ? AND ?
-          )
-        `,
-        [activePeriodWindow.start, activePeriodWindow.end],
+        UPDATE users_tbl 
+        SET status = 'DEL', status_updated_at = NOW(), deleted_at = NOW()
+        WHERE status = 'TAG'
+          AND COALESCE(status_updated_at, tagged_at, created_at) < ?
+      `,
+        [activePeriodStart],
       );
 
       if (result.affectedRows > 0) {
@@ -615,13 +598,9 @@ const autoStatusChangeService = {
       const result = await executeQuery(
         `
         UPDATE users_tbl 
-        SET status = 'TAG', updated_at = NOW(), tagged_at = NOW()
+        SET status = 'TAG', status_updated_at = NOW(), tagged_at = NOW()
         WHERE status = 'ACT'
-          AND NOT EXISTS (
-            SELECT 1 FROM form_submission fs
-            WHERE fs.user_id = u.id
-              AND fs.submitted_at BETWEEN ? AND ?
-          )
+          AND COALESCE(form_submitted_at, approved_at, created_at) < ?
       `,
         [activePeriodStart],
       );
@@ -744,11 +723,7 @@ const autoStatusChangeService = {
             ? as days_until_tagging, ? as cycle_number, ? as cycle_name
           FROM users_tbl 
           WHERE status = 'ACT'
-            AND NOT EXISTS (
-              SELECT 1 FROM form_submission fs
-              WHERE fs.user_id = u.id
-                AND fs.submitted_at BETWEEN ? AND ?
-            )
+            AND COALESCE(form_submitted_at, approved_at, created_at) < ?
           ORDER BY last_activity ASC
         `,
           [
@@ -924,11 +899,7 @@ const createManualTriggerRoute = (router) => {
         SELECT id, email, COALESCE(form_submitted_at, approved_at, created_at) as last_activity
         FROM users_tbl
         WHERE status = 'ACT'
-          AND NOT EXISTS (
-            SELECT 1 FROM form_submission fs
-            WHERE fs.user_id = u.id
-              AND fs.submitted_at BETWEEN ? AND ?
-          )
+          AND COALESCE(form_submitted_at, approved_at, created_at) < ?
       `,
         [activePeriodStart],
       );
@@ -971,13 +942,9 @@ const createManualTriggerRoute = (router) => {
         const result = await executeQuery(
           `
           UPDATE users_tbl
-          SET status = 'TAG', updated_at = NOW(), tagged_at = NOW()
+          SET status = 'TAG', status_updated_at = NOW(), tagged_at = NOW()
           WHERE status = 'ACT'
-            AND NOT EXISTS (
-              SELECT 1 FROM form_submission fs
-              WHERE fs.user_id = u.id
-                AND fs.submitted_at BETWEEN ? AND ?
-            )
+            AND COALESCE(form_submitted_at, approved_at, created_at) < ?
         `,
           [activePeriodStart],
         );
@@ -991,13 +958,9 @@ const createManualTriggerRoute = (router) => {
         const result = await executeQuery(
           `
           UPDATE users_tbl
-          SET status = 'DEL', updated_at = NOW(), deleted_at = NOW()
+          SET status = 'DEL', status_updated_at = NOW(), deleted_at = NOW()
           WHERE status = 'TAG'
-          AND NOT EXISTS (
-            SELECT 1 FROM form_submission fs
-            WHERE fs.user_id = u.id
-              AND fs.submitted_at BETWEEN ? AND ?
-          )
+            AND COALESCE(status_updated_at, tagged_at, created_at) < ?
         `,
           [activePeriodStart],
         );

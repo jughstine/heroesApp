@@ -3473,8 +3473,6 @@ router.get(
     const { reference_number } = req.params;
     const userId = req.user.userId;
 
-    console.log(`[download] start — user=${userId} ref=${reference_number}`);
-
     try {
       const [rows] = await pool.execute(
         `SELECT po.download_used, pd.file_key
@@ -3486,11 +3484,6 @@ router.get(
          AND po.owned_by_ndx = p.hero_ndx
        LIMIT 1`,
         [userId, reference_number],
-      );
-
-      console.log(
-        `[download] ownership query — rows=${rows.length}`,
-        rows[0] ?? "none",
       );
 
       if (rows.length === 0)
@@ -3512,10 +3505,6 @@ router.get(
         [reference_number],
       );
 
-      console.log(
-        `[download] UPDATE affectedRows=${updateResult.affectedRows}`,
-      );
-
       if (updateResult.affectedRows === 0)
         return res.status(403).json({
           success: false,
@@ -3524,9 +3513,6 @@ router.get(
         });
 
       const { file_key } = rows[0];
-      console.log(
-        `[download] file_key=${file_key ?? "null — will try PSA API"}`,
-      );
 
       // Change serveDocument to return the signed URL rather than pipe it
       const serveDocument = async () => {
@@ -3591,7 +3577,6 @@ router.get(
 
       try {
         await serveDocument();
-        console.log(`[download] done — response sent`);
       } catch (serveErr) {
         console.error(
           `[download] serveDocument failed, rolling back slot`,

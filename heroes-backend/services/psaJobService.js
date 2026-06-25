@@ -12,9 +12,15 @@ const SYNC_CONCURRENCY = 10;
 
 // Maps form_type_id → the requirements table and column to look up
 const REQUIREMENTS_MAP = {
-  5: { table: "upd_requirements", column: "form_id" },
+  5: [{ table: "upd_requirements", column: "form_id" }],
+  3: [
+    { table: "rst_bi_bene_requirements", column: "form_id" },
+    { table: "rst_bi_principal_requirements", column: "form_id" },
+    { table: "rst_principal_requirements", column: "form_id" },
+    { table: "rst_re_entitle_requirements", column: "form_id" },
+    { table: "rst_widow_requirements", column: "form_id" },
+  ],
 };
-
 // ─── Reference resolution ─────────────────────────────────────────────────────
 
 /**
@@ -43,19 +49,40 @@ async function resolveReferenceNumber(pool, formSubmissionId) {
   console.log("formRows:", formRows);
   if (formRows.length === 0) return null;
 
-  const mapping = REQUIREMENTS_MAP[formRows[0].form_type_id];
-  console.log("mapping:", mapping);
-  if (!mapping) return null;
+  const mappings = REQUIREMENTS_MAP[formRows[0].form_type_id];
+  if (!mappings) return null;
 
-  const [reqRows] = await pool.execute(
-    `SELECT value FROM ${mapping.table}
-     WHERE ${mapping.column} = ?
-       AND requirement_type IN ('crs4_reference', 'crs5_reference')
-     LIMIT 1`,
-    [formSubmissionId],
-  );
-  console.log("reqRows:", reqRows);
-  return reqRows.length > 0 ? reqRows[0].value : null;
+  for (const mapping of mappings) {
+    const [reqRows] = await pool.execute(
+      `SELECT value
+       FROM ${mapping.table}
+       WHERE ${mapping.column} = ?
+         AND requirement_type IN (
+           'crs4_reference',
+           'crs5_reference',
+           'psa_crs5_h',
+           'psa_crs5_w',
+           'psa_crs5',
+           'parent_cenomar',
+           'parent_birth_cert_ref',
+           'parent_marriage_contract_ref',
+           'spouse_marriage_cert_ref',
+           'sibling_parents_marriage_ref',
+           'sibling_parents_death_cert_ref',
+           'sibling_parents_birth_cert_ref',
+           'sibling_birth_cert_ref',
+           'sibling_cenomar',
+           'child_cenomar',
+           'spouse_crs5_spouse'
+         )
+       LIMIT 1`,
+      [formSubmissionId],
+    );
+    console.log(`reqRows (${mapping.table}):`, reqRows);
+    if (reqRows.length > 0) return reqRows[0].value;
+  }
+
+  return null;
 }
 // ─── Discovery ────────────────────────────────────────────────────────────────
 
@@ -142,8 +169,8 @@ async function processAllPendingJobs(pool) {
 
   while (true) {
     const jobs = await claimNextBatch(pool);
-    if (jobs === null) break; // DB error — stop
-    if (jobs.length === 0) break; // Nothing left — done
+    if (jobs === null) break;
+    if (jobs.length === 0) break;
 
     const results = await Promise.allSettled(
       jobs.map((job) => processSingleJob(job, pool)),

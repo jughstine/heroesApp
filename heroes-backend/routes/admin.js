@@ -840,7 +840,7 @@ router.put(
     const conn = await getPool().getConnection();
     try {
       const [[user]] = await conn.execute(
-        "SELECT id, status, push_token, FIRSTNAME, LASTNAME FROM users_tbl WHERE id = ?",
+        "SELECT id, status, push_token FROM users_tbl WHERE id = ?",
         [userId],
       );
       if (!user)

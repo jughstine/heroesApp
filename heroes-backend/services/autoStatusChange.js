@@ -207,8 +207,8 @@ const autoStatusChangeService = {
     SELECT id, email
     FROM users_tbl
     WHERE status = 'ACT'
-      AND COALESCE(form_submitted_at, approved_at, created_at) < ?
-      AND COALESCE(form_submitted_at, approved_at, created_at) >= DATE_SUB(?, INTERVAL 4 MONTH)
+      AND COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) < ?
+      AND COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) >= DATE_SUB(?, INTERVAL 4 MONTH)
     `,
           [activePeriodStart, activePeriodStart],
         );
@@ -465,6 +465,19 @@ const autoStatusChangeService = {
           screen: "Profile",
           manualTrigger: "true",
         });
+      } else if (cycleInfo.period === "DEL_TRANSITION") {
+        targetUsers = await executeQuery(
+          `SELECT id, email FROM users_tbl WHERE status = 'DEL'`,
+        );
+        title = "Account Deleted";
+        body =
+          "Your account status has been changed to Deleted due to inactivity. To regain access, please submit a Restoration Form.";
+        buildData = () => ({
+          type: "status_changed",
+          currentStatus: "DEL",
+          screen: "Profile",
+          manualTrigger: "true",
+        });
       } else {
         return {
           success: false,
@@ -481,9 +494,9 @@ const autoStatusChangeService = {
           user.id,
           title,
           body,
+          buildData(),
           QUARTERLY_SOUND,
           QUARTERLY_CHANNEL,
-          buildData(),
         );
         if (result.success) {
           sent++;
@@ -600,12 +613,11 @@ const autoStatusChangeService = {
         UPDATE users_tbl 
         SET status = 'TAG', status_updated_at = NOW(), tagged_at = NOW()
         WHERE status = 'ACT'
-          AND COALESCE(form_submitted_at, approved_at, created_at) < ?
+          AND COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) < ?
       `,
         [activePeriodStart],
       );
 
-      // In updateInactiveACTUsers(), after the UPDATE:
       if (result.affectedRows > 0) {
         const taggedUsers = await executeQuery(`
           SELECT id, email FROM users_tbl 
@@ -723,7 +735,7 @@ const autoStatusChangeService = {
             ? as days_until_tagging, ? as cycle_number, ? as cycle_name
           FROM users_tbl 
           WHERE status = 'ACT'
-            AND COALESCE(form_submitted_at, approved_at, created_at) < ?
+            AND COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) < ?
           ORDER BY last_activity ASC
         `,
           [
@@ -781,8 +793,8 @@ const autoStatusChangeService = {
         SELECT 
           status,
           COUNT(*) as total,
-          SUM(CASE WHEN COALESCE(form_submitted_at, approved_at, created_at) >= ? THEN 1 ELSE 0 END) as submitted_in_active_period,
-          SUM(CASE WHEN COALESCE(form_submitted_at, approved_at, created_at) < ?  THEN 1 ELSE 0 END) as not_submitted_in_active_period
+          SUM(CASE WHEN COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) >= ? THEN 1 ELSE 0 END) as submitted_in_active_period,
+          SUM(CASE WHEN COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) < ?  THEN 1 ELSE 0 END) as not_submitted_in_active_period
         FROM users_tbl
         WHERE status IN ('ACT', 'TAG', 'DEL')
         GROUP BY status
@@ -896,10 +908,10 @@ const createManualTriggerRoute = (router) => {
       // Always preview first regardless of dryRun
       const wouldTagUsers = await executeQuery(
         `
-        SELECT id, email, COALESCE(form_submitted_at, approved_at, created_at) as last_activity
+        SELECT id, email, COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) as last_activity
         FROM users_tbl
         WHERE status = 'ACT'
-          AND COALESCE(form_submitted_at, approved_at, created_at) < ?
+          AND COALESCE(form_submitted_at, approved_at, status_updated_at, created_at) < ?
       `,
         [activePeriodStart],
       );

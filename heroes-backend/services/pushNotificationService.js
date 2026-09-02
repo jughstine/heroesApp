@@ -309,7 +309,7 @@ const sendStatusChangeNotification = async (
       console.log("source_table:", JSON.stringify(source_table));
       console.log("hero_ndx:", hero_ndx);
 
-      let nameQuery; // ← declare FIRST
+      let nameQuery;
 
       if (source_table === "heroes_tbl") {
         nameQuery =

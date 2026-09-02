@@ -1307,8 +1307,7 @@ router.post("/users/:userId/notify-reminder", async (req, res) => {
 // ─── MANUAL FALLBACK — bulk, sends to everyone currently eligible this period ──────────────────
 router.post("/notify-reminder/bulk", async (req, res) => {
   try {
-    const result = await autoStatusChangeService.autoStatusChangeService();
-
+    const result = await autoStatusChangeService.sendManualReminderBulk();
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }

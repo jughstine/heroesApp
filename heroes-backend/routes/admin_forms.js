@@ -1104,7 +1104,7 @@ router.get("/paginated", async (req, res) => {
           ELSE t.LASTNAME
         END as LASTNAME,
         CASE 
-          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME
+          WHEN p.source_table = 'resumption_table' THEN tr.MIDDLENAME      
           WHEN p.source_table = 'beneficiaries_table' THEN b.MIDDLENAME
           ELSE t.MIDDLENAME
         END as MIDDLENAME,

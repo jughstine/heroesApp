@@ -277,13 +277,41 @@ const authenticateToken = async (req, res, next) => {
     }
 
     // Try admin token first (has issuer/audience), fall back to user token
+    let isAdminToken = false;
     try {
       req.user = jwt.verify(token, process.env.JWT_SECRET, {
         issuer: "afppgmc-admin-web",
         audience: "afppgmc-admin-panel",
       });
+      isAdminToken = true;
     } catch {
       req.user = jwt.verify(token, process.env.JWT_SECRET);
+    }
+
+    // User tokens only: revocation and forced password change
+    if (!isAdminToken) {
+      const rows = await executeQuery(
+        "SELECT token_version FROM users_tbl WHERE id = ? LIMIT 1",
+        [req.user.userId],
+      );
+      if (
+        rows.length === 0 ||
+        Number(rows[0].token_version) !== Number(req.user.tokenVersion)
+      ) {
+        return res.status(401).json({
+          success: false,
+          error: "Session expired. Please log in again.",
+          code: "TOKEN_REVOKED",
+        });
+      }
+
+      if (req.user.mustChangePassword && !req.allowMustChange) {
+        return res.status(403).json({
+          success: false,
+          error: "You must change your temporary password first",
+          code: "PASSWORD_CHANGE_REQUIRED",
+        });
+      }
     }
 
     next();
@@ -294,8 +322,6 @@ const authenticateToken = async (req, res, next) => {
       code: "INVALID_TOKEN",
     });
   }
-
-  const decoded = jwt.decode(token);
 };
 
 // MIDDLEWARE
@@ -1500,6 +1526,7 @@ router.post(
       const normalizedEmail = email.toLowerCase().trim();
       const users = await executeQuery(
         `SELECT u.id AS user_id, u.email, u.password_hash, u.status AS user_status, u.account_status, u.token_version,
+        u.must_change_password, u.temp_password_expires_at,
                 p.id AS pensioner_id, p.type, p.b_type, p.bos, p.source_table,
                 COALESCE(h.FIRSTNAME,h2.FIRSTNAME,h3.FIRSTNAME) AS FIRSTNAME,
                 COALESCE(h.LASTNAME,h2.LASTNAME,h3.LASTNAME) AS LASTNAME,
@@ -1535,6 +1562,21 @@ router.post(
           code: "INVALID_CREDENTIALS",
         });
 
+      if (
+        user.must_change_password &&
+        user.temp_password_expires_at &&
+        new Date() > new Date(user.temp_password_expires_at)
+      ) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "Your temporary password has expired. Use Forgot Password or contact support.",
+          code: "TEMP_PASSWORD_EXPIRED",
+        });
+      }
+
+      const mustChange = !!user.must_change_password;
+
       if (user.account_status === "deactivated") {
         executeQuery(
           "UPDATE users_tbl SET account_status='active',updated_at=NOW() WHERE id=?",
@@ -1551,9 +1593,10 @@ router.post(
           email: user.email,
           type: user.type,
           tokenVersion: user.token_version,
+          mustChangePassword: mustChange,
         },
         process.env.JWT_SECRET,
-        { expiresIn: "7d" },
+        { expiresIn: mustChange ? "30m" : "7d" },
       );
 
       res.json({
@@ -1563,6 +1606,7 @@ router.post(
             ? "Login successful. Your account has been reactivated."
             : "Login successful",
         token,
+        mustChangePassword: mustChange,
         user: {
           id: user.user_id,
           email: user.email,
@@ -1823,6 +1867,10 @@ router.put(
 
 router.put(
   "/update-password/:userId",
+  (req, _res, next) => {
+    req.allowMustChange = true;
+    next();
+  },
   profileUpdateLimiter,
   authenticateToken,
   validateDatabaseConnection,
@@ -1862,9 +1910,10 @@ router.put(
         });
 
       const users = await executeQuery(
-        "SELECT id,email,password_hash FROM users_tbl WHERE id=? LIMIT 1",
+        "SELECT id,email,password_hash,must_change_password FROM users_tbl WHERE id=? LIMIT 1",
         [userId],
       );
+
       if (users.length === 0)
         return res.status(404).json({
           success: false,
@@ -1879,8 +1928,20 @@ router.put(
           code: "INCORRECT_PASSWORD",
         });
       }
+      // New password must differ from the temp/current one
+      if (await bcrypt.compare(filtered, users[0].password_hash)) {
+        return res.status(400).json({
+          success: false,
+          error: "New password must be different from your current password",
+          code: "SAME_PASSWORD",
+        });
+      }
+
       await executeQuery(
-        "UPDATE users_tbl SET password_hash=?,updated_at=NOW() WHERE id=?",
+        `UPDATE users_tbl
+      SET password_hash=?, must_change_password=0, temp_password_expires_at=NULL,
+          token_version=token_version+1, updated_at=NOW()
+    WHERE id=?`,
         [await bcrypt.hash(filtered, 12), userId],
       );
       res.json({
@@ -2249,7 +2310,7 @@ router.post(
 
         const userEmail = reset.email;
         await connection.execute(
-          "UPDATE users_tbl SET password_hash=?,updated_at=NOW() WHERE id=?",
+          "UPDATE users_tbl SET password_hash=?, must_change_password=0, temp_password_expires_at=NULL, updated_at=NOW() WHERE id=?",
           [await bcrypt.hash(filtered, 12), payload.userId],
         );
         await connection.execute(
@@ -2565,6 +2626,102 @@ router.post(
         success: false,
         error: "Failed to verify password",
         code: "VERIFY_PASSWORD_ERROR",
+      });
+    }
+  },
+);
+
+// RESET PASSWORD (FROM ADMIN-RESET)
+
+router.post(
+  "/change-password/:userId",
+  (req, _res, next) => {
+    req.allowMustChange = true;
+    next();
+  },
+  authenticateToken,
+  sanitizeInput,
+  validateDatabaseConnection,
+  async (req, res) => {
+    try {
+      if (req.user.userId !== parseInt(req.params.userId, 10)) {
+        return res
+          .status(403)
+          .json({ success: false, error: "Forbidden", code: "FORBIDDEN" });
+      }
+
+      const { newPassword } = req.body;
+      if (!newPassword) {
+        return res.status(400).json({
+          success: false,
+          error: "New password is required",
+          code: "MISSING_FIELDS",
+        });
+      }
+
+      const filtered = filterPassword(newPassword);
+      if (filtered !== newPassword) {
+        return res.status(400).json({
+          success: false,
+          error: "Password contains invalid characters",
+          code: "INVALID_PASSWORD_CHARS",
+        });
+      }
+      const check = validatePasswordStrength(filtered);
+      if (!check.isValid) {
+        return res.status(400).json({
+          success: false,
+          error: "Weak password",
+          details: check.errors,
+          code: "PASSWORD_TOO_WEAK",
+        });
+      }
+
+      const users = await executeQuery(
+        "SELECT id, password_hash, must_change_password FROM users_tbl WHERE id=? LIMIT 1",
+        [req.user.userId],
+      );
+      if (users.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+          code: "USER_NOT_FOUND",
+        });
+      }
+      // This route is only for the forced change
+      if (!users[0].must_change_password) {
+        return res.status(400).json({
+          success: false,
+          error: "No password change required",
+          code: "NOT_REQUIRED",
+        });
+      }
+      if (await bcrypt.compare(filtered, users[0].password_hash)) {
+        return res.status(400).json({
+          success: false,
+          error: "New password must be different from the temporary password",
+          code: "SAME_PASSWORD",
+        });
+      }
+
+      await executeQuery(
+        `UPDATE users_tbl
+            SET password_hash=?, must_change_password=0, temp_password_expires_at=NULL,
+                token_version=token_version+1, updated_at=NOW()
+          WHERE id=?`,
+        [await bcrypt.hash(filtered, 12), req.user.userId],
+      );
+
+      res.json({
+        success: true,
+        message: "Password changed. Please sign in again.",
+      });
+    } catch (error) {
+      logger.error("Change password error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Unable to change password",
+        code: "CHANGE_PASSWORD_FAILED",
       });
     }
   },

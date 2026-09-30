@@ -9,6 +9,11 @@ const {
 const { autoStatusChangeService } = require("../services/autoStatusChange");
 const multer = require("multer");
 const { Client } = require("minio");
+const crypto = require("crypto");
+const {
+  filterPassword,
+  validatePasswordStrength,
+} = require("../utils/passwordValidation");
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
@@ -172,6 +177,39 @@ const internalError = (res, error, fallback = "Internal server error") => {
     error: IS_PROD ? fallback : error.message,
   });
 };
+
+// ─── Reset Password ────────────────────────────────────────────────────────────
+
+function generateTempPassword(length = 12) {
+  // Ambiguous chars (0/O, 1/l/I) removed so it's easy to read out or type
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnpqrstuvwxyz";
+  const digits = "23456789";
+  const symbols = "@#$%&*!?";
+  const all = upper + lower + digits + symbols;
+  const pick = (s) => s[crypto.randomInt(s.length)];
+
+  const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)];
+  while (chars.length < length) chars.push(pick(all));
+
+  // Fisher–Yates shuffle so the guaranteed chars aren't always first
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+function makeCompliantTempPassword() {
+  for (let i = 0; i < 10; i++) {
+    const pwd = generateTempPassword();
+    // Reuse the exact same rules as the user-side route
+    if (filterPassword(pwd) === pwd && validatePasswordStrength(pwd).isValid) {
+      return pwd;
+    }
+  }
+  throw new Error("Could not generate a compliant temporary password");
+}
 
 // ─── Routes ────────────────────────────────────────────────────────────────────
 
@@ -1326,6 +1364,107 @@ router.post("/notify-reminder/bulk", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ─── Manual Password reset for Users ───────────────────────────────────────────────────────────────────
+
+router.post(
+  "/users/:userId/reset-password",
+  authenticateAdminToken,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      if (!Number.isInteger(userId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid user id" });
+      }
+
+      const tempPassword = makeCompliantTempPassword();
+      const hash = await bcrypt.hash(tempPassword, 12);
+
+      await withTransaction(async (conn) => {
+        const [[user]] = await conn.execute(
+          `SELECT u.id, p.hero_ndx, p.source_table
+             FROM users_tbl u
+             LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            WHERE u.id = ? FOR UPDATE`,
+          [userId],
+        );
+        if (!user) {
+          const err = new Error("User not found");
+          err.status = 404;
+          throw err;
+        }
+
+        let pensioner = {};
+        if (user.hero_ndx && ALL_SOURCE_TABLES.has(user.source_table)) {
+          const safeTable = SOURCE_TABLE_MAP[user.source_table];
+          const [[row]] = await conn.execute(
+            `SELECT AFPSN, FIRSTNAME, LASTNAME FROM ${safeTable} WHERE NDX = ? LIMIT 1`,
+            [user.hero_ndx],
+          );
+          pensioner = row || {};
+        }
+
+        await conn.execute(
+          `UPDATE users_tbl
+              SET password_hash = ?,
+                  must_change_password = 1,
+                  temp_password_expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR),
+                  token_version = token_version + 1,
+                  updated_at = NOW()
+            WHERE id = ?`,
+          [hash, userId],
+        );
+
+        await conn.execute(
+          "UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0",
+          [userId],
+        );
+
+        await conn.execute(
+          `INSERT INTO audit_logs
+             (action, source_table, performed_by_id, performed_by, record_ndx,
+              afpsn, firstname, lastname, old_data, new_data)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [
+            "PASSWORD_RESET",
+            user.source_table ?? null,
+            req.admin.id,
+            req.admin.name,
+            user.hero_ndx ?? null,
+            pensioner.AFPSN ?? null,
+            pensioner.FIRSTNAME ?? null,
+            pensioner.LASTNAME ?? null,
+            JSON.stringify({ must_change_password: 0 }),
+            JSON.stringify({
+              must_change_password: 1,
+              delivery: "admin_displayed",
+              temp_password_expires_hours: 24,
+              sessions_invalidated: true,
+            }),
+          ],
+        );
+      });
+
+      // The password is never stored or logged in plaintext
+      return res.json({
+        success: true,
+        message: "Password reset",
+        temporaryPassword: tempPassword,
+        expiresInHours: 24,
+      });
+    } catch (error) {
+      if (error.status === 404) {
+        return res
+          .status(404)
+          .json({ success: false, error: "User not found" });
+      }
+      internalError(res, error, "Unable to reset password");
+    }
+  },
+);
 
 // ─── Exports ───────────────────────────────────────────────────────────────────
 

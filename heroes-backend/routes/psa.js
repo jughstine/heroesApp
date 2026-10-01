@@ -268,9 +268,13 @@ router.get("/psa_form/:id/psa-document/stream", async (req, res) => {
 
 router.get("/psa_form/:id/psa-order", async (req, res) => {
   const { id } = req.params;
+  const requested =
+    typeof req.query.reference === "string" ? req.query.reference.trim() : "";
   const pool = getPool();
   try {
-    const reference_number = await resolveReferenceNumber(pool, id);
+    // Prefer the exact reference the admin clicked; fall back to the old behavior
+    const reference_number =
+      requested || (await resolveReferenceNumber(pool, id));
 
     const query = reference_number
       ? ORDER_DATA_SELECT

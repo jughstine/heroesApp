@@ -16,6 +16,7 @@ const {
 } = require("../utils/passwordValidation");
 
 const IS_PROD = process.env.NODE_ENV === "production";
+const validator = require("validator");
 
 // ─── Multer ────────────────────────────────────────────────────────────────────
 
@@ -876,9 +877,28 @@ router.put(
     }
 
     const conn = await getPool().getConnection();
+    let inTx = false;
     try {
       const [[user]] = await conn.execute(
-        "SELECT id, status, push_token FROM users_tbl WHERE id = ?",
+        `SELECT u.id, u.status, u.push_token, p.hero_ndx, p.source_table,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
+              WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
+              ELSE t.FIRSTNAME END AS FIRSTNAME,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
+              WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
+              ELSE t.LASTNAME END AS LASTNAME,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
+              WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
+              ELSE t.AFPSN END AS AFPSN
+       FROM users_tbl u
+       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+       LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX
+         AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+       LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX
+         AND p.source_table = 'resumption_table'
+       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
+         AND p.source_table = 'beneficiaries_table'
+       WHERE u.id = ?`,
         [userId],
       );
       if (!user)
@@ -894,6 +914,9 @@ router.put(
           data: { userId: parseInt(userId), status, changed: false },
         });
       }
+
+      await conn.beginTransaction();
+      inTx = true;
 
       await conn.execute(
         "UPDATE users_tbl SET status = ?, updated_at = NOW() WHERE id = ?",
@@ -919,6 +942,28 @@ router.put(
           [userId],
         );
       }
+
+      await conn.execute(
+        `INSERT INTO audit_logs
+         (action, source_table, performed_by_id, performed_by,
+          record_ndx, afpsn, firstname, lastname, old_data, new_data, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [
+          "STATUS_UPDATE",
+          user.source_table ?? "users_tbl",
+          req.admin?.id ?? null,
+          req.admin?.name ?? req.admin?.email ?? "Unknown",
+          user.hero_ndx ?? null,
+          user.AFPSN ?? null,
+          user.FIRSTNAME ?? null,
+          user.LASTNAME ?? null,
+          JSON.stringify({ user_id: user.id, status: oldStatus }),
+          JSON.stringify({ user_id: user.id, status }),
+        ],
+      );
+
+      await conn.commit();
+      inTx = false;
 
       let notificationResult = { sent: false, reason: null, error: null };
       if (user.push_token) {
@@ -964,6 +1009,7 @@ router.put(
         },
       });
     } catch (error) {
+      if (inTx) await conn.rollback().catch(() => {});
       internalError(res, error, "Failed to update user status");
     } finally {
       conn.release();
@@ -1462,6 +1508,135 @@ router.post(
           .json({ success: false, error: "User not found" });
       }
       internalError(res, error, "Unable to reset password");
+    }
+  },
+);
+
+// ─── Manual Email Update for Users ───────────────────────────────────────────────────────────────────
+
+router.put(
+  "/users/:userId/email",
+  authenticateAdminToken,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      if (!Number.isInteger(userId)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid user id" });
+      }
+
+      const rawEmail =
+        typeof req.body?.email === "string" ? req.body.email : "";
+      const newEmail = rawEmail.toLowerCase().trim();
+      if (!newEmail || newEmail.length > 255 || !validator.isEmail(newEmail)) {
+        return res.status(400).json({
+          success: false,
+          error: "Please enter a valid email address",
+        });
+      }
+
+      await withTransaction(async (conn) => {
+        const [[user]] = await conn.execute(
+          `SELECT u.id, u.email, p.hero_ndx, p.source_table
+             FROM users_tbl u
+             LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+            WHERE u.id = ? FOR UPDATE`,
+          [userId],
+        );
+        if (!user) {
+          const err = new Error("User not found");
+          err.status = 404;
+          throw err;
+        }
+
+        const oldEmail = user.email;
+        if (oldEmail && oldEmail.toLowerCase() === newEmail) {
+          const err = new Error("New email is the same as the current email");
+          err.status = 400;
+          throw err;
+        }
+
+        const [dup] = await conn.execute(
+          "SELECT id FROM users_tbl WHERE email = ? AND id != ? LIMIT 1",
+          [newEmail, userId],
+        );
+        if (dup.length > 0) {
+          const err = new Error(
+            "This email is already in use by another account",
+          );
+          err.status = 409;
+          throw err;
+        }
+
+        let pensioner = {};
+        if (user.hero_ndx && ALL_SOURCE_TABLES.has(user.source_table)) {
+          const safeTable = SOURCE_TABLE_MAP[user.source_table];
+          const [[row]] = await conn.execute(
+            `SELECT AFPSN, FIRSTNAME, LASTNAME FROM ${safeTable} WHERE NDX = ? LIMIT 1`,
+            [user.hero_ndx],
+          );
+          pensioner = row || {};
+        }
+
+        // token_version bump signs the user out everywhere, since the login identity changed
+        await conn.execute(
+          `UPDATE users_tbl
+              SET email = ?, token_version = token_version + 1, updated_at = NOW()
+            WHERE id = ?`,
+          [newEmail, userId],
+        );
+
+        // Pending reset links were sent to the old address, so kill them
+        await conn.execute(
+          "UPDATE password_resets SET used = 1 WHERE user_id = ? AND used = 0",
+          [userId],
+        );
+
+        await conn.execute(
+          `INSERT INTO audit_logs
+             (action, source_table, performed_by_id, performed_by, record_ndx,
+              afpsn, firstname, lastname, old_data, new_data)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [
+            "EMAIL_UPDATE",
+            user.source_table ?? null,
+            req.admin.id,
+            req.admin.name,
+            user.hero_ndx ?? null,
+            pensioner.AFPSN ?? null,
+            pensioner.FIRSTNAME ?? null,
+            pensioner.LASTNAME ?? null,
+            JSON.stringify({ email: oldEmail }),
+            JSON.stringify({
+              email: newEmail,
+              changed_by: "admin",
+              sessions_invalidated: true,
+            }),
+          ],
+        );
+      });
+
+      return res.json({
+        success: true,
+        message: "Email updated",
+        data: { email: newEmail },
+      });
+    } catch (error) {
+      if (error.status) {
+        return res
+          .status(error.status)
+          .json({ success: false, error: error.message });
+      }
+      // Race with a concurrent change, if email has a UNIQUE index
+      if (error.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({
+          success: false,
+          error: "This email is already in use by another account",
+        });
+      }
+      internalError(res, error, "Unable to update email");
     }
   },
 );

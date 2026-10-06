@@ -1258,6 +1258,8 @@ router.delete(
 
 // ─── Delete user ───────────────────────────────────────────────────────────────
 
+const DELETE_SCOPES = new Set(["account_only", "account_and_hero"]);
+
 router.delete(
   "/users/:userId/delete-user",
   authenticateAdminToken,
@@ -1265,14 +1267,39 @@ router.delete(
     const startTime = Date.now();
     try {
       const { userId } = req.params;
+      const scope = req.query.scope;
 
+      if (!DELETE_SCOPES.has(scope)) {
+        return res.status(400).json({
+          success: false,
+          error: "scope must be 'account_only' or 'account_and_hero'",
+          code: "INVALID_SCOPE",
+        });
+      }
+      const deleteHero = scope === "account_and_hero";
+
+      // Snapshot everything the audit log needs BEFORE deleting
       const [[user]] = await getPool().execute(
-        `SELECT u.id as user_id, u.pensioner_ndx,
-              p.id as pensioner_id, p.hero_ndx, p.source_table,
-              CONCAT(p.principal_firstname, ' ', p.principal_lastname) as name
-       FROM users_tbl u
-       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
-       WHERE u.id = ? LIMIT 1`,
+        `SELECT u.id AS user_id, u.email, u.status, u.pensioner_ndx,
+                p.id AS pensioner_id, p.hero_ndx, p.source_table,
+                CASE WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
+                     WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
+                     ELSE t.FIRSTNAME END AS FIRSTNAME,
+                CASE WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
+                     WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
+                     ELSE t.LASTNAME END AS LASTNAME,
+                CASE WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
+                     WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
+                     ELSE t.AFPSN END AS AFPSN
+         FROM users_tbl u
+         LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+         LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX
+           AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+         LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX
+           AND p.source_table = 'resumption_table'
+         LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
+           AND p.source_table = 'beneficiaries_table'
+         WHERE u.id = ? LIMIT 1`,
         [userId],
       );
       if (!user) {
@@ -1283,70 +1310,144 @@ router.delete(
         });
       }
 
+      const sourceTable =
+        user.source_table ?? (user.hero_ndx ? "heroes_tbl" : null);
+
       const deletedRecords = await withTransaction(async (conn) => {
         const [[{ formCount }]] = await conn.execute(
-          "SELECT COUNT(*) as formCount FROM form_submission WHERE user_id = ?",
+          "SELECT COUNT(*) AS formCount FROM form_submission WHERE user_id = ?",
           [userId],
         );
 
-        if (formCount > 0) {
-          await conn.execute(
-            `DELETE hl FROM history_logs hl
-           INNER JOIN form_submission fs ON hl.form_submission_id = fs.id
-           WHERE fs.user_id = ?`,
-            [userId],
-          );
-        }
+        const counts = {};
+        const del = async (key, sql, params) => {
+          const [r] = await conn.execute(sql, params);
+          counts[key] = r.affectedRows;
+        };
 
-        const [formsResult] = await conn.execute(
+        // 1. Rows that reference form_submission (also covers push_notifications.user_id)
+        await del(
+          "pushNotifications",
+          `DELETE pn FROM push_notifications pn
+     LEFT JOIN form_submission fs ON pn.form_id = fs.id
+     WHERE pn.user_id = ? OR fs.user_id = ?`,
+          [userId, userId],
+        );
+        await del(
+          "historyLogs",
+          `DELETE hl FROM history_logs hl
+     INNER JOIN form_submission fs ON hl.form_submission_id = fs.id
+     WHERE fs.user_id = ?`,
+          [userId],
+        );
+        await del(
+          "formRequirements",
+          `DELETE fr FROM form_requirements fr
+     INNER JOIN form_submission fs ON fr.form_id = fs.id
+     WHERE fs.user_id = ?`,
+          [userId],
+        );
+        await del(
+          "updRequirements",
+          `DELETE ur FROM upd_requirements ur
+     INNER JOIN form_submission fs ON ur.form_id = fs.id
+     WHERE fs.user_id = ?`,
+          [userId],
+        );
+
+        // 2. form_submission, then other rows that reference users_tbl
+        await del(
+          "formSubmissions",
           "DELETE FROM form_submission WHERE user_id = ?",
           [userId],
         );
-        const [userResult] = await conn.execute(
-          "DELETE FROM users_tbl WHERE id = ?",
+        await del(
+          "passwordResets",
+          "DELETE FROM password_resets WHERE user_id = ?",
           [userId],
         );
+        await del("user", "DELETE FROM users_tbl WHERE id = ?", [userId]);
 
+        // 3. Pensioner side (only for "account and hero")
         let deletedPensioner = false;
-        if (user.pensioner_id) {
-          const [r] = await conn.execute(
-            "DELETE FROM pensioners_tbl WHERE id = ?",
-            [user.pensioner_id],
-          );
-          deletedPensioner = r.affectedRows > 0;
-        }
-
         let deletedFromSourceTable = false;
-        if (
-          user.hero_ndx &&
-          user.source_table &&
-          ALL_SOURCE_TABLES.has(user.source_table)
-        ) {
-          const safeTable = SOURCE_TABLE_MAP[user.source_table];
-          const [r] = await conn.execute(
-            `DELETE FROM ${safeTable} WHERE NDX = ?`,
-            [user.hero_ndx],
-          );
-          deletedFromSourceTable = r.affectedRows > 0;
+
+        if (deleteHero) {
+          if (user.pensioner_id) {
+            await del(
+              "guardians",
+              "DELETE FROM guardians_tbl WHERE pensioner_ndx = ?",
+              [user.pensioner_id],
+            );
+            const [r] = await conn.execute(
+              "DELETE FROM pensioners_tbl WHERE id = ?",
+              [user.pensioner_id],
+            );
+            deletedPensioner = r.affectedRows > 0;
+          }
+
+          if (
+            user.hero_ndx &&
+            sourceTable &&
+            ALL_SOURCE_TABLES.has(sourceTable)
+          ) {
+            const safeTable = SOURCE_TABLE_MAP[sourceTable];
+            const [r] = await conn.execute(
+              `DELETE FROM ${safeTable} WHERE NDX = ?`,
+              [user.hero_ndx],
+            );
+            deletedFromSourceTable = r.affectedRows > 0;
+          }
         }
 
-        return {
-          historyLogs: formCount > 0 ? "deleted" : "none",
-          formSubmissions: formsResult.affectedRows,
-          user: userResult.affectedRows,
+        const result = {
+          ...counts,
           pensioner: deletedPensioner,
           heroRecord: deletedFromSourceTable,
         };
+
+        // Audit log, same transaction
+        await conn.execute(
+          `INSERT INTO audit_logs
+             (action, source_table, performed_by_id, performed_by,
+              record_ndx, afpsn, firstname, lastname, old_data, new_data, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            deleteHero ? "USER_AND_HERO_DELETE" : "USER_DELETE",
+            sourceTable ?? "users_tbl",
+            req.admin?.id ?? null,
+            req.admin?.name ?? req.admin?.email ?? "Unknown",
+            user.hero_ndx ?? null,
+            user.AFPSN ?? null,
+            user.FIRSTNAME ?? null,
+            user.LASTNAME ?? null,
+            JSON.stringify({
+              user_id: user.user_id,
+              email: user.email,
+              status: user.status,
+              pensioner_id: user.pensioner_id ?? null,
+              hero_ndx: user.hero_ndx ?? null,
+              source_table: sourceTable,
+              form_submissions: Number(formCount),
+            }),
+            JSON.stringify({ scope, deleted: result }),
+          ],
+        );
+
+        return result;
       });
 
       res.json({
         success: true,
-        message: "User successfully deleted",
+        message: deleteHero
+          ? "User and heroes record successfully deleted"
+          : "User account successfully deleted (heroes record kept)",
         data: {
           userId: parseInt(userId),
+          scope,
           pensionerId: user.pensioner_id,
           heroNdx: user.hero_ndx,
-          sourceTable: user.source_table,
+          sourceTable,
           deletedRecords,
         },
         meta: {

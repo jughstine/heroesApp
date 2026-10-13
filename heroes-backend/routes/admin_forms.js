@@ -199,6 +199,18 @@ const getFormRequirements = async (pool, formId, formTypeId) => {
 
 // ==================== HISTORY LOGS ROUTES ====================
 
+const AUDIT_ACTIONS = [
+  "ADD",
+  "UPDATE",
+  "DELETE",
+  "BULK_ADD",
+  "PASSWORD_RESET",
+  "STATUS_UPDATE",
+  "EMAIL_UPDATE",
+  "USER_DELETE",
+  "USER_AND_HERO_DELETE",
+];
+
 router.get("/audit-logs", authenticateAdminToken, async (req, res) => {
   try {
     const { page = 1, limit = 200, action, search } = req.query;
@@ -210,7 +222,12 @@ router.get("/audit-logs", authenticateAdminToken, async (req, res) => {
     let whereConditions = [];
     let queryParams = [];
 
-    if (action && ["ADD", "UPDATE", "DELETE", "BULK_ADD"].includes(action)) {
+    if (action && action !== "all") {
+      if (!AUDIT_ACTIONS.includes(action)) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid action filter" });
+      }
       whereConditions.push("action = ?");
       queryParams.push(action);
     }
@@ -280,7 +297,10 @@ router.get("/audit-logs/stats", authenticateAdminToken, async (req, res) => {
         COUNT(CASE WHEN action = 'ADD'      THEN 1 END) as added,
         COUNT(CASE WHEN action = 'UPDATE'   THEN 1 END) as updated,
         COUNT(CASE WHEN action = 'DELETE'   THEN 1 END) as deleted,
-        COUNT(CASE WHEN action = 'BULK_ADD' THEN 1 END) as bulkAdded
+        COUNT(CASE WHEN action = 'BULK_ADD' THEN 1 END) as bulkAdded,
+        COUNT(CASE WHEN action = 'PASSWORD_RESET' THEN 1 END) as passwordReset,
+        COUNT(CASE WHEN action = 'STATUS_UPDATE'  THEN 1 END) as statusUpdate,
+        COUNT(CASE WHEN action = 'USER_DELETE'    THEN 1 END) as userDelete
       FROM audit_logs
     `);
     res.json({ success: true, stats: rows[0] });

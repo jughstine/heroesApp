@@ -378,7 +378,6 @@ const sendStatusChangeNotification = async (
 };
 
 // ==================== FORM NOTIFICATIONS ====================
-// Following the same pattern as sendStatusChangeNotification
 
 const sendFormApprovalNotification = async (db, userId, formDetails) => {
   try {

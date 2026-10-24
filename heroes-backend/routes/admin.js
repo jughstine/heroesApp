@@ -1017,6 +1017,166 @@ router.put(
   },
 );
 
+// ─── Deleted to Tag status of users ───────────────────────────────────────────────────────────────
+
+const BULK_MAX = 3000;
+const NOTIFY_CHUNK = 10;
+
+router.post("/users/bulk-status", authenticateAdminToken, async (req, res) => {
+  if (req.admin?.role !== "S_ADMIN") {
+    return res.status(403).json({ success: false, error: "Forbidden" });
+  }
+
+  const { user_ids, from_status, to_status, notify = true } = req.body;
+
+  if (
+    !Array.isArray(user_ids) ||
+    !user_ids.length ||
+    user_ids.length > BULK_MAX
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: `user_ids must contain 1-${BULK_MAX} ids`,
+    });
+  }
+  if (!VALID_STATUSES.has(from_status) || !VALID_STATUSES.has(to_status)) {
+    return res.status(400).json({ success: false, error: "Invalid status" });
+  }
+  // DECEASED has side effects on heroes_tbl that the single-user route handles
+  if (
+    from_status === to_status ||
+    [from_status, to_status].includes("DECEASED")
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Unsupported status transition for bulk update",
+    });
+  }
+
+  const ids = [...new Set(user_ids.map(Number))].filter(Number.isInteger);
+  if (!ids.length) {
+    return res.status(400).json({ success: false, error: "Invalid user_ids" });
+  }
+  const ph = ids.map(() => "?").join(",");
+
+  const conn = await getPool().getConnection();
+  let inTx = false;
+  try {
+    await conn.beginTransaction();
+    inTx = true;
+
+    // Lock only rows that are still in from_status (client list may be stale)
+    const [users] = await conn.execute(
+      `SELECT u.id, p.hero_ndx, p.source_table,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.FIRSTNAME
+              WHEN p.source_table = 'beneficiaries_table' THEN b.FIRSTNAME
+              ELSE t.FIRSTNAME END AS FIRSTNAME,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.LASTNAME
+              WHEN p.source_table = 'beneficiaries_table' THEN b.LASTNAME
+              ELSE t.LASTNAME END AS LASTNAME,
+         CASE WHEN p.source_table = 'resumption_table' THEN tr.AFPSN
+              WHEN p.source_table = 'beneficiaries_table' THEN b.AFPSN
+              ELSE t.AFPSN END AS AFPSN
+       FROM users_tbl u
+       LEFT JOIN pensioners_tbl p ON u.pensioner_ndx = p.id
+       LEFT JOIN heroes_tbl t ON p.hero_ndx = t.NDX
+         AND (p.source_table = 'heroes_tbl' OR p.source_table IS NULL)
+       LEFT JOIN resumption_table tr ON p.hero_ndx = tr.NDX
+         AND p.source_table = 'resumption_table'
+       LEFT JOIN beneficiaries_table b ON p.hero_ndx = b.NDX
+         AND p.source_table = 'beneficiaries_table'
+       WHERE u.id IN (${ph}) AND u.status = ?
+       FOR UPDATE`,
+      [...ids, from_status],
+    );
+
+    if (!users.length) {
+      await conn.rollback();
+      inTx = false;
+      return res.json({
+        success: true,
+        updated: 0,
+        notified: 0,
+        skipped: ids.length,
+      });
+    }
+
+    const changedIds = users.map((u) => u.id);
+    const cph = changedIds.map(() => "?").join(",");
+
+    await conn.execute(
+      `UPDATE users_tbl SET status = ?, updated_at = NOW()
+       WHERE id IN (${cph}) AND status = ?`,
+      [to_status, ...changedIds, from_status],
+    );
+
+    // One multi-row audit insert
+    const auditRows = users.map(() => "(?,?,?,?,?,?,?,?,?,?,NOW())").join(",");
+    const auditParams = users.flatMap((u) => [
+      "STATUS_UPDATE",
+      u.source_table ?? "users_tbl",
+      req.admin?.id ?? null,
+      req.admin?.name ?? req.admin?.email ?? "Unknown",
+      u.hero_ndx ?? null,
+      u.AFPSN ?? null,
+      u.FIRSTNAME ?? null,
+      u.LASTNAME ?? null,
+      JSON.stringify({ user_id: u.id, status: from_status }),
+      JSON.stringify({ user_id: u.id, status: to_status, bulk: true }),
+    ]);
+    await conn.execute(
+      `INSERT INTO audit_logs
+         (action, source_table, performed_by_id, performed_by,
+          record_ndx, afpsn, firstname, lastname, old_data, new_data, created_at)
+       VALUES ${auditRows}`,
+      auditParams,
+    );
+
+    await conn.commit();
+    inTx = false;
+
+    // Notifications run after commit; failures never undo the status change
+    let notified = 0;
+    let notifyFailed = 0;
+    let noToken = 0;
+
+    if (notify) {
+      const pool = getPool();
+      for (let i = 0; i < users.length; i += NOTIFY_CHUNK) {
+        const chunk = users.slice(i, i + NOTIFY_CHUNK);
+        const results = await Promise.allSettled(
+          chunk.map((u) =>
+            sendStatusChangeNotification(pool, u.id, from_status, to_status),
+          ),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.success) notified++;
+          else if (
+            r.status === "fulfilled" &&
+            r.value.error === "No push token"
+          )
+            noToken++;
+          else notifyFailed++;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      updated: users.length,
+      skipped: ids.length - users.length,
+      notified,
+      notifyFailed,
+      noToken,
+    });
+  } catch (error) {
+    if (inTx) await conn.rollback().catch(() => {});
+    internalError(res, error, "Failed to bulk update user status");
+  } finally {
+    conn.release();
+  }
+});
+
 // ─── Transfer to Alpha ─────────────────────────────────────────────────────────
 
 // Shared column list for both source tables
